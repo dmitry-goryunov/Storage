@@ -304,7 +304,7 @@ with st.sidebar:
 
     days = st.number_input("days", min_value=1, max_value=3660, value=30, step=1)
     vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
-    n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=30, step=1)
+    n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
     v_step = st.number_input("v_step", min_value=1, max_value=1_000_000, value=1000, step=100)
 
     st.header("Storage inputs")
