@@ -314,7 +314,8 @@ with st.sidebar:
     wdr_cost = st.number_input("wdr_cost", value=0.5, step=0.1, format="%.2f")
 
     st.header("Forward curve")
-    curve_mode = st.radio("Curve source", ["TTF quote matrix", "Direct curve"], index=0)
+    use_direct_curve = st.toggle("Use direct curve", value=True)
+    curve_mode = "Direct curve" if use_direct_curve else "TTF quote matrix"
     uploaded_curve = st.file_uploader("Upload xlsx/csv", type=["xlsx", "xls", "csv"])
     include_da = st.checkbox("Include DA front stub", value=True, disabled=(curve_mode != "TTF quote matrix"))
 
