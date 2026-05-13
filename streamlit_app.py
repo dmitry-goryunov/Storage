@@ -406,15 +406,15 @@ extrinsic_delta_profile = pd.Series(np.array(s.delta[:s.n_t], dtype=float), inde
 fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 for ax, profile, title, color in [
     (axes[0], intrinsic_profile, f"{result['title_prefix']} intrinsic expected exercise vs forward curve", "tab:red"),
-    (axes[1], extrinsic_delta_profile, f"{result['title_prefix']} extrinsic delta vs forward curve", "tab:purple"),
+    (axes[1], extrinsic_delta_profile, f"{result['title_prefix']} native extrinsic delta vs forward curve", "tab:purple"),
 ]:
     dates = exercise_dates if ax is axes[0] else delta_dates
     ax_price = ax.twinx()
     if product_type == "storage":
-        ax.bar(dates, np.where(profile.values > 0, profile.values, 0), width=1.0, color="tab:green", alpha=0.65, label="Expected sell" if ax is axes[0] else "Positive delta")
-        ax.bar(dates, np.where(profile.values < 0, profile.values, 0), width=1.0, color="tab:red", alpha=0.65, label="Expected buy" if ax is axes[0] else "Negative delta")
+        ax.bar(dates, np.where(profile.values > 0, profile.values, 0), width=1.0, color="tab:green", alpha=0.65, label="Expected sell" if ax is axes[0] else "Positive native delta")
+        ax.bar(dates, np.where(profile.values < 0, profile.values, 0), width=1.0, color="tab:red", alpha=0.65, label="Expected buy" if ax is axes[0] else "Negative native delta")
     else:
-        ax.bar(dates, profile.values, width=1.0, color=color, alpha=0.65, label="Expected offtake" if ax is axes[0] else "Delta")
+        ax.bar(dates, profile.values, width=1.0, color=color, alpha=0.65, label="Expected offtake" if ax is axes[0] else "Native delta")
     ax_price.plot(dates, plot_prices.loc[dates].values, color="black", linewidth=1.6, label="Forward curve")
     ax.set_title(title)
     ax.set_ylabel(result["profile_label"] if ax is axes[0] else "Delta (MWh/day)")
@@ -427,19 +427,19 @@ for ax, profile, title, color in [
 plt.tight_layout()
 st.pyplot(fig)
 
-st.subheader("Monthly Deltas")
+st.subheader("Monthly Native Deltas")
 monthly_delta = extrinsic_delta_profile.loc[storageStart:storageEnd]
 monthly_delta_by_period = monthly_delta.resample("MS").sum()
 monthly_delta_table = pd.DataFrame({
     "period": monthly_delta_by_period.index.strftime("%b-%y"),
-    "delta": monthly_delta_by_period.values,
+    "native_delta": monthly_delta_by_period.values,
 })
 monthly_delta_table = pd.concat([
     monthly_delta_table,
-    pd.DataFrame([{"period": "Sum", "delta": monthly_delta_table["delta"].sum()}]),
+    pd.DataFrame([{"period": "Sum", "native_delta": monthly_delta_table["native_delta"].sum()}]),
 ], ignore_index=True)
 monthly_delta_display = monthly_delta_table.copy()
-monthly_delta_display["delta"] = monthly_delta_display["delta"].map("{:,.2f}".format)
+monthly_delta_display["native_delta"] = monthly_delta_display["native_delta"].map("{:,.2f}".format)
 st.dataframe(monthly_delta_display, hide_index=True, use_container_width=True)
 
 with st.expander("Forward curve used"):
