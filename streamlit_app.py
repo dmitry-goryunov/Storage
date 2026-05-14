@@ -328,6 +328,11 @@ def run_valuation(curve, params):
     raise ValueError("Unknown product_type")
 
 
+@st.cache_data(show_spinner=False)
+def cached_run_valuation(curve, params):
+    return run_valuation(curve, params)
+
+
 def format_number(x):
     if pd.isna(x):
         return "n/a"
@@ -409,7 +414,7 @@ st.caption(f"{curve_note}. Curve covers {curve['contractStart'].min():%Y-%m-%d} 
 with st.spinner("Running valuation. First run may compile Numba kernels..."):
     t0 = time.perf_counter()
     try:
-        s, result = run_valuation(curve, params)
+        s, result = cached_run_valuation(curve, params)
     except Exception as exc:
         st.exception(exc)
         st.stop()
