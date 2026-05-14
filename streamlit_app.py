@@ -161,34 +161,42 @@ def active_masks(model):
     return n, active
 
 
+def daily_arithmetic_flat_metric(model):
+    exercise_dates = model.date_span[model.Dt:model._active]
+    return float(pd.Series(model.price_curve, index=model.date_span).loc[exercise_dates].mean())
+
+
 def value_put_swing(curve, params):
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
     n, active = active_masks(s)
     s.i_curve = active.copy()
     s.w_curve = np.zeros(n)
 
-    full_cap = s.n_op_start
-    s.n_op_start = 0
-    s.t_p_curve = np.full(s.n_op + 2, -1e9)
-    s.t_p_curve[full_cap] = 0.0
-    s.build()
-    flat_metric = s.flat()
+    flat_metric = daily_arithmetic_flat_metric(s)
 
     s.set_volume_states(params["days"])
     s.n_op_start = 0
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[params["days"]] = 0.0
-    s.build()
-    profiled_eur = s.v[0, 0, 0]
-    acq = -np.sum(s.delta)
-    profiled_metric = s.profiled()
-    intrinsic = flat_metric - profiled_metric
-    intrinsic_profile_raw = -np.array(s.exp_ex)
+    if params["run_intrinsic"]:
+        s.build()
+        profiled_eur = s.v[0, 0, 0]
+        acq = -np.sum(s.delta)
+        profiled_metric = s.profiled()
+        intrinsic = flat_metric - profiled_metric
+        intrinsic_profile_raw = -np.array(s.exp_ex)
+    else:
+        profiled_eur = np.nan
+        acq = np.nan
+        profiled_metric = np.nan
+        intrinsic = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
 
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, 0]
-    extrinsic = (full_eur - profiled_eur) / acq
+    stochastic_metric = full_eur / np.sum(s.delta)
+    extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = -np.array(s.exp_ex)
 
     return s, {
@@ -196,7 +204,8 @@ def value_put_swing(curve, params):
         "profiled_metric": profiled_metric,
         "intrinsic": intrinsic,
         "extrinsic": extrinsic,
-        "total": intrinsic + extrinsic,
+        "total": intrinsic + extrinsic if params["run_intrinsic"] else stochastic_metric,
+        "stochastic_metric": stochastic_metric,
         "profile_label": "Expected buy offtake (MWh/day)",
         "title_prefix": "Put swing",
         "intrinsic_profile_raw": intrinsic_profile_raw,
@@ -206,21 +215,28 @@ def value_put_swing(curve, params):
 
 def value_call_swing(curve, params):
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
-    s.build()
-    flat_metric = s.flat()
+    flat_metric = daily_arithmetic_flat_metric(s)
 
     s.set_volume_states(params["days"])
-    s.build()
-    profiled_eur = s.v[0, 0, s.n_op_start]
-    acq = np.sum(s.delta)
-    profiled_metric = s.profiled()
-    intrinsic = profiled_metric - flat_metric
-    intrinsic_profile_raw = np.array(s.exp_ex)
+    if params["run_intrinsic"]:
+        s.build()
+        profiled_eur = s.v[0, 0, s.n_op_start]
+        acq = np.sum(s.delta)
+        profiled_metric = s.profiled()
+        intrinsic = profiled_metric - flat_metric
+        intrinsic_profile_raw = np.array(s.exp_ex)
+    else:
+        profiled_eur = np.nan
+        acq = np.nan
+        profiled_metric = np.nan
+        intrinsic = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
 
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, s.n_op_start]
-    extrinsic = (full_eur - profiled_eur) / acq
+    stochastic_metric = full_eur / np.sum(s.delta)
+    extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)
 
     return s, {
@@ -228,7 +244,8 @@ def value_call_swing(curve, params):
         "profiled_metric": profiled_metric,
         "intrinsic": intrinsic,
         "extrinsic": extrinsic,
-        "total": intrinsic + extrinsic,
+        "total": intrinsic + extrinsic if params["run_intrinsic"] else stochastic_metric,
+        "stochastic_metric": stochastic_metric,
         "profile_label": "Expected sell offtake (MWh/day)",
         "title_prefix": "Call swing",
         "intrinsic_profile_raw": intrinsic_profile_raw,
@@ -249,22 +266,27 @@ def value_storage(curve, params):
     s.t_p_curve[0] = 0.0
 
     max_vol = params["inj_days"] * s.v_step
-    s.build()
-    intrinsic_eur = s.v[0, 0, 0]
-    intrinsic_profile_raw = np.array(s.exp_ex)
+    if params["run_intrinsic"]:
+        s.build()
+        intrinsic_eur = s.v[0, 0, 0]
+        intrinsic_profile_raw = np.array(s.exp_ex)
+    else:
+        intrinsic_eur = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
 
     s.n_p = params["n_p_full"]
     s.build()
     total_eur = s.v[0, s.n_p, 0]
-    extrinsic_eur = total_eur - intrinsic_eur
+    extrinsic_eur = total_eur - intrinsic_eur if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)
 
     return s, {
         "flat_metric": np.nan,
-        "profiled_metric": intrinsic_eur / max_vol,
-        "intrinsic": intrinsic_eur / max_vol,
-        "extrinsic": extrinsic_eur / max_vol,
+        "profiled_metric": intrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
+        "intrinsic": intrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
+        "extrinsic": extrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
         "total": total_eur / max_vol,
+        "stochastic_metric": total_eur / max_vol,
         "intrinsic_eur": intrinsic_eur,
         "extrinsic_eur": extrinsic_eur,
         "total_eur": total_eur,
@@ -305,6 +327,7 @@ with st.sidebar:
     days = st.number_input("days", min_value=1, max_value=3660, value=30, step=1)
     vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
     n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
+    run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
     v_step = st.number_input("v_step", min_value=1, max_value=1_000_000, value=1000, step=100)
 
     st.header("Storage inputs")
@@ -334,6 +357,7 @@ params = {
     "days": int(days),
     "vol": float(vol),
     "n_p_full": int(n_p_full),
+    "run_intrinsic": bool(run_intrinsic),
     "v_step": int(v_step),
     "inj_days": int(inj_days),
     "wdr_days": int(wdr_days),
@@ -371,8 +395,13 @@ with st.spinner("Running valuation. First run may compile Numba kernels..."):
 
 st.success(f"Valuation complete in {elapsed:.1f}s")
 
+if run_intrinsic:
+    summary_metrics = ["flat_metric", "profiled_metric", "intrinsic_value", "extrinsic_value", "total_value"]
+else:
+    summary_metrics = ["flat_metric", "profiled_metric", "intrinsic_value", "extrinsic_value", "stochastic_metric"]
+
 summary = pd.DataFrame({
-    "metric": ["flat_metric", "profiled_metric", "intrinsic_value", "extrinsic_value", "total_value"],
+    "metric": summary_metrics,
     "value": [
         result["flat_metric"],
         result["profiled_metric"],
@@ -392,7 +421,7 @@ if product_type == "storage":
         pd.DataFrame({
             "metric": ["intrinsic_eur", "extrinsic_eur", "total_eur"],
             "value": [result["intrinsic_eur"], result["extrinsic_eur"], result["total_eur"]],
-        }).assign(value=lambda x: x["value"].map(lambda v: f"{v:,.0f}")),
+        }).assign(value=lambda x: x["value"].map(lambda v: "n/a" if pd.isna(v) else f"{v:,.0f}")),
         hide_index=True,
         use_container_width=True,
     )
