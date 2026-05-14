@@ -340,36 +340,36 @@ def format_number(x):
 
 
 st.title("Swing / Storage Valuation")
-warm_numba_kernels()
 
 with st.sidebar:
-    st.header("Inputs")
-    product_type = st.selectbox("Product type", ["put_swing", "call_swing", "storage"], index=0)
+    with st.form("valuation_inputs"):
+        st.header("Inputs")
+        product_type = st.selectbox("Product type", ["put_swing", "call_swing", "storage"], index=0)
 
-    FDDate = pd.Timestamp(st.date_input("FDDate", pd.Timestamp("2026-01-05")))
-    valDate = pd.Timestamp(st.date_input("valDate", pd.Timestamp("2026-01-01")))
-    storageStart = pd.Timestamp(st.date_input("storageStart", pd.Timestamp("2026-04-01")))
-    storageEnd = pd.Timestamp(st.date_input("storageEnd", pd.Timestamp("2027-03-30")))
+        FDDate = pd.Timestamp(st.date_input("FDDate", pd.Timestamp("2026-01-05")))
+        valDate = pd.Timestamp(st.date_input("valDate", pd.Timestamp("2026-01-01")))
+        storageStart = pd.Timestamp(st.date_input("storageStart", pd.Timestamp("2026-04-01")))
+        storageEnd = pd.Timestamp(st.date_input("storageEnd", pd.Timestamp("2027-03-30")))
 
-    days = st.number_input("days", min_value=1, max_value=3660, value=30, step=1)
-    vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
-    n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
-    run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
-    v_step = st.number_input("v_step", min_value=1, max_value=1_000_000, value=1000, step=100)
+        days = st.number_input("days", min_value=1, max_value=3660, value=30, step=1)
+        vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
+        n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
+        run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
+        v_step = st.number_input("v_step", min_value=1, max_value=1_000_000, value=1000, step=100)
 
-    st.header("Storage inputs")
-    inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1)
-    wdr_days = st.number_input("wdr_days", min_value=1, max_value=3660, value=30, step=1)
-    inj_cost = st.number_input("inj_cost", value=0.5, step=0.1, format="%.2f")
-    wdr_cost = st.number_input("wdr_cost", value=0.5, step=0.1, format="%.2f")
+        st.header("Storage inputs")
+        inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1)
+        wdr_days = st.number_input("wdr_days", min_value=1, max_value=3660, value=30, step=1)
+        inj_cost = st.number_input("inj_cost", value=0.5, step=0.1, format="%.2f")
+        wdr_cost = st.number_input("wdr_cost", value=0.5, step=0.1, format="%.2f")
 
-    st.header("Forward curve")
-    use_direct_curve = st.toggle("Use direct curve", value=True)
-    curve_mode = "Direct curve" if use_direct_curve else "TTF quote matrix"
-    uploaded_curve = st.file_uploader("Upload xlsx/csv", type=["xlsx", "xls", "csv"])
-    include_da = st.checkbox("Include DA front stub", value=True, disabled=(curve_mode != "TTF quote matrix"))
+        st.header("Forward curve")
+        use_direct_curve = st.toggle("Use direct curve", value=True)
+        curve_mode = "Direct curve" if use_direct_curve else "TTF quote matrix"
+        uploaded_curve = st.file_uploader("Upload xlsx/csv", type=["xlsx", "xls", "csv"])
+        include_da = st.checkbox("Include DA front stub", value=True, disabled=(curve_mode != "TTF quote matrix"))
 
-    run = st.button("Run valuation", type="primary")
+        run = st.form_submit_button("Run valuation", type="primary")
 
 if storageEnd < storageStart:
     st.error("storageEnd must be on or after storageStart.")
@@ -414,6 +414,7 @@ st.caption(f"{curve_note}. Curve covers {curve['contractStart'].min():%Y-%m-%d} 
 with st.spinner("Running valuation. First run may compile Numba kernels..."):
     t0 = time.perf_counter()
     try:
+        warm_numba_kernels()
         s, result = cached_run_valuation(curve, params)
     except Exception as exc:
         st.exception(exc)
