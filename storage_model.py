@@ -1,5 +1,6 @@
 import numpy as np
 from math import sqrt
+import re
 from numba import jit, prange
 from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
 import pandas as pd
@@ -152,6 +153,270 @@ class Storage:
     def profiled(self):
         ACQ = np.sum(self.delta)
         return self.v[0, 0, self.n_op_start] / ACQ
+
+
+def month_start(ts):
+    ts = pd.Timestamp(ts)
+    return pd.Timestamp(ts.year, ts.month, 1)
+
+
+def month_end(ts):
+    return month_start(ts) + pd.offsets.MonthEnd(0)
+
+
+def front_month_start(quote_date):
+    return month_start(quote_date) + pd.DateOffset(months=1)
+
+
+def monthly_curve_from_quote(row, contract_columns):
+    front_month = front_month_start(row["quote_date"])
+    rows = []
+    for col in contract_columns:
+        value = row[col]
+        if pd.isna(value):
+            continue
+        contract_number = int(re.search(r"\d+", str(col)).group())
+        contract_start = front_month + pd.DateOffset(months=contract_number - 1)
+        rows.append({"contract": col, "contractStart": contract_start, "value": float(value)})
+    curve_df = pd.DataFrame(rows)
+    if curve_df.empty:
+        return pd.Series(dtype=float), curve_df
+    curve_df["contractEnd"] = curve_df["contractStart"].map(month_end)
+    curve_df = curve_df[["contract", "contractStart", "contractEnd", "value"]]
+    monthly = curve_df.set_index("contractStart")["value"].sort_index().rename("value")
+    return monthly, curve_df
+
+
+def quote_row_for_fd_date(quotes, contract_columns, fd_date, exact=False):
+    fd_date = pd.Timestamp(fd_date)
+    if exact:
+        eligible = quotes.loc[quotes["quote_date"].eq(fd_date)]
+    else:
+        eligible = quotes.loc[quotes["quote_date"] <= fd_date]
+    eligible = eligible.loc[eligible[contract_columns].notna().any(axis=1)]
+    if eligible.empty:
+        raise ValueError(f"No forward quote available for FDDate {fd_date:%Y-%m-%d}")
+    return eligible.iloc[-1]
+
+
+def curve_df_for_storage(row, contract_columns, curve_start=None, include_da=True):
+    monthly, curve_df = monthly_curve_from_quote(row, contract_columns)
+    curve_df = curve_df.copy()
+
+    if not monthly.empty:
+        full_months = pd.date_range(monthly.index.min(), monthly.index.max(), freq="MS")
+        monthly = monthly.reindex(full_months).interpolate(method="time").ffill().bfill()
+        curve_df = pd.DataFrame({
+            "contract": [f"TTFc{i + 1}" for i in range(len(monthly))],
+            "contractStart": monthly.index,
+            "value": monthly.values,
+        })
+        curve_df["contractEnd"] = curve_df["contractStart"].map(month_end)
+        curve_df = curve_df[["contract", "contractStart", "contractEnd", "value"]]
+
+    quote_date = pd.Timestamp(row["quote_date"])
+    curve_start = pd.Timestamp(curve_start) if curve_start is not None else quote_date
+
+    if include_da and pd.notna(row.get("DA", np.nan)):
+        front_month = front_month_start(quote_date)
+        da_start = min(curve_start, quote_date)
+        da_end = front_month - pd.Timedelta(days=1)
+        da_row = pd.DataFrame([{
+            "contract": "DA",
+            "contractStart": da_start,
+            "contractEnd": da_end,
+            "value": float(row["DA"]),
+        }])
+        curve_df = pd.concat([da_row, curve_df], ignore_index=True)
+    elif curve_start < curve_df["contractStart"].min():
+        first_value = float(curve_df.sort_values("contractStart").iloc[0]["value"])
+        first_start = curve_df["contractStart"].min()
+        stub_row = pd.DataFrame([{
+            "contract": "FRONT_STUB",
+            "contractStart": curve_start,
+            "contractEnd": first_start - pd.Timedelta(days=1),
+            "value": first_value,
+        }])
+        curve_df = pd.concat([stub_row, curve_df], ignore_index=True)
+
+    result = curve_df[["contractStart", "contractEnd", "value"]].sort_values("contractStart").reset_index(drop=True)
+    if result["value"].isna().any():
+        raise ValueError("Curve contains missing values after interpolation/stub fill.")
+    return result
+
+
+def active_masks(model):
+    n = len(model.date_span)
+    active = np.ones(n)
+    active[model._active:] = 0.0
+    active[:model.Dt] = 0.0
+    return n, active
+
+
+def daily_arithmetic_flat_metric(model):
+    exercise_dates = model.date_span[model.Dt:model._active]
+    return float(pd.Series(model.price_curve, index=model.date_span).loc[exercise_dates].mean())
+
+
+def warm_numba_kernels():
+    curve = pd.DataFrame({
+        "contractStart": [pd.Timestamp("2026-01-01")],
+        "contractEnd": [pd.Timestamp("2026-03-31")],
+        "value": [25.0],
+    })
+    model = Storage(
+        pd.Timestamp("2026-01-01"),
+        pd.Timestamp("2026-01-02"),
+        pd.Timestamp("2026-01-03"),
+        curve=curve,
+        n_p=1,
+        v_step=1000,
+        sVol=0.6,
+    )
+    model.set_volume_states(1)
+    model.build()
+    return True
+
+
+def value_put_swing(curve, params):
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    n, active = active_masks(s)
+    s.i_curve = active.copy()
+    s.w_curve = np.zeros(n)
+
+    flat_metric = daily_arithmetic_flat_metric(s)
+
+    s.set_volume_states(params["days"])
+    s.n_op_start = 0
+    s.t_p_curve = np.full(s.n_op + 2, -1e9)
+    s.t_p_curve[params["days"]] = 0.0
+    if params["run_intrinsic"]:
+        s.build()
+        profiled_eur = s.v[0, 0, 0]
+        acq = -np.sum(s.delta)
+        profiled_metric = s.profiled()
+        intrinsic = flat_metric - profiled_metric
+        intrinsic_profile_raw = -np.array(s.exp_ex)
+    else:
+        profiled_eur = np.nan
+        acq = np.nan
+        profiled_metric = np.nan
+        intrinsic = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
+
+    s.n_p = params["n_p_full"]
+    s.build()
+    full_eur = s.v[0, s.n_p, 0]
+    stochastic_metric = full_eur / np.sum(s.delta)
+    extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
+    extrinsic_profile_raw = -np.array(s.exp_ex)
+
+    return s, {
+        "flat_metric": flat_metric,
+        "profiled_metric": profiled_metric,
+        "intrinsic": intrinsic,
+        "extrinsic": extrinsic,
+        "total": intrinsic + extrinsic if params["run_intrinsic"] else stochastic_metric,
+        "stochastic_metric": stochastic_metric,
+        "profile_label": "Expected buy offtake (MWh/day)",
+        "title_prefix": "Put swing",
+        "intrinsic_profile_raw": intrinsic_profile_raw,
+        "extrinsic_profile_raw": extrinsic_profile_raw,
+    }
+
+
+def value_call_swing(curve, params):
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    flat_metric = daily_arithmetic_flat_metric(s)
+
+    s.set_volume_states(params["days"])
+    if params["run_intrinsic"]:
+        s.build()
+        profiled_eur = s.v[0, 0, s.n_op_start]
+        acq = np.sum(s.delta)
+        profiled_metric = s.profiled()
+        intrinsic = profiled_metric - flat_metric
+        intrinsic_profile_raw = np.array(s.exp_ex)
+    else:
+        profiled_eur = np.nan
+        acq = np.nan
+        profiled_metric = np.nan
+        intrinsic = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
+
+    s.n_p = params["n_p_full"]
+    s.build()
+    full_eur = s.v[0, s.n_p, s.n_op_start]
+    stochastic_metric = full_eur / np.sum(s.delta)
+    extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
+    extrinsic_profile_raw = np.array(s.exp_ex)
+
+    return s, {
+        "flat_metric": flat_metric,
+        "profiled_metric": profiled_metric,
+        "intrinsic": intrinsic,
+        "extrinsic": extrinsic,
+        "total": intrinsic + extrinsic if params["run_intrinsic"] else stochastic_metric,
+        "stochastic_metric": stochastic_metric,
+        "profile_label": "Expected sell offtake (MWh/day)",
+        "title_prefix": "Call swing",
+        "intrinsic_profile_raw": intrinsic_profile_raw,
+        "extrinsic_profile_raw": extrinsic_profile_raw,
+    }
+
+
+def value_storage(curve, params):
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    n, active = active_masks(s)
+    s.i_curve = active.copy()
+    s.w_curve = active.copy()
+    s.i_cost[:] = params["inj_cost"]
+    s.w_cost[:] = params["wdr_cost"]
+    s.set_volume_states(params["inj_days"])
+    s.n_op_start = 0
+    s.t_p_curve = np.full(s.n_op + 2, -1e9)
+    s.t_p_curve[0] = 0.0
+
+    max_vol = params["inj_days"] * s.v_step
+    if params["run_intrinsic"]:
+        s.build()
+        intrinsic_eur = s.v[0, 0, 0]
+        intrinsic_profile_raw = np.array(s.exp_ex)
+    else:
+        intrinsic_eur = np.nan
+        intrinsic_profile_raw = np.zeros(len(s.date_span))
+
+    s.n_p = params["n_p_full"]
+    s.build()
+    total_eur = s.v[0, s.n_p, 0]
+    extrinsic_eur = total_eur - intrinsic_eur if params["run_intrinsic"] else np.nan
+    extrinsic_profile_raw = np.array(s.exp_ex)
+
+    return s, {
+        "flat_metric": np.nan,
+        "profiled_metric": intrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
+        "intrinsic": intrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
+        "extrinsic": extrinsic_eur / max_vol if params["run_intrinsic"] else np.nan,
+        "total": total_eur / max_vol,
+        "stochastic_metric": total_eur / max_vol,
+        "intrinsic_eur": intrinsic_eur,
+        "extrinsic_eur": extrinsic_eur,
+        "total_eur": total_eur,
+        "profile_label": "Expected exercise: sell + / buy - (MWh/day)",
+        "title_prefix": "Storage",
+        "intrinsic_profile_raw": intrinsic_profile_raw,
+        "extrinsic_profile_raw": extrinsic_profile_raw,
+    }
+
+
+def run_valuation(curve, params):
+    if params["product_type"] == "put_swing":
+        return value_put_swing(curve, params)
+    if params["product_type"] == "call_swing":
+        return value_call_swing(curve, params)
+    if params["product_type"] == "storage":
+        return value_storage(curve, params)
+    raise ValueError("Unknown product_type")
 
 
 
