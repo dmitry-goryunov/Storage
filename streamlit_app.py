@@ -13,6 +13,27 @@ from storage_model import Storage
 st.set_page_config(page_title="Swing / Storage Valuation", layout="wide")
 
 
+@st.cache_resource(show_spinner="Preparing Numba kernels...")
+def warm_numba_kernels():
+    curve = pd.DataFrame({
+        "contractStart": [pd.Timestamp("2026-01-01")],
+        "contractEnd": [pd.Timestamp("2026-03-31")],
+        "value": [25.0],
+    })
+    model = Storage(
+        pd.Timestamp("2026-01-01"),
+        pd.Timestamp("2026-01-02"),
+        pd.Timestamp("2026-01-03"),
+        curve=curve,
+        n_p=1,
+        v_step=1000,
+        sVol=0.6,
+    )
+    model.set_volume_states(1)
+    model.build()
+    return True
+
+
 def month_start(ts):
     ts = pd.Timestamp(ts)
     return pd.Timestamp(ts.year, ts.month, 1)
@@ -314,6 +335,7 @@ def format_number(x):
 
 
 st.title("Swing / Storage Valuation")
+warm_numba_kernels()
 
 with st.sidebar:
     st.header("Inputs")

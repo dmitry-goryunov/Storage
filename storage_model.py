@@ -157,7 +157,7 @@ class Storage:
 
 # ── Price tree ────────────────────────────────────────────────────────────────
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt):
     # x initialisation
     for i in range(n_t):
@@ -242,7 +242,7 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
 
 # ── Dynamic programming ───────────────────────────────────────────────────────
 
-@jit(nopython=True, parallel=True)
+@jit(nopython=True, parallel=True, cache=True)
 def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
               d_curve, i_curve, w_curve, i_cost, w_cost,
               t_p_curve, i_ratch, w_ratch, mintunnel, max_tunnel):
@@ -343,7 +343,7 @@ def valuation(n_p, v, q, n_op_start):
     return result
 
 
-@jit(nopython=True, parallel=True)
+@jit(nopython=True, parallel=True, cache=True)
 def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
                   i_curve, w_curve, i_ratch, w_ratch,
                   n_op_start, mintunnel, max_tunnel):
@@ -379,7 +379,7 @@ def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
     return prob
 
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def get_exercise(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve):
     result = 0.
     for j in range(2*n_p+1):
@@ -393,7 +393,7 @@ def get_exercise(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i
     return -round(result, 3)
 
 
-@jit(nopython=True)
+@jit(nopython=True, cache=True)
 def get_delta(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
     result = 0.
     for j in range(2*n_p+1):
