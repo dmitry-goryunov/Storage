@@ -73,9 +73,24 @@ def load_direct_curve(source):
     return curve.sort_values("contractStart").reset_index(drop=True)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=20)
 def cached_run_valuation(curve, params):
-    return run_valuation(curve, params)
+    """Run the valuation but cache only what the UI needs.
+
+    Returning the full Storage object would make st.cache_data pickle the
+    v/strat/prob state cubes (8-130+ MB per parameter set) on every store and
+    copy them on every retrieval. The payload below is < 1 MB.
+    """
+    s, result = run_valuation(curve, params)
+    payload = {
+        "date_span": s.date_span,
+        "Dt": s.Dt,
+        "active": s._active,
+        "n_t": s.n_t,
+        "price_curve": np.asarray(s.price_curve, dtype=float),
+        "delta": np.asarray(s.delta, dtype=float),
+    }
+    return payload, result
 
 
 def format_number(x):
@@ -160,7 +175,7 @@ with st.spinner("Running valuation. First run may compile Numba kernels..."):
     t0 = time.perf_counter()
     try:
         warm_numba_kernels()
-        s, result = cached_run_valuation(curve, params)
+        payload, result = cached_run_valuation(curve, params)
     except Exception as exc:
         st.exception(exc)
         st.stop()
@@ -199,12 +214,13 @@ if product_type == "storage":
         use_container_width=True,
     )
 
-exercise_dates = s.date_span[s.Dt:s._active]
-delta_dates = s.date_span[:s.n_t]
-plot_prices = pd.Series(s.price_curve, index=s.date_span)
-intrinsic_profile = pd.Series(result["intrinsic_profile_raw"][:len(s.date_span)], index=s.date_span).loc[exercise_dates]
-extrinsic_profile = pd.Series(result["extrinsic_profile_raw"][:len(s.date_span)], index=s.date_span).loc[exercise_dates]
-extrinsic_delta_profile = pd.Series(np.array(s.delta[:s.n_t], dtype=float), index=delta_dates)
+date_span = payload["date_span"]
+exercise_dates = date_span[payload["Dt"]:payload["active"]]
+delta_dates = date_span[:payload["n_t"]]
+plot_prices = pd.Series(payload["price_curve"], index=date_span)
+intrinsic_profile = pd.Series(result["intrinsic_profile_raw"][:len(date_span)], index=date_span).loc[exercise_dates]
+extrinsic_profile = pd.Series(result["extrinsic_profile_raw"][:len(date_span)], index=date_span).loc[exercise_dates]
+extrinsic_delta_profile = pd.Series(payload["delta"][:payload["n_t"]], index=delta_dates)
 
 fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 for ax, profile, title, color in [

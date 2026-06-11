@@ -8,10 +8,18 @@ A quantitative library for valuing natural gas storage and swing contracts on th
 
 | File | Description |
 |---|---|
-| `storage_model.py` | Core library — curve utilities, `Storage` class, trinomial tree builder, DP solver, and metric computation |
+| `storage_model.py` | Core library — curve utilities, `Storage` class, valuation wrappers, and metric computation |
+| `storage_kernels.py` | Numba-compiled kernels (tree core, DP solver, probabilities). Kept separate so edits to `storage_model.py` do not invalidate the Numba disk cache (avoids 20-40s recompiles) |
+| `streamlit_app.py` | Interactive Streamlit UI for running valuations |
 | `Swing_new.ipynb` | Driver notebook — loads curve & quotes, runs intrinsic/extrinsic valuations for 6 products, plots results |
-| `curve.csv` | Monthly TTF forward curve (Jan 2026 – Dec 2029, 48 contracts) |
+| `forward.ipynb` | Exploration notebook — forward curve work using `ttf q.xlsx` |
+| `pricing.ipynb` | Exploration notebook — pricing experiments |
+| `finding.md` | Write-up of the put-swing delta investigation (January step-down, December amplification) |
+| `curve.csv` | Monthly TTF forward curve (48 contracts) |
 | `quotes.csv` | Market bid/ask quotes for 6 swing products |
+| `ttf q.xlsx` | Historical TTF quote data (used by `streamlit_app.py` and exploration notebooks) |
+| `quotes.xlsx`, `curve_work.xlsx` | Reference data, not read by code |
+| `requirements.txt` | Python dependencies |
 
 ---
 
@@ -19,7 +27,7 @@ A quantitative library for valuing natural gas storage and swing contracts on th
 
 ### 1. Forward Curve (`map_curve_to_dates` → `smoothen_curve`)
 
-Raw monthly contract prices are vectorised into a daily series, then smoothed via a natural cubic spline fitted through monthly midpoints. A one-shot additive correction is applied to each month so that smoothed daily averages exactly reproduce the original contract prices.
+Raw monthly contract prices are vectorised into a daily series, then smoothed via a cubic Hermite spline through monthly midpoints (PCHIP-derived slopes scaled by `alpha=1.2`, which relaxes PCHIP's monotonicity limiting). A one-shot additive correction is applied to each month so that smoothed daily averages exactly reproduce the original contract prices.
 
 ### 2. Price Tree (`build_tree`)
 
