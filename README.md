@@ -1,5 +1,7 @@
 # Gas Storage / Swing Option Pricing Model
 
+portfolio app https://storage-ksfhunyzfmkff3xptay3et.streamlit.app/
+
 A quantitative library for valuing natural gas storage and swing contracts on the TTF market. Built around a trinomial price tree with Ornstein-Uhlenbeck mean reversion and a dynamic programming solver over a joint (time × price × volume) state space. The inner DP loop is JIT-compiled and parallelised with Numba for performance.
 
 ---
