@@ -11,12 +11,16 @@ A quantitative library for valuing natural gas storage and swing contracts on th
 | `storage_model.py` | Core library — curve utilities, `Storage` class, valuation wrappers, and metric computation |
 | `storage_kernels.py` | Numba-compiled kernels (tree core, DP solver, probabilities). Kept separate so edits to `storage_model.py` do not invalidate the Numba disk cache (avoids 20-40s recompiles) |
 | `streamlit_app.py` | Interactive Streamlit UI for running valuations |
+| `portfolio_app.py` | Streamlit UI for the portfolio Mark-to-Market workflow (same logic as `portfolio.ipynb`: deal MtM table, monthly exposures, curve/window charts) |
 | `Swing_new.ipynb` | Driver notebook — loads curve & quotes, runs intrinsic/extrinsic valuations for 6 products, plots results |
 | `forward.ipynb` | Exploration notebook — forward curve work using `ttf q.xlsx` |
+| `portfolio.ipynb` | Portfolio Mark-to-Market — values the swing trades in `quotes_2.csv` against one smoothed daily curve and reports per-deal MtM and monthly forward exposures |
 | `pricing.ipynb` | Exploration notebook — pricing experiments |
 | `finding.md` | Write-up of the put-swing delta investigation (January step-down, December amplification) |
 | `curve.csv` | Monthly TTF forward curve (48 contracts) |
 | `quotes.csv` | Market bid/ask quotes for 6 swing products |
+| `quotes_2.csv` | Trade portfolio for `portfolio.ipynb` — 7 executed swing deals (product, window, daily volume, N_days, executed price, vol, MR, strike) |
+| `products.xlsx`, `ratchets.xlsx` | Product parameter workbook and ratchet (rate-multiplier vs fullness) profiles used by `forward.ipynb` |
 | `ttf q.xlsx` | Historical TTF quote data (used by `streamlit_app.py` and exploration notebooks) |
 | `quotes.xlsx`, `curve_work.xlsx` | Reference data, not read by code |
 | `requirements.txt` | Python dependencies |
@@ -179,6 +183,44 @@ print("Extrinsic    :", s_full.flat() - s_flat.flat(), "€/MWh")
    - Full valuation (`n_p = 30`) → extrinsic / optionality premium
 5. **Scatter plot** — intrinsic vs. extrinsic: model vs. market bid/ask
 6. **Line chart** — modelled swing premium vs. market bids/asks across all 6 products
+
+---
+
+## Portfolio Mark-to-Market Workflow (`portfolio.ipynb`)
+
+Values the executed swing deals in `quotes_2.csv` as of a single valuation date and reports per-deal MtM and monthly forward exposures.
+
+**Deal semantics** (forced full exercise — each deal must move `N_days × |daily volume|` MWh within its window; the optionality is *which* days):
+
+| Product | Obligation | Payoff per MWh | Model mapping |
+|---|---|---|---|
+| call swing | buy at strike on the best (highest-price) days | `price − strike` | withdraw machinery: starts full, ends empty, strike → `w_cost` |
+| put swing | sell at strike on the cheapest days | `strike − price` | inject machinery: starts empty, ends full, strike → `i_cost = −strike` |
+
+**Conventions:** `direction = sign(daily volume)` — a negative volume is a sold/short deal whose value, MtM and exposures flip sign. `premium = executed price × N_days × |daily volume|`; `MtM = direction × (model value − premium)`. Per-deal `vol` / `MR` columns feed `sVol` / `sMR`.
+
+**Cell flow:**
+
+1. **Inputs** — `VAL_DATE`, file names, `n_p_full`, `clips_per_day` (1 clip = one day's volume)
+2. **Daily curve** — nearest quote ≤ `VAL_DATE` with a full contract strip (rows before 2010-08-19 carry only 12 months) → stepped daily → DA-anchored → `smoothen_curve`. The xlsx parse is cached as parquet (rebuilt when the xlsx is newer)
+3. **Portfolio load** — cleans the dirty CSV (padded headers, `" 2,400 "`, `" -   "` = 0), validates window length, curve coverage and put stock, plots the curve with deal windows shaded
+4. **Valuation loop** — one `run_valuation` per deal on the shared daily curve (grid: `v_step = |daily volume|`, `n_states = N_days`)
+5. **MtM table** — premium, direction-adjusted value and MtM per deal plus portfolio total
+6. **Monthly exposures** — direction-adjusted daily deltas resampled to month sums (deals × months matrix + portfolio column), charted against the forward curve
+
+### `quotes_2.csv`
+
+| Column | Description |
+|---|---|
+| `Product` | `call swing` or `Put Swing` |
+| `market` | Market (TTF) |
+| `Start` / `End` | Exercise window (DD-MMM-YY) |
+| `current stock, days` | Initial stock in days of daily volume (puts must hold ≥ `N_days`) |
+| `daily volume, Mwh` | Volume moved per exercised day; **negative = sold/short deal** |
+| `N_days` | Number of days that must be exercised within the window |
+| `executed price, Eur/Mwh` | Premium paid per MWh of total obligation volume |
+| `vol` / `MR` | Per-deal spot volatility and mean-reversion speed |
+| `strike price, Eur/Mwh` | Strike at which gas is bought (call) / sold (put) |
 
 ---
 

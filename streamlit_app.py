@@ -115,7 +115,13 @@ with st.sidebar:
         vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
         n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
         run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
-        v_step = st.number_input("v_step", min_value=1, max_value=1_000_000, value=1000, step=100)
+        clips_per_day = st.number_input("clips_per_day", min_value=1, max_value=1000, value=3, step=1,
+                                        help="Daily granularity / max clips moved per active day. With daily_max set, clip size = daily_max / clips_per_day.")
+        daily_max = st.number_input("daily_max (MWh/day, 0 = use v_step)", min_value=0, max_value=10_000_000, value=0, step=100,
+                                    help="Max MWh injected/withdrawn per active day. If > 0, clip size v_step is derived as daily_max / clips_per_day.")
+        capacity_mwh = st.number_input("capacity_mwh (0 = use days/inj_days)", min_value=0, max_value=100_000_000, value=0, step=1000,
+                                       help="Total working volume in MWh. If > 0, the number of inventory states is capacity_mwh / clip size.")
+        v_step = st.number_input("v_step (used only when daily_max = 0)", min_value=1, max_value=1_000_000, value=1000, step=100)
 
         st.header("Storage inputs")
         inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1)
@@ -146,6 +152,9 @@ params = {
     "n_p_full": int(n_p_full),
     "run_intrinsic": bool(run_intrinsic),
     "v_step": int(v_step),
+    "clips_per_day": int(clips_per_day),
+    "daily_max": int(daily_max) if daily_max > 0 else None,
+    "capacity_mwh": int(capacity_mwh) if capacity_mwh > 0 else None,
     "inj_days": int(inj_days),
     "wdr_days": int(wdr_days),
     "inj_cost": float(inj_cost),

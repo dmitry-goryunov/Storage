@@ -80,15 +80,19 @@ class Storage:
     v_step  : volume per inventory state (MWh)
     sVol    : daily spot volatility (fraction)
     sMR     : mean-reversion speed
+    clips_per_day : max number of v_step clips injected/withdrawn per active day
+                    (the daily injection/withdrawal rate). Default 3.
     """
 
     def __init__(self, valDate, storageStart, storageEnd,
-                 curve, n_p=0, v_step=1000, sVol=0.9, sMR=1.0):
+                 curve=None, n_p=0, v_step=1000, sVol=0.9, sMR=1.0, clips_per_day=3,
+                 daily_curve=None):
         self.valDate      = pd.Timestamp(valDate)
         self.storageStart = pd.Timestamp(storageStart)
         self.storageEnd   = pd.Timestamp(storageEnd)
         self.v_step       = v_step
         self.n_p          = n_p
+        self.clips_per_day = clips_per_day
 
         # Date grid
         self.backStop  = (self.storageEnd + pd.DateOffset(months=1)).normalize() + pd.offsets.MonthEnd(0)
@@ -97,10 +101,18 @@ class Storage:
         self.date_span = pd.date_range(self.valDate, self.backStop, freq='D')
         self._active   = len(pd.date_range(self.valDate, self.storageEnd, freq='D'))
 
-        # Forward / price curve
-        self.price_curve = smoothen_curve(
-            map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
-        )
+        # Forward / price curve. A precomputed daily_curve (a date-indexed Series)
+        # is used verbatim — reindexed onto the date grid, edges filled — so the
+        # SAME daily curve can feed any deal regardless of its dates/product. With
+        # no daily_curve, the stepped contract curve is smoothed to daily here.
+        if daily_curve is not None:
+            self.price_curve = pd.Series(daily_curve).reindex(self.date_span).ffill().bfill()
+        else:
+            if curve is None:
+                raise ValueError("Storage requires either `curve` or `daily_curve`.")
+            self.price_curve = smoothen_curve(
+                map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
+            )
 
         # Price-tree vol / mean-reversion profiles
         self.sVol = [sVol] * self.n_t
@@ -109,10 +121,11 @@ class Storage:
         # Discount curve (flat 1)
         self.d_curve = np.ones(self.n_t)
 
-        # Exercise curves: no injection (swing = sell-only), withdraw during active window
+        # Exercise curves: no injection (swing = sell-only), withdraw during active
+        # window. The withdraw rate per active day is clips_per_day clips.
         n = len(self.date_span)
         self.i_curve = np.zeros(n)
-        self.w_curve = np.ones(n)
+        self.w_curve = np.full(n, float(self.clips_per_day))
         self.w_curve[self._active:] = 0.
         self.w_curve[:self.Dt]      = 0.
 
@@ -140,6 +153,14 @@ class Storage:
         """Change the starting inventory level and rebuild dependent arrays."""
         self.n_op_start = n_op_start
         self._init_volume_arrays()
+
+    def apply_ratchets(self, fullness, inj_mult, wdr_mult):
+        """Set per-inventory-level injection/withdrawal rate multipliers from a
+        ratchet table (fullness -> multiplier). The daily clip rate at level l
+        becomes clips_per_day * multiplier(l / (n_op-1)). Call AFTER
+        set_volume_states, which resets the ratchets to 1."""
+        self.i_ratch, self.w_ratch = ratchet_arrays(self.n_op, fullness, inj_mult, wdr_mult)
+        return self
 
     def build(self):
         """Build price tree, run DP model, compute probabilities and metrics.
@@ -277,6 +298,98 @@ def daily_arithmetic_flat_metric(model):
     return float(pd.Series(model.price_curve, index=model.date_span).loc[exercise_dates].mean())
 
 
+def resolve_grid(params, states_key):
+    """Map physical inputs to the model's (clip size, #states, clips/day).
+
+    Two ways to size the volume grid:
+
+    * Physical   — ``daily_max`` (MWh injected/withdrawn per active day) together
+      with ``clips_per_day`` fixes the clip size ``v_step = daily_max/clips_per_day``;
+      ``capacity_mwh`` then fixes the number of inventory states as
+      ``round(capacity_mwh / v_step)`` (total working volume stays put when the
+      clip is refined).
+    * Legacy     — fall back to ``params['v_step']`` and ``params[states_key]``
+      (clip count) when the physical inputs are absent.
+
+    Returns (v_step, n_states, clips_per_day).
+    """
+    cpd = int(params.get("clips_per_day", 3))
+
+    daily_max = params.get("daily_max")
+    v_step = float(daily_max) / cpd if daily_max is not None else float(params["v_step"])
+
+    capacity = params.get("capacity_mwh")
+    n_states = int(round(float(capacity) / v_step)) if capacity is not None else int(params[states_key])
+
+    return v_step, n_states, cpd
+
+
+def load_ratchets(source):
+    """Load a ratchet table with columns: fullness, injection, withdrawal.
+
+    ``fullness`` is fraction full in [0, 1] (percent values >1.5 are divided by
+    100); ``injection``/``withdrawal`` are rate multipliers applied to the base
+    daily clip rate at that inventory fullness. Returns sorted numpy arrays
+    (fullness, inj_mult, wdr_mult). ``source`` may be a path or a DataFrame.
+    """
+    df = source if isinstance(source, pd.DataFrame) else pd.read_excel(source)
+    df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
+    missing = {"fullness", "injection", "withdrawal"} - set(df.columns)
+    if missing:
+        raise ValueError(f"Ratchet table missing columns: {', '.join(sorted(missing))}")
+    df = df[["fullness", "injection", "withdrawal"]].dropna().sort_values("fullness")
+    f = df["fullness"].to_numpy(dtype=float)
+    if f.size and f.max() > 1.5:        # given in percent -> fraction
+        f = f / 100.0
+    return f, df["injection"].to_numpy(dtype=float), df["withdrawal"].to_numpy(dtype=float)
+
+
+def ratchet_arrays(n_op, fullness, inj_mult, wdr_mult):
+    """Interpolate a ratchet table onto the n_op inventory states.
+
+    Inventory state l has fullness l/(n_op-1); returns (i_ratch, w_ratch) of
+    length n_op (rate multipliers per state).
+    """
+    if n_op <= 1:
+        return np.ones(n_op), np.ones(n_op)
+    states_full = np.arange(n_op, dtype=float) / (n_op - 1)
+    i_ratch = np.interp(states_full, fullness, inj_mult)
+    w_ratch = np.interp(states_full, fullness, wdr_mult)
+    return i_ratch, w_ratch
+
+
+def apply_ratchets_from_params(model, params):
+    """Apply ratchets to a model if params['ratchets'] is set (path, DataFrame,
+    or a pre-loaded (fullness, inj, wdr) tuple). Call after set_volume_states."""
+    ratch = params.get("ratchets")
+    if ratch is None:
+        return
+    f, inj, wdr = ratch if isinstance(ratch, tuple) else load_ratchets(ratch)
+    model.apply_ratchets(f, inj, wdr)
+
+
+def assert_cycle_feasible(model, clips_needed, clips_per_day, what):
+    """Guard against an infeasible forced terminal inventory.
+
+    A put/call swing must move ``clips_needed`` clips (buy to full / sell to empty)
+    within the active window. If that exceeds ``active_days * clips_per_day`` the DP
+    cannot satisfy its terminal constraint and silently returns the -1e9 penalty,
+    surfacing as a wildly negative "intrinsic". Fail loudly instead.
+    """
+    _, active = active_masks(model)
+    active_days = int(active.sum())
+    max_clips = active_days * clips_per_day
+    if clips_needed > max_clips:
+        need_mwh = clips_needed * model.v_step
+        feasible_mwh = max_clips * model.v_step
+        raise ValueError(
+            f"{what}: needs to move {need_mwh:,.0f} MWh but the window allows at most "
+            f"{active_days} active days x {clips_per_day} clips/day = {max_clips} clips "
+            f"({feasible_mwh:,.0f} MWh). "
+            f"Lower capacity_mwh, extend the window, or raise daily_max/clips_per_day."
+        )
+
+
 def warm_numba_kernels():
     curve = pd.DataFrame({
         "contractStart": [pd.Timestamp("2026-01-01")],
@@ -298,16 +411,23 @@ def warm_numba_kernels():
 
 
 def value_put_swing(curve, params):
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    v_step, n_states, cpd = resolve_grid(params, "days")
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"))
     n, active = active_masks(s)
-    s.i_curve = active.copy()
+    s.i_curve = cpd * active
     s.w_curve = np.zeros(n)
+
+    strike = params.get("strike", 0.0)
+    if strike:
+        s.i_cost[s.Dt:s._active] = -strike   # per-clip inject profit = strike - price
 
     flat_metric = daily_arithmetic_flat_metric(s)
 
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
-    term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else params["days"]
-    s.set_volume_states(params["days"])
+    term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else n_states
+    s.set_volume_states(n_states)
+    apply_ratchets_from_params(s, params)
+    assert_cycle_feasible(s, abs(term_inv - init_inv), cpd, "Put swing")
     s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0
@@ -347,10 +467,11 @@ def value_put_swing(curve, params):
 
 
 def value_call_swing(curve, params):
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    v_step, n_states, cpd = resolve_grid(params, "days")
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"))
     flat_metric = daily_arithmetic_flat_metric(s)
 
-    init_inv     = params["initial_inv_clips"]  if params.get("initial_inv_clips")  is not None else params["days"]
+    init_inv     = params["initial_inv_clips"]  if params.get("initial_inv_clips")  is not None else n_states
     term_inv     = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
     strike       = params.get("strike", 0.0)
     zero_penalty = params.get("zero_penalty", False)
@@ -358,7 +479,10 @@ def value_call_swing(curve, params):
     if strike:
         s.w_cost[s.Dt:s._active] = strike
 
-    s.set_volume_states(params["days"])
+    s.set_volume_states(n_states)
+    apply_ratchets_from_params(s, params)
+    if not zero_penalty:
+        assert_cycle_feasible(s, abs(term_inv - init_inv), cpd, "Call swing")
     s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     if zero_penalty:
@@ -403,20 +527,22 @@ def value_call_swing(curve, params):
 
 
 def value_storage(curve, params):
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=params["v_step"], sVol=params["vol"])
+    v_step, n_states, cpd = resolve_grid(params, "inj_days")
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], clips_per_day=cpd)
     n, active = active_masks(s)
-    s.i_curve = active.copy()
-    s.w_curve = active.copy()
+    s.i_curve = cpd * active
+    s.w_curve = cpd * active
     s.i_cost[:] = params["inj_cost"]
     s.w_cost[:] = params["wdr_cost"]
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
-    s.set_volume_states(params["inj_days"])
+    s.set_volume_states(n_states)
+    apply_ratchets_from_params(s, params)
     s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0
 
-    max_vol = params["inj_days"] * s.v_step
+    max_vol = n_states * v_step
     if params["run_intrinsic"]:
         s.build()
         intrinsic_eur = s.v[0, 0, init_inv]
@@ -477,7 +603,7 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
     return fwd, x, q, p_u, p_m, p_d
 
 
-# ── Valuation helpers / metrics ───────────────────────────────────────────────
+# ── Valuation helpers ─────────────────────────────────────────────────────────
 
 def valuation(n_p, v, q, n_op_start):
     """Expected value at contract start, averaging over price states."""
@@ -488,15 +614,8 @@ def valuation(n_p, v, q, n_op_start):
 
 
 def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
-    l_arr  = np.arange(n_op, dtype=float)
-    w_step = (w_curve[:n_t, None] * w_ratch[None, :])[:, None, :]
-    i_step = (i_curve[:n_t, None] * i_ratch[None, :])[:, None, :]
-    l_bc   = l_arr[None, None, :]
-
-    wdr_amt = np.minimum(w_step, l_bc) * v_step
-    inj_amt = np.minimum(i_step, (n_op - 1) - l_bc) * v_step
-    action  = np.where(strat == -1, -wdr_amt,
-                       np.where(strat == 1, inj_amt, 0.0))
+    # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
+    action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
 
     pa     = prob * action
     exp_ex = list(-np.round(pa.sum(axis=(1, 2)), 3)) + [0.0]
@@ -505,3 +624,105 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w
     delta  = list(-np.round((pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t], 3)) + [0.0]
 
     return exp_ex, delta
+
+
+# ── Product parameter workbook ────────────────────────────────────────────────
+
+def list_products(path="products.xlsx"):
+    """Product names available in the workbook's 'products' sheet."""
+    df = pd.read_excel(path, sheet_name="products")
+    return df["product"].astype(str).tolist()
+
+
+def load_product_params(path="products.xlsx", product=None):
+    """Load one product's parameters from the workbook.
+
+    Workbook layout:
+      * sheet 'products' — one row per product. Columns: product, product_type,
+        FDDate, valDate, storageStart, storageEnd, vol, n_p_full, run_intrinsic,
+        capacity_mwh, initial_storage_mwh, terminal_storage_mwh, inj_days,
+        wdr_days, n_states, inj_cost, wdr_cost, ratchet_profile, notes.
+      * sheet 'ratchets' — named rate-multiplier profiles. Columns: profile,
+        fullness, injection, withdrawal. A blank ratchet_profile disables
+        ratchets for that product.
+
+    Returns a dict of typed primary inputs; 'ratchets' is None or a
+    (fullness, inj_mult, wdr_mult) tuple ready for apply_ratchets.
+    Derived grid quantities (clip size, rates) are intentionally NOT computed
+    here — that stays in the notebook so the derivation is visible.
+    """
+    df = pd.read_excel(path, sheet_name="products")
+    if "product" not in df.columns:
+        raise ValueError(f"{path}: 'products' sheet needs a 'product' column")
+    df["product"] = df["product"].astype(str)
+
+    if product is None:
+        if len(df) != 1:
+            raise ValueError(
+                f"{path} has {len(df)} products: {', '.join(df['product'])}. "
+                "Pass product=<name>.")
+        row = df.iloc[0]
+    else:
+        match = df.loc[df["product"] == str(product)]
+        if match.empty:
+            raise ValueError(
+                f"Product {product!r} not in {path}. "
+                f"Available: {', '.join(df['product'])}")
+        if len(match) > 1:
+            raise ValueError(f"Product {product!r} appears {len(match)} times in {path}")
+        row = match.iloc[0]
+
+    def _req(name):
+        if name not in row.index or pd.isna(row[name]):
+            raise ValueError(f"Product {row['product']!r}: missing required field {name!r}")
+        return row[name]
+
+    def _bool(x):
+        if isinstance(x, str):
+            return x.strip().lower() in ("true", "yes", "y", "1")
+        return bool(x)
+
+    ptype = str(_req("product_type")).strip()
+    if ptype not in ("put_swing", "call_swing", "storage"):
+        raise ValueError(f"product_type must be put_swing/call_swing/storage, got {ptype!r}")
+
+    params = {
+        "product":              str(row["product"]),
+        "product_type":         ptype,
+        "FDDate":               pd.Timestamp(_req("FDDate")),
+        "valDate":              pd.Timestamp(_req("valDate")),
+        "storageStart":         pd.Timestamp(_req("storageStart")),
+        "storageEnd":           pd.Timestamp(_req("storageEnd")),
+        "vol":                  float(_req("vol")),
+        "n_p_full":             int(_req("n_p_full")),
+        "run_intrinsic":        _bool(_req("run_intrinsic")),
+        "capacity_mwh":         float(_req("capacity_mwh")),
+        "initial_storage_mwh":  float(row["initial_storage_mwh"]) if pd.notna(row.get("initial_storage_mwh")) else 0.0,
+        "terminal_storage_mwh": float(row["terminal_storage_mwh"]) if pd.notna(row.get("terminal_storage_mwh")) else 0.0,
+        "inj_days":             int(_req("inj_days")),
+        "wdr_days":             int(_req("wdr_days")),
+        "n_states":             int(_req("n_states")),
+        "inj_cost":             float(_req("inj_cost")),
+        "wdr_cost":             float(_req("wdr_cost")),
+        "notes":                "" if pd.isna(row.get("notes")) else str(row.get("notes")),
+    }
+
+    if params["storageEnd"] < params["storageStart"]:
+        raise ValueError(f"Product {params['product']!r}: storageEnd before storageStart")
+
+    profile = row.get("ratchet_profile")
+    if pd.isna(profile) or str(profile).strip() == "":
+        params["ratchets"] = None
+        params["ratchet_profile"] = None
+    else:
+        profile = str(profile).strip()
+        rdf = pd.read_excel(path, sheet_name="ratchets")
+        rdf = rdf.rename(columns={c: str(c).strip().lower() for c in rdf.columns})
+        sub = rdf.loc[rdf["profile"].astype(str).str.strip() == profile]
+        if sub.empty:
+            avail = ", ".join(sorted(rdf["profile"].astype(str).str.strip().unique()))
+            raise ValueError(f"Ratchet profile {profile!r} not in {path} (available: {avail})")
+        params["ratchets"] = load_ratchets(sub[["fullness", "injection", "withdrawal"]])
+        params["ratchet_profile"] = profile
+
+    return params

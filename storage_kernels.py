@@ -82,11 +82,14 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
               d_curve, i_curve, w_curve, i_cost, w_cost,
               t_p_curve, i_ratch, w_ratch, mintunnel, max_tunnel):
     """
-    Backward induction: at each (time, price, volume) state choose the action
-    maximising expected discounted future value.
-    Volume dimension (l) is vectorised; price dimension (k) uses prange.
+    Backward induction. On each active day the controller may move ANY integer
+    number of clips between 0 and the daily rate (further capped by remaining
+    inventory / headroom and by the per-level ratchet), choosing the volume that
+    maximises expected discounted value. strat stores the SIGNED clip count
+    actually moved: negative = withdraw, positive = inject, 0 = idle.
+    Price dimension (k) uses prange; volume (l) and clip-count (d) are scalar
+    loops so the optimal partial-day volume can be searched per state.
     """
-    bigdummy = 1e10
     n_k_max  = 2*n_p + 1
 
     v     = np.zeros((n_t, n_k_max, n_op), dtype=np.float64)
@@ -99,28 +102,19 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
     l_arr = np.arange(n_op)
     l_f   = l_arr.astype(np.float64)
 
-    # Precompute per-timestep arrays for all i upfront — avoids n_t repeated allocations
-    all_wdr_steps   = np.empty((n_t, n_op), dtype=np.int64)
-    all_inj_steps   = np.empty((n_t, n_op), dtype=np.int64)
-    all_wdr_steps_f = np.empty((n_t, n_op), dtype=np.float64)
-    all_inj_steps_f = np.empty((n_t, n_op), dtype=np.float64)
-    all_wdr_valid   = np.empty((n_t, n_op), dtype=np.bool_)
-    all_inj_valid   = np.empty((n_t, n_op), dtype=np.bool_)
-    all_tunnel_pen  = np.empty((n_t, n_op), dtype=np.float64)
-    all_dc          = np.empty(n_t, dtype=np.float64)
+    # Per-timestep max clip counts (already capped at inventory / headroom by the
+    # min() below), tunnel penalty and discounted clip size. Precomputed once.
+    all_wdr_steps  = np.empty((n_t, n_op), dtype=np.int64)
+    all_inj_steps  = np.empty((n_t, n_op), dtype=np.int64)
+    all_tunnel_pen = np.empty((n_t, n_op), dtype=np.float64)
+    all_dc         = np.empty(n_t, dtype=np.float64)
 
     for i in range(n_t):
         wdr_raw = w_curve[i] * w_ratch
         inj_raw = i_curve[i] * i_ratch
-        ws  = np.minimum(wdr_raw, l_f).astype(np.int64)
-        is_ = np.minimum(inj_raw, (n_op - 1) - l_f).astype(np.int64)
-        all_wdr_steps[i]   = ws
-        all_inj_steps[i]   = is_
-        all_wdr_steps_f[i] = ws.astype(np.float64)
-        all_inj_steps_f[i] = is_.astype(np.float64)
-        all_wdr_valid[i]   = (wdr_raw > 0.0) & (l_arr > 0)
-        all_inj_valid[i]   = (inj_raw > 0.0) & (l_arr < n_op - 1)
-        all_tunnel_pen[i]  = 1000.0 * v_step * (
+        all_wdr_steps[i]  = np.minimum(wdr_raw, l_f).astype(np.int64)
+        all_inj_steps[i]  = np.minimum(inj_raw, (n_op - 1) - l_f).astype(np.int64)
+        all_tunnel_pen[i] = 1000.0 * v_step * (
             np.maximum(float(mintunnel[i]) - l_f, 0.0) +
             np.maximum(l_f - float(max_tunnel[i]), 0.0)
         )
@@ -130,20 +124,12 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
     exp_x = np.exp(x)
 
     for i in range(n_t-2, -1, -1):
-        wdr_steps  = all_wdr_steps[i]
-        inj_steps  = all_inj_steps[i]
-        wdr_valid  = all_wdr_valid[i]
-        inj_valid  = all_inj_valid[i]
+        wdr_max    = all_wdr_steps[i]
+        inj_max    = all_inj_steps[i]
         tunnel_pen = all_tunnel_pen[i]
         dc         = all_dc[i]
         w_cost_i   = w_cost[i]
         i_cost_i   = i_cost[i]
-
-        # Hoist k-independent expressions out of prange
-        gather_wdr = l_arr - wdr_steps          # same for every k
-        gather_inj = l_arr + inj_steps
-        wdr_base   = all_wdr_steps_f[i] * dc   # price-independent profit factor
-        inj_base   = all_inj_steps_f[i] * dc
 
         k_lo = max(n_p - i, 0)
         k_hi = min(n_p + i, 2*n_p) + 1
@@ -152,20 +138,42 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
             if k > 0:     v_next_l = v_next_l + p_d[i, k] * v[i+1, k-1]
             if k < 2*n_p: v_next_l = v_next_l + p_u[i, k] * v[i+1, k+1]
 
-            price_k    = exp_x[i, k]
-            ev_wdr     = v_next_l[gather_wdr]
-            ev_inj     = v_next_l[gather_inj]
-            wdr_profit = wdr_base * (price_k - w_cost_i)
-            inj_profit = inj_base * (-price_k - i_cost_i)
+            price_k = exp_x[i, k]
+            pcw = dc * (price_k - w_cost_i)    # per-clip withdraw (sell) profit
+            pci = dc * (-price_k - i_cost_i)   # per-clip inject (buy) profit
 
-            wdr_val = np.where(wdr_valid, ev_wdr + wdr_profit, -bigdummy)
-            inj_val = np.where(inj_valid, ev_inj + inj_profit, -bigdummy)
+            for l in range(n_op):
+                idle = v_next_l[l]
+                best = idle
+                step = 0
 
-            best     = np.maximum(np.maximum(inj_val, wdr_val), v_next_l)
-            is_no_ex = (best - v_next_l) < 1e-6
-            is_wdr   = ((best - v_next_l) >= 1e-6) & (best == wdr_val)
-            strat[i, k] = np.where(is_no_ex, 0.0, np.where(is_wdr, -1.0, 1.0))
-            v[i, k]     = best - tunnel_pen
+                # Withdraw d = 1..wdr_max[l] clips (all sold at today's price).
+                wmax = wdr_max[l]
+                d = 1
+                while d <= wmax:
+                    cand = v_next_l[l - d] + d * pcw
+                    if cand > best:
+                        best = cand
+                        step = -d
+                    d += 1
+
+                # Inject d = 1..inj_max[l] clips (all bought at today's price).
+                imax = inj_max[l]
+                d = 1
+                while d <= imax:
+                    cand = v_next_l[l + d] + d * pci
+                    if cand > best:
+                        best = cand
+                        step = d
+                    d += 1
+
+                # Snap to idle when the gain over doing nothing is negligible.
+                if step != 0 and (best - idle) < 1e-6:
+                    best = idle
+                    step = 0
+
+                v[i, k, l]     = best - tunnel_pen[l]
+                strat[i, k, l] = step
 
     return v, strat
 
@@ -190,12 +198,9 @@ def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
                 for m in prange(n_color):
                     j = j_lo + color + m * 3
                     for k in range(n_op):
-                        wdr_step = w_curve[i] * w_ratch[k]
-                        inj_step = i_curve[i] * i_ratch[k]
-                        dki = strat[i, j, k]
-                        if   dki == -1: dk = -int(round(min(wdr_step, k)))
-                        elif dki ==  1: dk =  int(round(min(inj_step, n_op - 1 - k)))
-                        else:           dk = 0
+                        # strat already holds the exact signed clip move for this
+                        # state (capped at inventory/headroom when it was chosen).
+                        dk = int(round(strat[i, j, k]))
                         for dj in range(-1, 2):
                             nj = j + dj
                             if 0 <= nj <= 2*n_p:
@@ -211,11 +216,7 @@ def get_exercise(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i
     result = 0.
     for j in range(2*n_p+1):
         for k in range(n_op):
-            wdr_step = w_curve[i] * w_ratch[k]
-            inj_step = i_curve[i] * i_ratch[k]
-            if   strat[i, j, k] == -1: action = -min(wdr_step, k) * v_step
-            elif strat[i, j, k] ==  1: action =  min(inj_step, n_op - 1 - k) * v_step
-            else:                       action = 0.
+            action = strat[i, j, k] * v_step   # signed clip count -> MWh
             result += action * prob[i, j, k]
     return -round(result, 3)
 
@@ -225,10 +226,6 @@ def get_delta(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_cu
     result = 0.
     for j in range(2*n_p+1):
         for k in range(n_op):
-            wdr_step = w_curve[i] * w_ratch[k]
-            inj_step = i_curve[i] * i_ratch[k]
-            if   strat[i, j, k] == -1: action = -min(wdr_step, k) * v_step
-            elif strat[i, j, k] ==  1: action =  min(inj_step, n_op - 1 - k) * v_step
-            else:                       action = 0.
+            action = strat[i, j, k] * v_step   # signed clip count -> MWh
             result += action * prob[i, j, k] * np.exp(x[i, j])
     return -round(result / fwd[i], 3)

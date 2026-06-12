@@ -1,0 +1,8 @@
+Product,market,Start,End,"current stock, days","daily volume, Mwh", N_days ,"executed price, Eur/Mwh",vol,MR,"strike price, Eur/Mwh"
+call swing,TTF,01-Jan-11,31-Dec-11, -   ," 2,400 ",120,1.45,0.3,1,20
+call swing,TTF,01-Oct-11,30-Sep-12, -   ," 2,400 ",180,0.4,0.3,1,20
+call swing,TTF,01-Jan-11,30-Jun-11, -   ," 2,400 ",90,0.4,0.3,1,20
+call swing,TTF,01-Apr-11,30-Sep-11, -   ," 2,400 ",90,0.73,0.3,1,20
+call swing,TTF,01-Apr-11,31-Oct-11, -   ," 2,400 ",90,0.9,0.3,1,20
+call swing,TTF,01-Oct-12,30-Sep-13, -   ,"-1,200 ",180,0.6,0.3,1,20
+Put Swing,TTF,01-Apr-11,31-Oct-11, 90 ," 2,400 ",90,0.9,0.3,1,20
