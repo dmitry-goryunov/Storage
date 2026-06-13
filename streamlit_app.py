@@ -111,9 +111,14 @@ with st.sidebar:
         storageStart = pd.Timestamp(st.date_input("storageStart", pd.Timestamp("2026-04-01")))
         storageEnd = pd.Timestamp(st.date_input("storageEnd", pd.Timestamp("2027-03-30")))
 
-        days = st.number_input("days", min_value=1, max_value=3660, value=30, step=1)
-        vol = st.number_input("vol", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f")
-        n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=10, step=1)
+        days = st.number_input("Inventory states (clip count)", min_value=1, max_value=3660, value=30, step=1,
+                               help="Number of discrete inventory levels in the DP grid (working volume / clip size). Used only when daily_max = 0 and capacity_mwh = 0.")
+        vol = st.number_input("vol (annualised)", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f",
+                              help="Annualised spot volatility (fraction). 0.60 = 60%/yr. Drives extrinsic value.")
+        sMR = st.number_input("sMR (mean-reversion speed)", min_value=0.0, max_value=10.0, value=1.0, step=0.1,
+                              help="Ornstein-Uhlenbeck mean-reversion speed. Higher = price pulled back to the forward curve faster, lowering optionality / extrinsic value.")
+        n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=30, step=1,
+                                   help="Price-tree half-width (tree has 2*n_p_full+1 price states). ~30 is converged; higher is slower with no gain.")
         run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
         clips_per_day = st.number_input("clips_per_day", min_value=1, max_value=1000, value=3, step=1,
                                         help="Daily granularity / max clips moved per active day. With daily_max set, clip size = daily_max / clips_per_day.")
@@ -124,10 +129,12 @@ with st.sidebar:
         v_step = st.number_input("v_step (used only when daily_max = 0)", min_value=1, max_value=1_000_000, value=1000, step=100)
 
         st.header("Storage inputs")
-        inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1)
-        wdr_days = st.number_input("wdr_days", min_value=1, max_value=3660, value=30, step=1)
-        inj_cost = st.number_input("inj_cost", value=0.5, step=0.1, format="%.2f")
-        wdr_cost = st.number_input("wdr_cost", value=0.5, step=0.1, format="%.2f")
+        st.caption("Injection and withdrawal share one daily rate (set by clips_per_day). "
+                   "Asymmetric inj/withdraw rates are not yet supported here — use forward.ipynb for those.")
+        inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1,
+                                   help="Legacy inventory-state count for the storage product when capacity_mwh = 0. Does not set an asymmetric rate.")
+        inj_cost = st.number_input("inj_cost (EUR/MWh)", value=0.5, step=0.1, format="%.2f")
+        wdr_cost = st.number_input("wdr_cost (EUR/MWh)", value=0.5, step=0.1, format="%.2f")
 
         st.header("Forward curve")
         use_direct_curve = st.toggle("Use direct curve", value=True)
@@ -149,6 +156,7 @@ params = {
     "storageEnd": storageEnd,
     "days": int(days),
     "vol": float(vol),
+    "sMR": float(sMR),
     "n_p_full": int(n_p_full),
     "run_intrinsic": bool(run_intrinsic),
     "v_step": int(v_step),
@@ -156,7 +164,6 @@ params = {
     "daily_max": int(daily_max) if daily_max > 0 else None,
     "capacity_mwh": int(capacity_mwh) if capacity_mwh > 0 else None,
     "inj_days": int(inj_days),
-    "wdr_days": int(wdr_days),
     "inj_cost": float(inj_cost),
     "wdr_cost": float(wdr_cost),
 }

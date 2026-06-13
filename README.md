@@ -51,16 +51,16 @@ Returns `fwd`, `x` (log-price deviations), `q` (state probabilities), and `p_u /
 
 Backward induction from `n_t − 1` to `0` over the full `(time, price, volume)` state space:
 
-- At each node, tests three actions — **inject (+1)**, **hold (0)**, **withdraw (−1)** — subject to:
+- At each node, evaluates **every integer clip count from −`clips_per_day` to +`clips_per_day`** (negative = withdraw, positive = inject, 0 = hold) — subject to:
   - Daily ratchet limits (`i_ratch`, `w_ratch`) by volume state
   - Exercise permission masks (`i_curve`, `w_curve`)
   - Per-unit transaction costs (`i_cost`, `w_cost`)
   - Inventory floor/ceiling tunnels (`mintunnel`, `max_tunnel`)
-- Selects the action maximising expected discounted continuation value
-- The volume dimension is vectorised; the price dimension is parallelised via `prange`
-- Infeasible transitions are penalised with a large dummy value (`1e10`)
+- Selects the clip count maximising expected discounted continuation value
+- The price dimension (`k`) is parallelised via `prange`; the volume (`l`) and clip-count (`d`) loops are scalar
+- Infeasible terminal inventories are penalised with a large negative value (`−1e9`)
 
-Returns `v` (optimal values) and `strat` (action indicator) over the full state grid.
+Returns `v` (optimal values) and `strat` (**signed clip count moved** per state) over the full grid.
 
 ### 4. Post-Processing
 
@@ -74,9 +74,9 @@ Returns `v` (optimal values) and `strat` (action indicator) over the full state 
 
 | Component | How computed |
 |---|---|
-| **Flat price** | `n_p = 0` (single price path) → zero-optionality baseline |
-| **Intrinsic value** | Profiled price minus flat price; reflects seasonal spread from starting fully loaded |
-| **Extrinsic value** | Full model (`n_p = 30`) minus intrinsic; reflects price uncertainty / optionality |
+| **Flat price** | Unweighted average forward price over the exercise window — the zero-optionality baseline |
+| **Intrinsic value** | Profiled price (best deterministic schedule, `n_p = 0`) minus flat price; the seasonal spread |
+| **Extrinsic value** | Full-model profiled (`n_p = 30`) minus intrinsic profiled; the price-optionality premium |
 
 ---
 
@@ -90,10 +90,12 @@ Storage(
     storageStart,   # str or date — first day storage can operate
     storageEnd,     # str or date — last day storage can operate
     curve,          # pd.DataFrame with columns: contractStart, contractEnd, value
-    n_p   = 0,      # int   — price tree half-width (0 = single path)
-    v_step= 1000,   # float — MWh per inventory state
-    sVol  = 0.6,    # float — daily spot volatility (60 %)
-    sMR   = 1.0,    # float — mean-reversion speed (Ornstein-Uhlenbeck)
+    n_p          = 0,    # int   — price tree half-width (0 = single path, no optionality)
+    v_step       = 1000, # float — MWh per inventory state (clip size)
+    sVol         = 0.9,  # float — annualised spot volatility (default 90 %)
+    sMR          = 1.0,  # float — mean-reversion speed (Ornstein-Uhlenbeck)
+    clips_per_day= 3,    # int   — max clips injected/withdrawn per active day (daily rate)
+    daily_curve  = None, # pd.Series — precomputed daily curve used verbatim instead of `curve`
 )
 ```
 
@@ -101,10 +103,10 @@ Storage(
 
 | Method | Returns | Description |
 |---|---|---|
-| `build()` | `None` | Runs full valuation pipeline; populates all result attributes |
-| `flat()` | `float` | Flat price per MWh (zero-optionality, `n_p = 0`) |
-| `profiled()` | `float` | Profiled price per MWh (starting fully loaded) |
-| `set_volume_states(n_op_start)` | `None` | Override starting inventory state and rebuild arrays |
+| `build()` | `self` | Runs the full valuation pipeline and populates all result attributes (returns `self`, so calls can be chained) |
+| `flat()` | `float` | Unweighted average forward price over the exercise window (zero-optionality baseline) |
+| `profiled()` | `float` | Volume-weighted achieved price per MWh under the optimal strategy (valid for any `n_p`) |
+| `set_volume_states(n_op_start)` | `None` | Set the inventory **grid size** (number of states) and rebuild dependent arrays |
 
 #### Result attributes (available after `build()`)
 
@@ -113,7 +115,7 @@ Storage(
 | `fwd` | `(n_t,)` | Daily forward prices |
 | `x` | `(n_t, 2·n_p+1)` | Log-price deviations from forward |
 | `v` | `(n_t, 2·n_p+1, n_op)` | Optimal contract value at each state |
-| `strat` | `(n_t, 2·n_p+1, n_op)` | Optimal action: `+1` inject, `0` hold, `−1` withdraw |
+| `strat` | `(n_t, 2·n_p+1, n_op)` | Signed clip count moved: negative = withdraw, positive = inject, 0 = hold (magnitude up to `clips_per_day`) |
 | `prob` | `(n_t, 2·n_p+1, n_op)` | Joint state probabilities under optimal strategy |
 | `exp_ex` | `list[float]` (n_t+1) | Expected daily exercise volume (MWh) |
 | `delta` | `list[float]` (n_t+1) | Delta hedge ratios (volume-weighted, price-normalised) |
@@ -133,6 +135,7 @@ Storage(
 ## Usage Example
 
 ```python
+import numpy as np
 import pandas as pd
 from storage_model import Storage
 
@@ -141,23 +144,24 @@ curve = pd.read_csv("curve.csv")
 curve['contractStart'] = pd.to_datetime(curve['contractStart'], format='mixed')
 curve['contractEnd']   = pd.to_datetime(curve['contractEnd'],   format='mixed')
 
-# --- Flat / intrinsic valuation (single price path) ---
+# --- Intrinsic valuation (single price path, n_p = 0) ---
 s_flat = Storage(
     valDate      = "2026-01-01",
     storageStart = "2026-04-01",
     storageEnd   = "2026-09-30",
     curve        = curve,
-    n_p          = 0,       # single path — no optionality
+    n_p          = 0,       # single path — no price optionality
     v_step       = 1000,
-    sVol         = 0.6,
+    sVol         = 0.6,     # annualised spot volatility (60 %)
     sMR          = 1.0,
 )
 s_flat.build()
-print("Flat price   :", s_flat.flat(),     "€/MWh")
-print("Profiled     :", s_flat.profiled(), "€/MWh")
-print("Intrinsic    :", s_flat.profiled() - s_flat.flat(), "€/MWh")
+flat = s_flat.flat()                       # average forward price over the window (baseline)
+print("Flat price :", flat,                     "€/MWh")
+print("Profiled   :", s_flat.profiled(),        "€/MWh")
+print("Intrinsic  :", s_flat.profiled() - flat, "€/MWh")
 
-# --- Full extrinsic valuation (trinomial tree) ---
+# --- Full valuation (trinomial tree, n_p = 30) ---
 s_full = Storage(
     valDate      = "2026-01-01",
     storageStart = "2026-04-01",
@@ -165,12 +169,43 @@ s_full = Storage(
     curve        = curve,
     n_p          = 30,      # 61-node price tree
     v_step       = 1000,
-    sVol         = 0.6,
+    sVol         = 0.6,     # annualised spot volatility (60 %)
     sMR          = 1.0,
 )
 s_full.build()
-print("Extrinsic    :", s_full.flat() - s_flat.flat(), "€/MWh")
+# Extrinsic = optionality premium. Both EUR values are divided by the SAME
+# (intrinsic) acquired volume — the run_valuation convention — so it is >= 0.
+# (Don't subtract two profiled() calls: their delta denominators differ between
+# the n_p=0 and n_p=30 builds, which can make the difference go negative.)
+acq           = np.sum(s_flat.delta)
+intrinsic_eur = s_flat.v[0, 0, s_flat.n_op_start]
+full_eur      = s_full.v[0, s_full.n_p, s_full.n_op_start]
+extrinsic     = (full_eur - intrinsic_eur) / acq
+print("Extrinsic  :", extrinsic,                             "€/MWh")
+print("Total      :", s_flat.profiled() - flat + extrinsic,  "€/MWh")
 ```
+
+### Valuing a product from `products.xlsx`
+
+`load_product_params()` returns the *primary* inputs only — it deliberately
+leaves the grid derivation (clip size, daily rate, inventory clips) out so it
+stays visible. Passing its dict straight to `run_valuation()` therefore raises
+`KeyError: 'v_step'`. Bridge the two with `params_for_run_valuation()`:
+
+```python
+from storage_model import (
+    load_product_params, params_for_run_valuation, run_valuation,
+    curve_df_for_storage, quote_row_for_fd_date,
+)
+
+prm    = load_product_params("products.xlsx", product="call_swing_2010")
+params = params_for_run_valuation(prm)          # adds v_step, clips_per_day, inv clips
+s, result = run_valuation(curve, params)
+print(result["total"])
+```
+
+> Uses the symmetric library grid (one daily rate for inject and withdraw).
+> Asymmetric rates (`inj_days != wdr_days`) require `forward.ipynb`.
 
 ---
 

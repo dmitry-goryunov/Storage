@@ -78,7 +78,8 @@ class Storage:
     ----------
     valDate, storageStart, storageEnd : date-like
     v_step  : volume per inventory state (MWh)
-    sVol    : daily spot volatility (fraction)
+    sVol    : annualised spot volatility (fraction); the tree uses
+              dx = sVol * sqrt(3*dt) with dt = 1/365.25
     sMR     : mean-reversion speed
     clips_per_day : max number of v_step clips injected/withdrawn per active day
                     (the daily injection/withdrawal rate). Default 3.
@@ -188,11 +189,17 @@ class Storage:
         return self
 
     def flat(self):
-        return self.v[0, 0, self.n_op_start] / np.sum(self.delta)
+        """Unweighted average forward price over the exercise window — the
+        zero-optionality baseline. Independent of n_p and the optimisation."""
+        exercise_dates = self.date_span[self.Dt:self._active]
+        return float(pd.Series(self.price_curve, index=self.date_span).loc[exercise_dates].mean())
 
     def profiled(self):
+        """Volume-weighted achieved price per MWh under the optimal strategy.
+        Reads the central forward node v[0, n_p, .], so it is correct for both
+        the intrinsic (n_p=0) and the full (n_p>0) build."""
         ACQ = np.sum(self.delta)
-        return self.v[0, 0, self.n_op_start] / ACQ
+        return self.v[0, self.n_p, self.n_op_start] / ACQ
 
 
 def month_start(ts):
@@ -528,7 +535,7 @@ def value_call_swing(curve, params):
 
 def value_storage(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "inj_days")
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], clips_per_day=cpd)
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd)
     n, active = active_masks(s)
     s.i_curve = cpd * active
     s.w_curve = cpd * active
@@ -726,3 +733,41 @@ def load_product_params(path="products.xlsx", product=None):
         params["ratchet_profile"] = profile
 
     return params
+
+
+def params_for_run_valuation(prm):
+    """Augment a ``load_product_params()`` dict with the derived grid fields that
+    ``run_valuation()`` / ``value_*`` need, so the two documented entry points can
+    be chained directly:
+
+        params = params_for_run_valuation(load_product_params("products.xlsx", name))
+        s, result = run_valuation(curve, params)
+
+    Without this step ``run_valuation`` raises ``KeyError: 'v_step'`` because
+    ``load_product_params`` deliberately leaves the grid derivation out (it stays
+    visible in the notebook). The clip size is ``v_step = capacity_mwh / n_states``
+    and the daily rate is the base inject rate ``round(n_states / inj_days)``.
+
+    NOTE: this uses the SYMMETRIC library grid — a single daily clip rate shared
+    by injection and withdrawal. Asymmetric rates (``inj_days != wdr_days``) are
+    not supported by ``value_storage`` yet; use ``forward.ipynb`` for those.
+    """
+    p = dict(prm)
+    n_states = int(p["n_states"])
+    capacity = float(p["capacity_mwh"])
+    v_step = capacity / n_states
+    p["v_step"] = v_step
+    p["daily_max"] = None                       # resolve_grid then uses v_step + capacity_mwh
+    p["clips_per_day"] = max(1, int(round(n_states / int(p["inj_days"]))))
+    # Initial/terminal inventory map from the storage_mwh fields ONLY for the
+    # storage product. For put/call swing the forced-cycle start and end states
+    # are fixed by the product (a call swing starts full, a put swing ends full),
+    # so leave them unset and let value_call_swing / value_put_swing apply their
+    # own defaults — forcing initial_inv_clips=0 on a call swing would start it
+    # empty, leaving nothing to sell and yielding 0/0 = NaN.
+    if p.get("product_type") == "storage":
+        if p.get("initial_inv_clips") is None:
+            p["initial_inv_clips"] = int(round(float(p.get("initial_storage_mwh", 0.0)) / v_step))
+        if p.get("terminal_inv_clips") is None:
+            p["terminal_inv_clips"] = int(round(float(p.get("terminal_storage_mwh", 0.0)) / v_step))
+    return p
