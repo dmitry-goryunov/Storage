@@ -6,26 +6,69 @@ A quantitative library for valuing natural gas storage and swing contracts on th
 
 ---
 
+## Quick Start
+
+Tested on **Python 3.12** (Numba is sensitive to the interpreter version; 3.9–3.12 supported).
+
+```bash
+# 1. Create a fresh environment (do NOT reuse the .venv shipped in this repo —
+#    it is incomplete and will fail with "No module named 'pandas'").
+python -m venv .venv-new
+.venv-new\Scripts\activate          # Windows;  source .venv-new/bin/activate on macOS/Linux
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Launch an interactive valuation app
+streamlit run portfolio_app.py      # portfolio Mark-to-Market of the deals in quotes_2.csv
+# or
+streamlit run streamlit_app.py      # value a single swing / storage deal
+```
+
+> **First run compiles the Numba kernels (~20–40 s).** This happens once; the
+> compiled kernels are cached to disk, so later runs start in a second or two.
+> The Streamlit apps show a "Preparing Numba kernels…" spinner while this runs.
+
+Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) below.
+
+---
+
 ## Repository Structure
 
 | File | Description |
 |---|---|
 | `storage_model.py` | Core library — curve utilities, `Storage` class, valuation wrappers, and metric computation |
 | `storage_kernels.py` | Numba-compiled kernels (tree core, DP solver, probabilities). Kept separate so edits to `storage_model.py` do not invalidate the Numba disk cache (avoids 20-40s recompiles) |
-| `streamlit_app.py` | Interactive Streamlit UI for running valuations |
-| `portfolio_app.py` | Streamlit UI for the portfolio Mark-to-Market workflow (same logic as `portfolio.ipynb`: deal MtM table, monthly exposures, curve/window charts) |
-| `Swing_new.ipynb` | Driver notebook — loads curve & quotes, runs intrinsic/extrinsic valuations for 6 products, plots results |
-| `forward.ipynb` | Exploration notebook — forward curve work using `ttf q.xlsx` |
-| `portfolio.ipynb` | Portfolio Mark-to-Market — values the swing trades in `quotes_2.csv` against one smoothed daily curve and reports per-deal MtM and monthly forward exposures |
-| `pricing.ipynb` | Exploration notebook — pricing experiments |
-| `finding.md` | Write-up of the put-swing delta investigation (January step-down, December amplification) |
+| `streamlit_app.py` | Streamlit app — value a single swing/storage deal interactively |
+| `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |
+| `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal; the most feature-complete path (per-deal `sMR`, deal-independent daily curve, asymmetric inject/withdraw rates) |
+| `portfolio.ipynb` | Portfolio Mark-to-Market notebook — the scriptable version of `portfolio_app.py` |
+| `Swing_new.ipynb` | *Legacy* driver — original 6-product intrinsic/extrinsic loop over `curve.csv` + `quotes.csv` |
+| `pricing.ipynb` | *Legacy* `run_valuation` driver (no `sMR` / deal-independent-curve support) |
+| `finding.md` | Developer research note — the put-swing delta investigation (January step-down, December amplification); not required reading |
 | `curve.csv` | Monthly TTF forward curve (48 contracts) |
 | `quotes.csv` | Market bid/ask quotes for 6 swing products |
 | `quotes_2.csv` | Trade portfolio for `portfolio.ipynb` — 7 executed swing deals (product, window, daily volume, N_days, executed price, vol, MR, strike) |
-| `products.xlsx`, `ratchets.xlsx` | Product parameter workbook and ratchet (rate-multiplier vs fullness) profiles used by `forward.ipynb` |
-| `ttf q.xlsx` | Historical TTF quote data (used by `streamlit_app.py` and exploration notebooks) |
+| `products.xlsx`, `ratchets.xlsx` | Product parameter workbook and ratchet (rate-multiplier vs fullness) profiles |
+| `products_cell_snippet.py` | Optional snippet to drive `forward.ipynb` from `products.xlsx` instead of its hard-coded inputs cell |
+| `ttf q.xlsx` | Historical TTF quote matrix (used by `streamlit_app.py`, `portfolio_app.py`, `forward.ipynb`, `portfolio.ipynb`) |
 | `quotes.xlsx`, `curve_work.xlsx` | Reference data, not read by code |
 | `requirements.txt` | Python dependencies |
+
+---
+
+## Which tool should I use?
+
+| I want to… | Use | Notes |
+|---|---|---|
+| Value a single swing/storage deal, no coding | `streamlit run streamlit_app.py` | Sidebar inputs → MtM + exercise/delta charts |
+| Mark a whole portfolio of trades to market | `streamlit run portfolio_app.py` | Reads `quotes_2.csv` → per-deal MtM + monthly exposures |
+| Do the same portfolio work in editable code | `portfolio.ipynb` | The notebook `portfolio_app.py` is built from |
+| Build/inspect a daily forward curve, or value storage with **asymmetric** inject/withdraw rates | `forward.ipynb` | The most feature-complete notebook |
+| Call the model from your own Python | `import storage_model` | Start with `run_valuation()` or the `Storage` class — see [API Reference](#api-reference) |
+| Value products defined in a workbook | `products.xlsx` → `load_product_params()` → `params_for_run_valuation()` → `run_valuation()` | See [Valuing a product from `products.xlsx`](#valuing-a-product-from-productsxlsx) |
+
+**Legacy notebooks** (kept for reference, not the recommended path): `Swing_new.ipynb` (the original 6-product driver over `curve.csv` + `quotes.csv`) and `pricing.ipynb` (an earlier `run_valuation` driver without `sMR` or the deal-independent daily curve).
 
 ---
 
@@ -299,19 +342,15 @@ Values the executed swing deals in `quotes_2.csv` as of a single valuation date 
 
 ## Dependencies
 
-```
-numpy
-numba
-scipy
-pandas
-matplotlib
-```
+All dependencies are pinned in [`requirements.txt`](requirements.txt) — `numpy`, `numba`,
+`scipy`, `pandas`, `matplotlib` (library + notebooks) plus `streamlit`, `openpyxl`,
+`pyarrow` (the apps and the Excel/parquet data paths):
 
 ```bash
-pip install numpy numba scipy pandas matplotlib
+pip install -r requirements.txt
 ```
 
-> **Note:** Numba JIT-compiles the core DP solver (`run_model`) and probability simulation (`probabilities`) with `nopython=True, parallel=True`. First run will trigger compilation (~10–30 s); subsequent calls are fast.
+> **Note:** Numba JIT-compiles the core DP solver (`run_model`) and probability simulation (`probabilities`) with `nopython=True, parallel=True`. The first run triggers compilation (~20–40 s); the result is cached to disk, so subsequent runs start fast.
 
 ---
 

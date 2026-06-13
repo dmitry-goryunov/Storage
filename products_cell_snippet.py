@@ -1,6 +1,13 @@
-# ── Paste this over the hard-coded parameter block at the top of the
-# ── valuation cell in forward.ipynb (everything down to and including the
-# ── "ratchets = ..." line). The Grid print and the rest of the cell stay.
+# Optional: drive forward.ipynb from products.xlsx instead of its hard-coded
+# "Inputs" cell. Paste this in place of the Inputs cell — it sets the same
+# product_type / dates / vol / grid variables, loaded from the named product row,
+# so the valuation cell below it runs unchanged.
+#
+# To call the model directly from your own code, prefer the cleaner library helper
+# (no notebook needed):
+#     from storage_model import load_product_params, params_for_run_valuation, run_valuation
+#     params = params_for_run_valuation(load_product_params("products.xlsx", PRODUCT))
+#     s, result = run_valuation(curve, params)
 
 PRODUCT = "call_swing_2010"        # row name in products.xlsx, sheet "products"
 
