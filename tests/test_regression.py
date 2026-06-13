@@ -131,6 +131,25 @@ def test_np0_call_swing_equals_greedy():
     assert abs(model_eur - greedy_eur) < 1.0, (model_eur, greedy_eur)
 
 
+def test_storage_asymmetric_rates():
+    """value_storage honours separate inj_rate/wdr_rate; symmetric default is
+    unchanged when they are absent."""
+    days = pd.date_range("2026-04-01", "2027-03-31", freq="D")
+    daily = pd.Series(22 + 6 * np.sin(np.arange(len(days)) / 30.0), index=days)
+    base = {
+        "product_type": "storage", "valDate": "2026-03-15",
+        "storageStart": "2026-04-01", "storageEnd": "2027-03-30",
+        "vol": 0.2, "sMR": 1.0, "n_p_full": 0, "run_intrinsic": False,
+        "daily_max": 3000.0, "clips_per_day": 3, "capacity_mwh": 90000.0,
+        "inj_cost": 0.5, "wdr_cost": 0.5, "daily_curve": daily,
+    }
+    _, sym = sm.run_valuation(None, dict(base))
+    _, asym = sm.run_valuation(None, dict(base, inj_rate=3, wdr_rate=2))
+    assert np.isfinite(sym["total"]) and np.isfinite(asym["total"])
+    # A tighter withdraw rate constrains the schedule -> generally a different value.
+    assert sym["total"] != asym["total"]
+
+
 # ── data-dependent tests (skip if files absent) ────────────────────────────────
 
 def _have(*names):

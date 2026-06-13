@@ -579,10 +579,16 @@ def value_call_swing(curve, params):
 
 def value_storage(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "inj_days")
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd)
+    # Optional asymmetric daily clip rates (clips/day): set params["inj_rate"] /
+    # params["wdr_rate"] for "30 in, 45 out" style storage. Both default to the
+    # symmetric resolve_grid rate `cpd`, preserving prior behaviour.
+    inj_rate = int(params["inj_rate"]) if params.get("inj_rate") is not None else cpd
+    wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
+    clips_per_day = max(inj_rate, wdr_rate)
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day)
     n, active = active_masks(s)
-    s.i_curve = cpd * active
-    s.w_curve = cpd * active
+    s.i_curve = inj_rate * active
+    s.w_curve = wdr_rate * active
     s.i_cost[:] = params["inj_cost"]
     s.w_cost[:] = params["wdr_cost"]
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
@@ -828,12 +834,15 @@ def params_for_run_valuation(prm):
     p["daily_max"] = None                       # resolve_grid then uses v_step + capacity_mwh
     p["clips_per_day"] = max(1, int(round(n_states / int(p["inj_days"]))))
     # Initial/terminal inventory map from the storage_mwh fields ONLY for the
-    # storage product. For put/call swing the forced-cycle start and end states
-    # are fixed by the product (a call swing starts full, a put swing ends full),
-    # so leave them unset and let value_call_swing / value_put_swing apply their
-    # own defaults — forcing initial_inv_clips=0 on a call swing would start it
-    # empty, leaving nothing to sell and yielding 0/0 = NaN.
+    # storage product, which also gets asymmetric inject/withdraw rates derived
+    # from inj_days/wdr_days. For put/call swing the forced-cycle start and end
+    # states are fixed by the product (a call swing starts full, a put swing ends
+    # full), so leave them unset and let value_call_swing / value_put_swing apply
+    # their own defaults — forcing initial_inv_clips=0 on a call swing would start
+    # it empty, leaving nothing to sell and yielding 0/0 = NaN.
     if p.get("product_type") == "storage":
+        p["inj_rate"] = max(1, int(round(n_states / int(p["inj_days"]))))
+        p["wdr_rate"] = max(1, int(round(n_states / int(p["wdr_days"]))))
         if p.get("initial_inv_clips") is None:
             p["initial_inv_clips"] = int(round(float(p.get("initial_storage_mwh", 0.0)) / v_step))
         if p.get("terminal_inv_clips") is None:
