@@ -1,3 +1,32 @@
+"""Gas storage / swing valuation: forward-curve utilities, the `Storage` class,
+and product valuation wrappers over a trinomial price tree + dynamic program.
+
+Symbol glossary (used throughout this module and the kernels)
+------------------------------------------------------------
+    n_t        number of daily time steps (valDate .. backStop)
+    n_p        price-tree half-width; the tree has 2*n_p+1 price states
+               (n_p = 0 means a single price path = no optionality)
+    n_op       number of inventory states (clip levels), = grid size + 1
+    n_op_start dual role: the inventory GRID SIZE when passed to
+               set_volume_states(); the INITIAL inventory state when read by
+               build()/probabilities() (the value_* wrappers set it explicitly)
+    Dt         offset (days) from valDate to storageStart (first active day)
+    v_step     MWh per inventory state (the "clip" size)
+    clips_per_day  max clips injected/withdrawn per active day (the daily rate)
+    x          log-price deviation from the forward at each (time, price) node
+    strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
+    exp_ex     expected daily exercise volume (MWh), length n_t+1
+    delta      daily forward-equivalent delta (MWh), length n_t+1
+    t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
+    i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
+    i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
+    i_ratch/w_ratch   per-inventory-level rate multipliers (ratchets)
+    mintunnel/max_tunnel  per-day inventory floor/ceiling
+
+Kernel penalty constants (storage_kernels.py): a forbidden terminal inventory
+carries -1e9; violating a tunnel costs 1000*v_step per clip out of bounds; an
+exercise whose gain over idling is < 1e-6 is snapped to idle (treated as no-trade).
+"""
 import numpy as np
 from math import sqrt
 import re
@@ -115,6 +144,17 @@ class Storage:
                 map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
             )
 
+        # Fail loudly on curve gaps. Otherwise NaNs propagate silently through the
+        # tree and the valuation returns garbage with no error (a real foot-gun on
+        # the contract-curve path, where days outside any contract stay NaN).
+        if self.price_curve.isna().any():
+            n_missing = int(self.price_curve.isna().sum())
+            raise ValueError(
+                f"Price curve has {n_missing} missing day(s) over the valuation grid "
+                f"{self.date_span[0]:%Y-%m-%d}..{self.date_span[-1]:%Y-%m-%d}: the supplied "
+                f"curve/daily_curve does not cover the full storage period (including the "
+                f"month-end backstop at {self.backStop:%Y-%m-%d}). Extend the curve.")
+
         # Price-tree vol / mean-reversion profiles
         self.sVol = [sVol] * self.n_t
         self.sMR  = [sMR]  * self.n_t
@@ -151,7 +191,11 @@ class Storage:
         self.t_p_curve[0] = 0.
 
     def set_volume_states(self, n_op_start):
-        """Change the starting inventory level and rebuild dependent arrays."""
+        """Set the inventory GRID SIZE (number of clip levels) and rebuild the
+        dependent arrays. Despite the parameter name, this sizes the grid — the
+        value_* wrappers then overwrite `self.n_op_start` with the actual INITIAL
+        inventory state before calling build(). (The dual meaning of n_op_start is
+        a known wart; see the module glossary.)"""
         self.n_op_start = n_op_start
         self._init_volume_arrays()
 
@@ -582,6 +626,30 @@ def value_storage(curve, params):
 
 
 def run_valuation(curve, params):
+    """Value a product from a parameter dict; returns (Storage, result_dict).
+
+    `curve` is a contract DataFrame [contractStart, contractEnd, value], or None
+    when `params["daily_curve"]` supplies a precomputed daily curve.
+
+    Required `params` keys (all products):
+        product_type   "put_swing" | "call_swing" | "storage"
+        valDate, storageStart, storageEnd   date-like
+        vol            annualised spot volatility (-> sVol)
+        n_p_full       price-tree half-width for the full (stochastic) run
+        run_intrinsic  also run the n_p=0 intrinsic pass (bool)
+        grid sizing — EITHER daily_max (MWh/day) + capacity_mwh, OR v_step +
+                      the legacy clip-count key ("days" for swings, "inj_days"
+                      for storage). See resolve_grid().
+    Optional keys:
+        clips_per_day (default 3), sMR (default 1.0), daily_curve (default None),
+        strike (default 0.0), initial_inv_clips / terminal_inv_clips,
+        ratchets, zero_penalty (call swing). storage additionally needs
+        inj_cost / wdr_cost.
+
+    A missing required key raises KeyError. When loading from products.xlsx via
+    load_product_params(), pass the dict through params_for_run_valuation() first
+    (it derives the grid keys), otherwise this raises KeyError: 'v_step'.
+    """
     if params["product_type"] == "put_swing":
         return value_put_swing(curve, params)
     if params["product_type"] == "call_swing":

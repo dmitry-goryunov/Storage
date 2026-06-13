@@ -125,6 +125,24 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
 
 ## API Reference
 
+### Glossary
+
+| Symbol | Meaning |
+|---|---|
+| `n_t` | number of daily time steps (valDate → backStop) |
+| `n_p` | price-tree half-width; tree has `2·n_p+1` price states (`0` = single path, no optionality) |
+| `n_op` | number of inventory states (clip levels) = grid size + 1 |
+| `n_op_start` | dual role: inventory **grid size** (into `set_volume_states`) vs **initial inventory state** (read by `build`) |
+| `Dt` | days from valDate to storageStart (first active day) |
+| `v_step` | MWh per inventory state (the "clip" size) |
+| `clips_per_day` | max clips injected/withdrawn per active day (the daily rate) |
+| `strat` | signed clip count moved per state (neg = withdraw, pos = inject, 0 = idle) |
+| `exp_ex` / `delta` | expected daily exercise volume / forward-equivalent delta (MWh) |
+| `t_p_curve` | terminal inventory payoff/penalty by state (`-1e9` forbids a state) |
+| `i_ratch` / `w_ratch` | per-inventory-level inject/withdraw rate multipliers (ratchets) |
+
+The same glossary heads [`storage_model.py`](storage_model.py).
+
 ### `Storage` class
 
 ```python
@@ -337,6 +355,21 @@ Values the executed swing deals in `quotes_2.csv` as of a single valuation date 
 | 4 | Oct-26 | Mar-27 | 180 |
 | 5 | Apr-27 | Jun-27 | 90 |
 | 6 | Apr-27 | Sep-27 | 180 |
+
+---
+
+## Tests
+
+[`tests/test_regression.py`](tests/test_regression.py) pins the independently
+verified anchors (portfolio MtM = −56,901 EUR, the `n_p=0` DP equals greedy day
+selection, intrinsic/extrinsic ≥ 0, the workbook bridge runs finite, the
+curve-gap guard fires). Run with `pytest`, or as a plain script with no extra
+dependency:
+
+```bash
+python -m pytest tests          # if pytest is installed
+python tests/test_regression.py # plain-script fallback (prints PASS/FAIL)
+```
 
 ---
 
