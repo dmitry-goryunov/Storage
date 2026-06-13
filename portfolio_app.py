@@ -245,21 +245,48 @@ def cached_deal_valuation(
 # ── Sidebar form ───────────────────────────────────────────────────────────────
 
 st.title("Portfolio Mark-to-Market")
+st.caption("Valuing a single deal instead? Use the **Swing / Storage Valuation** app (`streamlit run streamlit_app.py`).")
 warm_numba_kernels()
+
+with st.expander("Portfolio CSV format"):
+    st.markdown(
+        "Upload a CSV with one row per trade, or leave blank to use the bundled `quotes_2.csv`. "
+        "Numbers may carry spaces/commas (`\" 2,400 \"`); `\" -   \"` means 0. Columns:\n\n"
+        "| Column | Meaning |\n"
+        "|---|---|\n"
+        "| `Product` | `call swing` (sell at strike on best days) or `Put Swing` (buy at strike on cheapest days) |\n"
+        "| `Start` / `End` | Exercise window, `DD-MMM-YY` (e.g. `01-Jan-11`) |\n"
+        "| `current stock, days` | Initial stock in days of daily volume (a put must hold ≥ `N_days`) |\n"
+        "| `daily volume, Mwh` | Volume per exercised day; **negative = sold/short** (value & exposures flip) |\n"
+        "| `N_days` | Days that must be exercised within the window (forced full exercise) |\n"
+        "| `executed price, Eur/Mwh` | Premium paid per MWh of total obligation volume |\n"
+        "| `vol` / `MR` | Per-deal annualised volatility and mean-reversion speed |\n"
+        "| `strike price, Eur/Mwh` | Strike at which gas is bought (put) / sold (call) |\n\n"
+        "MtM = direction × (model value − premium), where premium = executed × N_days × |daily volume|."
+    )
 
 with st.sidebar:
     with st.form("portfolio_inputs"):
         st.header("Valuation inputs")
 
-        val_date_input = st.date_input("VAL_DATE", pd.Timestamp("2010-08-19"))
+        val_date_input = st.date_input(
+            "VAL_DATE (valuation date)", pd.Timestamp("2010-08-19"),
+            help="The book is marked as of this date; the nearest quote on/before it with a full "
+                 "contract strip builds the curve.",
+        )
         n_p_full = st.number_input(
-            "n_p_full", min_value=0, max_value=100, value=30, step=1
+            "n_p_full", min_value=0, max_value=100, value=30, step=1,
+            help="Price-tree half-width (2*n_p_full+1 price states). ~30 is converged.",
         )
         clips_per_day = st.number_input(
-            "clips_per_day", min_value=1, max_value=24, value=1, step=1
+            "clips_per_day", min_value=1, max_value=24, value=1, step=1,
+            help="Grid resolution: clips moved per active day (1 clip = one day's volume). For these "
+                 "linear-payoff deals a finer grid does not change the value.",
         )
         min_strip_months = st.number_input(
-            "MIN_STRIP_MONTHS", min_value=1, value=43, step=1
+            "MIN_STRIP_MONTHS", min_value=1, value=43, step=1,
+            help="Skip quote rows with fewer than this many populated monthly contracts. The portfolio "
+                 "runs to 2013, which needs ~43 months of strip from a 2010 quote.",
         )
 
         st.subheader("Quote matrix (xlsx/csv)")
@@ -403,7 +430,7 @@ for i, (name, d) in enumerate(port.iterrows()):
 
     timing_lines.append(
         f"**{name}** ({d['product_type']}): value = {raw_value:,.0f} EUR  "
-        f"| intrinsic = {payload['intrinsic']:.3f}  "
+        f"| intrinsic = {payload['intrinsic']:.3f} EUR/MWh  "
         f"| extrinsic = {payload['extrinsic']:.3f} EUR/MWh  "
         f"| {elapsed:.2f}s"
     )

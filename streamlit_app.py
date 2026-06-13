@@ -100,16 +100,33 @@ def format_number(x):
 
 
 st.title("Swing / Storage Valuation")
+st.caption("Valuing a whole book of trades? Use the **Portfolio Mark-to-Market** app (`streamlit run portfolio_app.py`).")
+
+with st.expander("What do these products mean?"):
+    st.markdown(
+        "- **put_swing** — the right/obligation to **buy** gas at a strike on chosen days; the model "
+        "picks the **cheapest** days. Value rises when prices fall below the strike.\n"
+        "- **call_swing** — the right/obligation to **sell** gas at a strike on chosen days; the model "
+        "picks the **best (highest-price)** days. Value rises when prices exceed the strike.\n"
+        "- **storage** — **buy low, sell high** while carrying inventory between a start and end level, "
+        "subject to injection/withdrawal rates and costs.\n\n"
+        "Each value splits into **intrinsic** (best schedule on today's forward curve) plus "
+        "**extrinsic** (the extra worth of price optionality, driven by `vol` and `sMR`)."
+    )
 
 with st.sidebar:
     with st.form("valuation_inputs"):
         st.header("Inputs")
-        product_type = st.selectbox("Product type", ["put_swing", "call_swing", "storage"], index=0)
+        product_type = st.selectbox("Product type", ["put_swing", "call_swing", "storage"], index=0,
+                                    help="put_swing = buy on the cheapest days; call_swing = sell on the best days; "
+                                         "storage = buy low / sell high carrying inventory. See the explainer above the sidebar.")
 
-        FDDate = pd.Timestamp(st.date_input("FDDate", pd.Timestamp("2026-01-05")))
-        valDate = pd.Timestamp(st.date_input("valDate", pd.Timestamp("2026-01-01")))
-        storageStart = pd.Timestamp(st.date_input("storageStart", pd.Timestamp("2026-04-01")))
-        storageEnd = pd.Timestamp(st.date_input("storageEnd", pd.Timestamp("2027-03-30")))
+        FDDate = pd.Timestamp(st.date_input("FDDate (forward-curve date)", pd.Timestamp("2026-01-05"),
+                                            help="Quote date whose forward curve is used; the nearest quote on or before it is selected."))
+        valDate = pd.Timestamp(st.date_input("valDate (valuation / 'today')", pd.Timestamp("2026-01-01"),
+                                             help="'Today' for the valuation — the price tree and discounting start here."))
+        storageStart = pd.Timestamp(st.date_input("storageStart (first active day)", pd.Timestamp("2026-04-01")))
+        storageEnd = pd.Timestamp(st.date_input("storageEnd (last active day)", pd.Timestamp("2027-03-30")))
 
         days = st.number_input("Inventory states (clip count)", min_value=1, max_value=3660, value=30, step=1,
                                help="Number of discrete inventory levels in the DP grid (working volume / clip size). Used only when daily_max = 0 and capacity_mwh = 0.")
@@ -200,9 +217,9 @@ with st.spinner("Running valuation. First run may compile Numba kernels..."):
 st.success(f"Valuation complete in {elapsed:.1f}s")
 
 if run_intrinsic:
-    summary_metrics = ["flat_metric", "profiled_metric", "intrinsic_value", "extrinsic_value", "total_value"]
+    summary_metrics = ["Flat price (EUR/MWh)", "Profiled price (EUR/MWh)", "Intrinsic (EUR/MWh)", "Extrinsic (EUR/MWh)", "Total (EUR/MWh)"]
 else:
-    summary_metrics = ["flat_metric", "profiled_metric", "intrinsic_value", "extrinsic_value", "stochastic_metric"]
+    summary_metrics = ["Flat price (EUR/MWh)", "Profiled price (EUR/MWh)", "Intrinsic (EUR/MWh)", "Extrinsic (EUR/MWh)", "Stochastic (EUR/MWh)"]
 
 summary = pd.DataFrame({
     "metric": summary_metrics,
@@ -227,7 +244,7 @@ if product_type == "storage":
             "value": [result["intrinsic_eur"], result["extrinsic_eur"], result["total_eur"]],
         }).assign(value=lambda x: x["value"].map(lambda v: "n/a" if pd.isna(v) else f"{v:,.0f}")),
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
 date_span = payload["date_span"]
@@ -275,10 +292,10 @@ monthly_delta_table = pd.concat([
 ], ignore_index=True)
 monthly_delta_display = monthly_delta_table.copy()
 monthly_delta_display["native_delta"] = monthly_delta_display["native_delta"].map("{:,.2f}".format)
-st.dataframe(monthly_delta_display, hide_index=True, use_container_width=True)
+st.dataframe(monthly_delta_display, hide_index=True, width="stretch")
 
 with st.expander("Forward curve used"):
     curve_display = curve.copy()
     curve_display["contractStart"] = curve_display["contractStart"].dt.strftime("%Y-%m-%d")
     curve_display["contractEnd"] = curve_display["contractEnd"].dt.strftime("%Y-%m-%d")
-    st.dataframe(curve_display, hide_index=True, use_container_width=True)
+    st.dataframe(curve_display, hide_index=True, width="stretch")
