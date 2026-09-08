@@ -53,5 +53,5 @@ def test_profiled_metrics_use_physical_expected_exercise_volume():
     expected = value / float(sum(model.exp_ex))
 
     assert abs(sum(model.exp_ex) - sum(model.delta)) > 1e-3
-    assert model.profiled() == expected
-    assert result["stochastic_metric"] == expected
+    np.testing.assert_allclose(model.profiled(), expected, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(result["stochastic_metric"], expected, rtol=0.0, atol=1e-12)

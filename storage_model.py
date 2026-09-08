@@ -239,11 +239,20 @@ class Storage:
         return float(pd.Series(self.price_curve, index=self.date_span).loc[exercise_dates].mean())
 
     def profiled(self):
-        """Volume-weighted achieved price per MWh under the optimal strategy.
-        Reads the central forward node v[0, n_p, .], so it is correct for both
-        the intrinsic (n_p=0) and the full (n_p>0) build."""
-        ACQ = np.sum(self.delta)
-        return self.v[0, self.n_p, self.n_op_start] / ACQ
+        """Contract value per expected net exercised MWh.
+
+        This legacy method name is retained for compatibility. The denominator
+        is the physical expected exercise schedule, not the hedge delta. It is
+        therefore meaningful for one-directional swing contracts and raises for
+        a zero-net-volume strategy such as a cycling storage contract.
+        """
+        volume = float(np.sum(self.exp_ex))
+        gross_volume = float(np.sum(np.abs(self.exp_ex)))
+        if abs(volume) <= 1e-12 * max(gross_volume, 1.0):
+            raise ValueError(
+                "Value per net exercised MWh is undefined for a zero-net-volume strategy."
+            )
+        return self.v[0, self.n_p, self.n_op_start] / volume
 
 
 def month_start(ts):
@@ -485,7 +494,7 @@ def value_put_swing(curve, params):
     if params["run_intrinsic"]:
         s.build()
         profiled_eur = s.v[0, 0, init_inv]
-        acq = -np.sum(s.delta)
+        acq = -np.sum(s.exp_ex)
         profiled_metric = s.profiled()
         intrinsic = flat_metric - profiled_metric
         intrinsic_profile_raw = -np.array(s.exp_ex)
@@ -499,7 +508,7 @@ def value_put_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    stochastic_metric = full_eur / np.sum(s.delta)
+    stochastic_metric = s.profiled()
     extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = -np.array(s.exp_ex)
 
@@ -544,7 +553,7 @@ def value_call_swing(curve, params):
     if params["run_intrinsic"]:
         s.build()
         profiled_eur = s.v[0, 0, init_inv]
-        acq = np.sum(s.delta)
+        acq = np.sum(s.exp_ex)
         profiled_metric = profiled_eur / acq if acq else np.nan
         intrinsic = profiled_metric - flat_metric if acq else np.nan
         intrinsic_profile_raw = np.array(s.exp_ex)
@@ -558,8 +567,7 @@ def value_call_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    full_acq = np.sum(s.delta)
-    stochastic_metric = full_eur / full_acq if full_acq else np.nan
+    stochastic_metric = s.profiled()
     extrinsic = (full_eur - profiled_eur) / acq if (params["run_intrinsic"] and acq) else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)
 
