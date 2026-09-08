@@ -118,7 +118,10 @@ readable as evidence.
    number is the MWh actually traded. Both are internally consistent; they differ in what
    the number means to whoever hedges with it, and the app's table is labelled in MWh.
    No number changes while `d_curve` is all ones, which it is on every current path.
-   **Requires a decision, then one of the two records must change.**
+   **Requires a decision, then one of the two records must change.** Quantified in
+   [../../DELTA-CONVENTION.md](../../DELTA-CONVENTION.md): at a 3 % discount curve the
+   reported delta under-states the tradeable forward volume by 4.64 % (7.68 % at 5 %),
+   growing with tenor from -3.0 % in Jan-27 to -5.7 % in Dec-27.
 3. **`ttf q.xlsx` row 4172** — see finding 1.
 4. **Legacy directory retention.** The procedure's §7 rename was not performed and no
    directory was deleted. `Storage_new` is now redundant but untouched.
