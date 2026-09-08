@@ -5,10 +5,13 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import storage_model as sm  # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _seasonal_daily_curve():
@@ -61,12 +64,13 @@ def _direct_put(n_p=20, days=10, discount_rate=0.0, injection_ratchet=1.0):
 
 def test_expected_exercise_is_not_rounded_before_aggregation():
     """The expected exercise schedule must exactly reprice the contract value."""
-    model, _ = _mandatory_put()
-    value = float(model.v[0, model.n_p, model.n_op_start])
-    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+    for n_p in (0, 20):
+        model, _ = _mandatory_put(n_p=n_p)
+        value = float(model.v[0, model.n_p, model.n_op_start])
+        repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
 
-    assert abs(repriced - value) / abs(value) < 1e-9
-    assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
+        assert abs(repriced - value) / abs(value) < 1e-9
+        assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
 
 
 def test_profiled_metrics_use_physical_expected_exercise_volume():
@@ -105,10 +109,43 @@ def test_time_varying_volatility_produces_valid_tree_probabilities():
     np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
 
 
+def test_flat_volatility_tree_is_bit_identical_to_legacy_spacing():
+    n_t = 30
+    n_p = 5
+    forwards = np.linspace(25.0, 30.0, n_t)
+    volatility = np.full(n_t, 0.5)
+    mean_reversion = np.ones(n_t)
+    new = sm.build_tree(forwards, n_t, n_p, volatility, mean_reversion)
+
+    dt = 1.0 / 365.25
+    dx = volatility[0] * np.sqrt(3.0 * dt)
+    x = np.zeros((n_t, 2 * n_p + 1))
+    p_u = np.zeros_like(x)
+    p_m = np.zeros_like(x)
+    p_d = np.zeros_like(x)
+    q = sm._tree_core(
+        x, p_u, p_m, p_d, forwards.copy(), volatility, mean_reversion,
+        n_t, n_p, dx, dt,
+    )
+    legacy = (forwards, x, q, p_u, p_m, p_d)
+
+    for actual, expected in zip(new, legacy):
+        np.testing.assert_array_equal(actual, expected)
+
+
 def test_stochastic_tree_rejects_zero_volatility():
     """A zero-width stochastic lattice is rejected with a useful error."""
     with np.testing.assert_raises_regex(ValueError, "positive volatility"):
         sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))
+
+
+def test_unstable_tree_configuration_raises_instead_of_returning_nans():
+    n_t = 120
+    with np.testing.assert_raises_regex(ValueError, "Invalid transition probabilities"):
+        sm.build_tree(
+            np.full(n_t, 25.0), n_t, 20,
+            np.linspace(0.1, 1.2, n_t), np.ones(n_t),
+        )
 
 
 def test_post_build_feasibility_check_accounts_for_ratchets():
@@ -142,3 +179,54 @@ def test_delta_is_discounted_forward_sensitivity():
     value = float(model.v[0, model.n_p, model.n_op_start])
     repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
     assert abs(repriced - value) / abs(value) < 1e-9
+
+
+def test_multi_clip_ratchet_keeps_policy_probability_and_metrics_consistent():
+    model = _direct_put(days=10, injection_ratchet=2.0)
+    assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
+    value = float(model.v[0, model.n_p, model.n_op_start])
+    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+    assert abs(repriced - value) / abs(value) < 1e-9
+
+
+def test_tree_reprices_forward_curve_at_every_time_step():
+    n_t = 60
+    n_p = 10
+    forwards = 25.0 + 3.0 * np.sin(np.arange(n_t) / 9.0)
+    fwd, x, q, *_ = sm.build_tree(
+        forwards, n_t, n_p, np.full(n_t, 0.5), np.ones(n_t)
+    )
+    expected_spot = np.sum(q * np.exp(x), axis=1)
+    np.testing.assert_allclose(expected_spot, fwd, rtol=1e-12, atol=1e-12)
+
+
+def test_monthly_delta_matches_independent_finite_difference():
+    """Local monthly deltas agree with symmetric 5 bp price bumps."""
+    base = _direct_put(n_p=20)
+    dates = pd.DatetimeIndex(base.date_span[:base.n_t])
+    delta = pd.Series(base.delta[:base.n_t], index=dates)
+    fwd = pd.Series(base.fwd, index=dates)
+
+    for month in sorted(set(dates.to_period("M"))):
+        mask = dates.to_period("M") == month
+        analytic = float((delta[mask] * fwd[mask]).sum())
+
+        def bumped_value(epsilon):
+            model = _direct_put(n_p=20)
+            bumped = model.price_curve.copy()
+            bumped.loc[bumped.index.to_period("M") == month] *= 1.0 + epsilon
+            model.price_curve = bumped
+            model.build()
+            return float(model.v[0, model.n_p, model.n_op_start])
+
+        epsilon = 0.00005
+        finite_difference = (bumped_value(epsilon) - bumped_value(-epsilon)) / (2.0 * epsilon)
+        np.testing.assert_allclose(finite_difference, analytic, rtol=0.01, atol=5.0)
+
+
+@pytest.mark.parametrize("app_path", ["streamlit_app.py", "portfolio_app.py"])
+def test_streamlit_app_starts_without_exceptions(app_path):
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_file(os.path.join(ROOT, app_path), default_timeout=60).run()
+    assert not app.exception
