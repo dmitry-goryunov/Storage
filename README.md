@@ -83,10 +83,11 @@ Raw monthly contract prices are vectorised into a daily series, then smoothed vi
 A trinomial tree discretises log-normal price dynamics with Ornstein-Uhlenbeck mean reversion:
 
 - Time step `dt = 1 / 365.25` (daily)
-- Grid spacing `dx = σ · √(3 · dt)` for numerical stability
+- Grid spacing `dx = max(σ(t)) · √(3 · dt)` so a volatility term structure cannot outgrow the lattice
 - **Growing phase** (steps 0 → `n_p`): tree width expands from 1 to `2·n_p+1` nodes
 - **Full-width phase** (steps `n_p` → `n_t`): constant-width grid; up/middle/down transition probabilities recalculated each step
 - **Forward-fitting**: at every step the central node is shifted so the tree reproduces the input forward curve exactly
+- **Validation**: live transition probabilities and propagated state probabilities must be finite, non-negative and sum to one
 
 Returns `fwd`, `x` (log-price deviations), `q` (state probabilities), and `p_u / p_m / p_d` transition arrays.
 
@@ -101,7 +102,7 @@ Backward induction from `n_t − 1` to `0` over the full `(time, price, volume)`
   - Inventory floor/ceiling tunnels (`mintunnel`, `max_tunnel`)
 - Selects the clip count maximising expected discounted continuation value
 - The price dimension (`k`) is parallelised via `prange`; the volume (`l`) and clip-count (`d`) loops are scalar
-- Infeasible terminal inventories are penalised with a large negative value (`−1e9`)
+- Forbidden terminal inventories carry a large negative sentinel (`−1e9`); a post-build probability check rejects any policy that fails to reach a permitted terminal state
 
 Returns `v` (optimal values) and `strat` (**signed clip count moved** per state) over the full grid.
 
@@ -110,8 +111,7 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
 | Function | Purpose |
 |---|---|
 | `probabilities` | Forward simulation of joint (price, volume) state probabilities under the optimal strategy |
-| `get_exercise` / `compute_all_metrics` | Expected daily exercise volume (MWh) and delta hedge ratios at each time step |
-| `valuation` | Contract value at start, averaged over price states |
+| `compute_all_metrics` | Expected daily physical exercise (MWh) and discounted forward-price sensitivities at each time step |
 
 ### 5. Value Decomposition
 
@@ -137,7 +137,7 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
 | `v_step` | MWh per inventory state (the "clip" size) |
 | `clips_per_day` | max clips injected/withdrawn per active day (the daily rate) |
 | `strat` | signed clip count moved per state (neg = withdraw, pos = inject, 0 = idle) |
-| `exp_ex` / `delta` | expected daily exercise volume / forward-equivalent delta (MWh) |
+| `exp_ex` / `delta` | expected daily physical exercise / discounted forward-price sensitivity (PV-equivalent MWh) |
 | `t_p_curve` | terminal inventory payoff/penalty by state (`-1e9` forbids a state) |
 | `i_ratch` / `w_ratch` | per-inventory-level inject/withdraw rate multipliers (ratchets) |
 
@@ -179,7 +179,7 @@ Storage(
 | `strat` | `(n_t, 2·n_p+1, n_op)` | Signed clip count moved: negative = withdraw, positive = inject, 0 = hold (magnitude up to `clips_per_day`) |
 | `prob` | `(n_t, 2·n_p+1, n_op)` | Joint state probabilities under optimal strategy |
 | `exp_ex` | `list[float]` (n_t+1) | Expected daily exercise volume (MWh) |
-| `delta` | `list[float]` (n_t+1) | Delta hedge ratios (volume-weighted, price-normalised) |
+| `delta` | `list[float]` (n_t+1) | Discounted forward-price sensitivities (PV-equivalent MWh) |
 
 #### Customisable attributes (set before `build()`)
 
@@ -235,10 +235,8 @@ s_full = Storage(
 )
 s_full.build()
 # Extrinsic = optionality premium. Both EUR values are divided by the SAME
-# (intrinsic) acquired volume — the run_valuation convention — so it is >= 0.
-# (Don't subtract two profiled() calls: their delta denominators differ between
-# the n_p=0 and n_p=30 builds, which can make the difference go negative.)
-acq           = np.sum(s_flat.delta)
+# (intrinsic) physical exercise volume — the run_valuation convention.
+acq           = np.sum(s_flat.exp_ex)
 intrinsic_eur = s_flat.v[0, 0, s_flat.n_op_start]
 full_eur      = s_full.v[0, s_full.n_p, s_full.n_op_start]
 extrinsic     = (full_eur - intrinsic_eur) / acq

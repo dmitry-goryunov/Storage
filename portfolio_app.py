@@ -481,6 +481,11 @@ st.dataframe(fmt_mtm, width="stretch")
 # ── Step 6: Monthly exposure ───────────────────────────────────────────────────
 
 st.subheader("Monthly Forward Exposure")
+st.caption(
+    "Local discounted forward sensitivities at the current optimal exercise policies, "
+    "in PV-equivalent MWh. Large curve moves can change those policies, so scenario P&L "
+    "also contains convexity."
+)
 
 monthly_exp = pd.DataFrame(
     {n: p.resample("MS").sum() for n, p in delta_profiles.items()}
