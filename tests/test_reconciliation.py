@@ -309,3 +309,44 @@ def test_storage_rejects_capacity_expressed_in_days():
                   daily_curve=_seasonal_daily_curve())
     with np.testing.assert_raises_regex(ValueError, "wdr_rate"):
         sm.run_valuation(None, params)
+
+
+def _grid_model(**kw):
+    return sm.Storage("2026-01-01", "2026-02-01", "2026-04-30",
+                      daily_curve=_seasonal_daily_curve(), n_p=0, v_step=1000.0,
+                      sVol=0.5, clips_per_day=1, **kw)
+
+
+def test_grid_size_and_initial_state_are_separate_names():
+    """`n_op_start` meant the grid size to set_volume_states and the initial
+    inventory state to build(), so every caller had to set it twice. The two
+    meanings now have their own names, and both can be set in one call."""
+    m = _grid_model()
+    m.set_volume_states(10, initial_state=3)
+    assert m.n_states == 10 and m.n_op == 11
+    assert m.initial_state == 3
+    assert m.n_op_start == 3        # compatibility alias reads the initial state
+
+    m.n_op_start = 4                # ...and writing it still sets the initial state
+    assert m.initial_state == 4
+
+    # Grid size unchanged by touching the initial state
+    assert m.n_states == 10 and m.n_op == 11
+
+
+def test_initial_state_outside_the_grid_is_rejected():
+    """Nothing checked this: an out-of-range start indexed past the value array."""
+    m = _grid_model()
+    m.set_volume_states(10)
+    m.initial_state = 11            # grid holds states 0..10
+    m.t_p_curve = np.full(m.n_op + 2, -1e9)
+    m.t_p_curve[0] = 0.0
+    with np.testing.assert_raises_regex(ValueError, "initial_state"):
+        m.build()
+
+
+def test_set_volume_states_defaults_the_start_to_a_full_grid():
+    """Unchanged behaviour: with no initial_state, the start is the full grid."""
+    m = _grid_model()
+    m.set_volume_states(7)
+    assert m.initial_state == 7 and m.n_states == 7

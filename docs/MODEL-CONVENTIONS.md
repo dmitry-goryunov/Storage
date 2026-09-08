@@ -33,9 +33,13 @@ Date: 2026-09-08.
 
 **Two names carry two meanings — the most common source of error here.**
 
-- `n_op_start` is the inventory **grid size** when passed to `set_volume_states()`, and the
-  **initial inventory state** when read by `build()`. The `value_*` wrappers set it
-  explicitly for this reason.
+- ~~`n_op_start`~~ **fixed 2026-09-08.** It used to mean the grid size to
+  `set_volume_states()` and the initial state to `build()`, so every caller set it twice.
+  The two now have their own names: **`n_states`** (grid size, so `n_op = n_states + 1`)
+  and **`initial_state`** (where inventory starts, in `0..n_states`), settable in one call
+  as `set_volume_states(n_states, initial_state=...)`. `n_op_start` survives as a
+  deprecated alias for `initial_state`. `build()` now rejects a start outside the grid,
+  which nothing checked before.
 - `inj_days` is the inventory **state count** in `resolve_grid` (legacy path), and
   **days-to-fill** in `params_for_run_valuation` (workbook path). `wdr_days` exists only in
   the second sense; passing it on the first path now raises rather than being ignored.

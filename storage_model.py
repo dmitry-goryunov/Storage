@@ -6,10 +6,12 @@ Symbol glossary (used throughout this module and the kernels)
     n_t        number of daily time steps (valDate .. backStop)
     n_p        price-tree half-width; the tree has 2*n_p+1 price states
                (n_p = 0 means a single price path = no optionality)
-    n_op       number of inventory states (clip levels), = grid size + 1
-    n_op_start dual role: the inventory GRID SIZE when passed to
-               set_volume_states(); the INITIAL inventory state when read by
-               build()/probabilities() (the value_* wrappers set it explicitly)
+    n_states   inventory GRID SIZE: the number of clip levels
+    n_op       number of inventory states, = n_states + 1
+    initial_state  where inventory STARTS, in 0..n_states
+    n_op_start deprecated alias for initial_state. It used to mean the grid size
+               to set_volume_states() and the initial state to build(), so every
+               caller had to set it twice; the two now have their own names
     Dt         offset (days) from valDate to storageStart (first active day)
     v_step     MWh per inventory state (the "clip" size)
     clips_per_day  max clips injected/withdrawn per active day (the daily rate)
@@ -169,7 +171,11 @@ class Storage:
         self.mintunnel = np.zeros(n, dtype=int)
 
         # Volume states — call set_volume_states() to override
-        self.n_op_start = (self.storageEnd - self.storageStart).days + 1
+        # Two separate things: how many clip levels the grid holds, and where
+        # inventory starts. Both used to be `n_op_start`. The default start is a
+        # full grid, as it has always been.
+        self.n_states = (self.storageEnd - self.storageStart).days + 1
+        self.initial_state = self.n_states
         self._init_volume_arrays()
 
     def _require_full_coverage(self, series, what):
@@ -185,22 +191,40 @@ class Storage:
                 f"month-end backstop at {self.backStop:%Y-%m-%d}. Extend the curve.")
 
     def _init_volume_arrays(self):
-        """(Re-)build arrays that depend on n_op_start / n_op."""
-        self.n_op      = self.n_op_start + 1
+        """(Re-)build arrays that depend on the grid size."""
+        self.n_op      = self.n_states + 1
         self.i_ratch   = np.ones(self.n_op)
         self.w_ratch   = np.ones(self.n_op)
         self.max_tunnel = np.full(len(self.date_span), self.n_op)
         self.t_p_curve  = np.full(self.n_op + 2, -1e9)
         self.t_p_curve[0] = 0.
 
-    def set_volume_states(self, n_op_start):
-        """Set the inventory GRID SIZE (number of clip levels) and rebuild the
-        dependent arrays. Despite the parameter name, this sizes the grid — the
-        value_* wrappers then overwrite `self.n_op_start` with the actual INITIAL
-        inventory state before calling build(). (The dual meaning of n_op_start is
-        a known wart; see the module glossary.)"""
-        self.n_op_start = n_op_start
+    def set_volume_states(self, n_states, initial_state=None):
+        """Size the inventory grid, and optionally set where inventory starts.
+
+        `n_states` is the number of clip levels; the grid then holds states
+        0..n_states (`n_op = n_states + 1`). `initial_state` is where inventory
+        begins; it defaults to a full grid, which is what this did before.
+
+        Both used to be `n_op_start`, which meant the grid size here and the
+        initial state to build(), so every caller set it twice. `n_op_start`
+        still works as an alias for `initial_state`.
+
+        Note this resets the ratchets, tunnels and t_p_curve, so call
+        apply_ratchets() and set t_p_curve after it, not before.
+        """
+        self.n_states = n_states
+        self.initial_state = n_states if initial_state is None else initial_state
         self._init_volume_arrays()
+
+    @property
+    def n_op_start(self):
+        """Deprecated alias for `initial_state`, kept for existing callers."""
+        return self.initial_state
+
+    @n_op_start.setter
+    def n_op_start(self, value):
+        self.initial_state = value
 
     def apply_ratchets(self, fullness, inj_mult, wdr_mult):
         """Set per-inventory-level injection/withdrawal rate multipliers from a
@@ -215,6 +239,15 @@ class Storage:
         Results stored as: self.fwd, self.x, self.v, self.strat,
                            self.prob, self.exp_ex, self.delta
         """
+        # Nothing checked this before: an out-of-range start indexed past the
+        # value array, in a Numba kernel where that is undefined rather than an
+        # IndexError.
+        if not (0 <= self.initial_state <= self.n_states):
+            raise ValueError(
+                f"initial_state={self.initial_state} is outside the inventory grid "
+                f"0..{self.n_states} (n_op={self.n_op}). Set it with "
+                f"set_volume_states(n_states, initial_state=...).")
+
         self.fwd, self.x, q, p_u, p_m, p_d = build_tree(
             self.price_curve, self.n_t, self.n_p, self.sVol, self.sMR)
 
@@ -225,7 +258,7 @@ class Storage:
 
         self.prob = probabilities(
             self.n_t, self.n_p, self.n_op, q, self.strat, p_u, p_m, p_d,
-            self.n_op_start)
+            self.initial_state)
 
         self._assert_terminal_inventory_reached()
 
@@ -274,7 +307,7 @@ class Storage:
             raise ValueError(
                 "Value per net exercised MWh is undefined for a zero-net-volume strategy."
             )
-        return self.v[0, self.n_p, self.n_op_start] / volume
+        return self.v[0, self.n_p, self.initial_state] / volume
 
 
 def month_start(ts):
@@ -507,10 +540,9 @@ def value_put_swing(curve, params):
 
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else n_states
-    s.set_volume_states(n_states)
+    s.set_volume_states(n_states, initial_state=init_inv)
     apply_ratchets_from_params(s, params)
     assert_cycle_feasible(s, abs(term_inv - init_inv), cpd, "Put swing")
-    s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0
     if params["run_intrinsic"]:
@@ -561,11 +593,10 @@ def value_call_swing(curve, params):
     if strike:
         s.w_cost[s.Dt:s._active] = strike
 
-    s.set_volume_states(n_states)
+    s.set_volume_states(n_states, initial_state=init_inv)
     apply_ratchets_from_params(s, params)
     if not zero_penalty:
         assert_cycle_feasible(s, abs(term_inv - init_inv), cpd, "Call swing")
-    s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     if zero_penalty:
         s.t_p_curve[:s.n_op + 1] = 0.0   # any residual inventory is fine
@@ -646,7 +677,6 @@ def value_storage(curve, params):
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
     s.set_volume_states(n_states)
     apply_ratchets_from_params(s, params)
-    s.n_op_start = init_inv
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0
 
@@ -787,7 +817,7 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
     # h = E[S_i*Q_i]/F_i. Discounting it here would make the reported number move
     # with the yield curve while the gas did not, and under-hedge by DF (4.6 % at
     # 3 %, 7.7 % at 5 %). The discount weights belong in the repricing identity
-    # instead: sum_i d_curve[i] * delta[i] * fwd[i] == v[0, n_p, n_op_start].
+    # instead: sum_i d_curve[i] * delta[i] * fwd[i] == v[0, n_p, initial_state].
     exp_x    = np.exp(x)[:, :, None]
     delta    = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 

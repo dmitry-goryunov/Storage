@@ -44,8 +44,13 @@ This replaces planning derived from the stale Drive working tree.
 
 ## Priority 3: API and maintenance
 
-1. Separate inventory grid size from initial inventory state instead of overloading
-   `n_op_start` (finding 19), with a compatibility period for notebooks and callers.
+1. DONE: `n_states` (grid size) and `initial_state` (starting inventory) replace the
+   overloaded `n_op_start` (finding 19). Both are settable in one call as
+   `set_volume_states(n_states, initial_state=...)`, and `n_op_start` remains as a
+   deprecated alias so existing notebooks and callers keep working. `build()` now
+   rejects a start outside the grid -- previously an out-of-range value indexed past
+   the value array inside a Numba kernel, where that is undefined rather than an
+   IndexError.
 2. DONE: removed unused `check_curve`, `valuation`, `get_exercise` and `get_delta`
    (finding 11). Compatibility checked first -- no caller anywhere in the library,
    apps, notebooks or tests; `get_exercise`/`get_delta` were only re-exported.
