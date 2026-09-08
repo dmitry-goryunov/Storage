@@ -86,3 +86,28 @@ def test_stochastic_tree_rejects_zero_volatility():
     """A zero-width stochastic lattice is rejected with a useful error."""
     with np.testing.assert_raises_regex(ValueError, "positive volatility"):
         sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))
+
+
+def test_post_build_feasibility_check_accounts_for_ratchets():
+    """A nominally feasible terminal state can be unreachable under ratchets."""
+    model = sm.Storage(
+        "2026-01-01",
+        "2026-01-02",
+        "2026-01-10",
+        daily_curve=_seasonal_daily_curve(),
+        n_p=0,
+        v_step=1000.0,
+        sVol=0.5,
+        clips_per_day=1,
+    )
+    _, active = sm.active_masks(model)
+    model.i_curve = active
+    model.w_curve = np.zeros(len(model.date_span))
+    model.set_volume_states(2)
+    model.apply_ratchets([0.0, 1.0], [0.0, 0.0], [1.0, 1.0])
+    model.n_op_start = 0
+    model.t_p_curve = np.full(model.n_op + 2, -1e9)
+    model.t_p_curve[2] = 0.0
+
+    with np.testing.assert_raises_regex(ValueError, "terminal inventory"):
+        model.build()
