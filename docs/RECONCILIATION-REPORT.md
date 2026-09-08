@@ -92,7 +92,7 @@ tolerance and the inventory-state API require separate behavioural decisions.
 
 ## Publication blocker
 
-The local Git branch is clean at commit `ac5ffd5`. Direct HTTPS push could not
+The local Git branch is clean with all reconciliation work committed. Direct HTTPS push could not
 obtain GitHub credentials. The connected GitHub integration then returned HTTP
 403, `Resource not accessible by integration`, when asked to create the branch.
 No remote branch or pull request was created. Publication requires repository
