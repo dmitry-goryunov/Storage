@@ -1,14 +1,14 @@
 # Project status
 
-**As of 2026-09-08.** Canonical `main` is `f2a5d4d`; this file arrives with PR #5, which is
-the only work not yet on it. Update this file when that changes — a status document that
-lags is worse than none.
+**As of 2026-09-08.** Canonical `main` is `49d5411`, with every open PR merged: nothing is
+in flight. Update this file when that changes — a status document that lags is worse than
+none.
 
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
-| Tests | `python -m pytest -q` → **34 passed** (32 on `main` until PR #5 lands) |
+| Tests | `python -m pytest -q` → **34 passed** on `main` |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -41,7 +41,7 @@ the live ones ported.
 | [#2](https://github.com/dmitry-goryunov/Storage/pull/2) | `delta` becomes an undiscounted hedge volume; conventions documented; dead code removed | merged |
 | [#3](https://github.com/dmitry-goryunov/Storage/pull/3) | Separate inventory grid size from initial state | merged |
 | [#4](https://github.com/dmitry-goryunov/Storage/pull/4) | `Products.ipynb` | merged |
-| [#5](https://github.com/dmitry-goryunov/Storage/pull/5) | Intrinsic split benchmarked net of the strike | **open** |
+| [#5](https://github.com/dmitry-goryunov/Storage/pull/5) | Intrinsic split benchmarked net of the strike | merged |
 
 The full review, its evidence and the reconciliation record are archived under
 [`docs/reconciliation-history/2026-09-08/`](reconciliation-history/2026-09-08/) — 27 files,
@@ -58,7 +58,7 @@ review that caught the stale baseline, and the migration log.
 | `np.round(..., 3)` in the metrics | Masked the repricing identity at 1e-7 |
 | Coverage guard ran after `smoothen_curve` | Curve gaps surfaced as SciPy's `y must contain only finite values` |
 | `wdr_days` dropped by `run_valuation` | 30, 45, 90 and 365 all priced a storage deal identically |
-| Intrinsic benchmarked against a raw forward average | Shifted by the strike: −27.7 EUR/MWh on a K=28 call, +20.2 on a K=20 put (PR #5) |
+| Intrinsic benchmarked against a raw forward average | Shifted by the strike: −27.7 EUR/MWh on a K=28 call, +20.2 on a K=20 put |
 
 Notebook outputs were also materially stale — `Swing_new.ipynb` showed a swing worth 2.11
 EUR/MWh where the model now gives 3.22.
