@@ -225,12 +225,32 @@ class Storage:
             self.i_curve, self.w_curve, self.i_ratch, self.w_ratch,
             self.n_op_start, self.mintunnel, self.max_tunnel)
 
+        self._assert_terminal_inventory_reached()
+
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
             self.w_curve, self.i_curve, self.x, self.fwd)
 
         return self
+
+    def _assert_terminal_inventory_reached(self, tolerance=1e-9):
+        """Fail when the optimal policy cannot satisfy the terminal constraint.
+
+        Unlike the inexpensive pre-build swing guard, this check observes the
+        actual policy and therefore accounts for ratchets, date masks, tunnels,
+        asymmetric rates and arbitrary initial/terminal inventory states.
+        """
+        allowed = np.asarray(self.t_p_curve[:self.n_op]) > -1e9
+        if not allowed.any():
+            raise ValueError("No permitted terminal inventory state is configured.")
+        terminal_mass = float(self.prob[-1, :, allowed].sum())
+        if not np.isfinite(terminal_mass) or terminal_mass < 1.0 - tolerance:
+            raise ValueError(
+                "The terminal inventory constraint is infeasible under the configured "
+                f"rates, ratchets, date masks and tunnels: only {terminal_mass:.6%} of "
+                "model probability reaches a permitted terminal state."
+            )
 
     def flat(self):
         """Unweighted average forward price over the exercise window — the
