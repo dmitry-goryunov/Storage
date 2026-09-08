@@ -55,3 +55,28 @@ def test_profiled_metrics_use_physical_expected_exercise_volume():
     assert abs(sum(model.exp_ex) - sum(model.delta)) > 1e-3
     np.testing.assert_allclose(model.profiled(), expected, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(result["stochastic_metric"], expected, rtol=0.0, atol=1e-12)
+
+
+def test_time_varying_volatility_produces_valid_tree_probabilities():
+    """A later volatility spike must not create negative transition mass."""
+    n_t = 60
+    n_p = 5
+    forwards = np.full(n_t, 25.0)
+    volatility = np.r_[0.1, np.full(n_t - 1, 1.5)]
+    mean_reversion = np.ones(n_t)
+
+    _, _, q, p_u, p_m, p_d = sm.build_tree(
+        forwards, n_t, n_p, volatility, mean_reversion
+    )
+
+    for i in range(n_t):
+        live = slice(max(n_p - i, 0), min(n_p + i, 2 * n_p) + 1)
+        transitions = np.column_stack((p_u[i, live], p_m[i, live], p_d[i, live]))
+        assert np.isfinite(transitions).all()
+        assert transitions.min() >= -1e-12
+        assert transitions.max() <= 1.0 + 1e-12
+        np.testing.assert_allclose(transitions.sum(axis=1), 1.0, atol=1e-12)
+
+    assert np.isfinite(q).all()
+    assert q.min() >= -1e-12
+    np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
