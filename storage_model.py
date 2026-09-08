@@ -621,6 +621,27 @@ def value_storage(curve, params):
     # Optional asymmetric daily clip rates (clips/day): set params["inj_rate"] /
     # params["wdr_rate"] for "30 in, 45 out" style storage. Both default to the
     # symmetric resolve_grid rate `cpd`, preserving prior behaviour.
+    # Capacity expressed in days is NOT read here — only inj_rate/wdr_rate are.
+    # Accepting it silently gave the caller the default symmetric rate instead of
+    # the deal they described: wdr_days of 30, 45, 90 and 365 all priced alike
+    # while the rate itself moves the value by ~2.6 % across 1..10 clips/day.
+    # params_for_run_valuation converts days -> rate; callers building params by
+    # hand must do the same rather than have the input dropped.
+    # NB `inj_days` is read — resolve_grid uses it as the inventory-state count on
+    # the legacy path — but `wdr_days` is read by nothing here, so accepting it
+    # silently gave the caller the default symmetric rate instead of the deal they
+    # described: 30, 45, 90 and 365 all priced alike, while the rate itself moves
+    # the value ~2.6 % across 1..10 clips/day.
+    if params.get("wdr_days") is not None and params.get("wdr_rate") is None:
+        raise ValueError(
+            f"value_storage reads `wdr_rate` (clips per active day), not `wdr_days`, so "
+            f"`wdr_days={params['wdr_days']}` would be ignored and the deal priced at the "
+            f"symmetric default of {cpd} clip(s)/day. Pass `wdr_rate`, or build the params "
+            f"with params_for_run_valuation(), which derives it as "
+            f"max(1, round(n_states / wdr_days)). Two cautions: the rate is a whole number "
+            f"of clips, so anything slower than 1 clip/day needs a smaller v_step; and on "
+            f"this path `inj_days` means the inventory-state count, not days to fill.")
+
     inj_rate = int(params["inj_rate"]) if params.get("inj_rate") is not None else cpd
     wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
     clips_per_day = max(inj_rate, wdr_rate)

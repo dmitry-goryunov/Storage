@@ -19,9 +19,17 @@ This replaces planning derived from the stale Drive working tree.
    `wdr_rate = max(1, round(n_states / wdr_days))` with 30 states gives rate 1 for
    30, 45 and 90 days alike, so any withdrawal slower than one clip per day is
    inexpressible on the current grid. "30 in, 90 out" is silently priced as
-   "30 in, 30 out". Either accept `inj_days`/`wdr_days` in `run_valuation` and
-   convert there, or reject unknown params loudly; and decide whether sub-clip
-   daily rates need a finer `v_step` or fractional rates in the DP.
+   "30 in, 30 out".
+
+   PARTLY ADDRESSED: `value_storage` now rejects `wdr_days` without `wdr_rate`
+   rather than dropping it, so the mis-specification cannot pass silently. No
+   valuation changed -- the legacy path (no `wdr_days`) and the workbook path
+   (which converts) both price exactly as before. Two decisions remain: whether
+   `run_valuation` should accept days-based capacity natively and convert, and
+   whether sub-clip daily rates need a finer `v_step` or fractional rates in the
+   DP. Note also that `inj_days` carries two meanings -- the inventory-state
+   count in `resolve_grid`, days-to-fill in `params_for_run_valuation` -- which
+   is why the guard covers `wdr_days` only.
 
 ## Priority 2: performance and numerical policy
 

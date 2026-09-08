@@ -270,3 +270,21 @@ def test_contract_curve_gap_reports_the_coverage_problem():
     with np.testing.assert_raises_regex(ValueError, "missing day"):
         sm.Storage("2026-01-01", "2026-02-01", "2026-04-30", curve=short,
                    n_p=0, v_step=1000.0, sVol=0.5)
+
+
+def test_storage_rejects_capacity_expressed_in_days():
+    """run_valuation reads inj_rate/wdr_rate, never inj_days/wdr_days.
+
+    A caller who describes storage capacity in days -- the natural way, and the
+    way the product workbook does it -- used to have those inputs silently
+    discarded and get the default symmetric clip rate instead. On a 2026-2027
+    deal, wdr_days of 30, 45, 90 and 365 all priced at 2.499672 EUR/MWh while
+    the rate itself moves the value from 2.449229 (1 clip/day) to 2.514549 (10).
+    """
+    params = dict(product_type="storage", valDate="2026-01-01",
+                  storageStart="2026-04-01", storageEnd="2027-03-31", days=30,
+                  vol=0.6, n_p_full=3, run_intrinsic=False, v_step=1000,
+                  inj_days=30, wdr_days=90, inj_cost=0.5, wdr_cost=0.5,
+                  daily_curve=_seasonal_daily_curve())
+    with np.testing.assert_raises_regex(ValueError, "wdr_rate"):
+        sm.run_valuation(None, params)
