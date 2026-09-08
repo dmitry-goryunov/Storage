@@ -1,0 +1,38 @@
+{
+  "source_path": "H:/My Drive/Github/dmitry-goryunov/Storage/README.md",
+  "type": "DOC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "Gas Storage / Swing Option Pricing Model",
+  "summary": "Repository README documenting the TTF gas storage/swing trinomial-tree pricing library: model overview, Storage class API reference, usage example, notebook workflow, data schemas and performance notes.",
+  "scope": [
+    "storage_model.py core library",
+    "Swing_new.ipynb driver notebook",
+    "curve.csv monthly TTF forward curve (48 contracts, Jan 2026 - Dec 2029)",
+    "quotes.csv market bid/ask quotes for 6 swing products",
+    "map_curve_to_dates / smoothen_curve forward curve construction",
+    "build_tree trinomial tree with Ornstein-Uhlenbeck mean reversion",
+    "tree growing phase vs full-width phase and forward fitting",
+    "run_model dynamic programming solver over (time, price, volume) state space",
+    "inject/hold/withdraw actions, ratchet limits, exercise masks, transaction costs, inventory tunnels",
+    "Numba nopython/parallel JIT compilation of run_model and probabilities",
+    "probabilities / get_exercise / compute_all_metrics / valuation post-processing",
+    "value decomposition into flat, intrinsic and extrinsic components",
+    "Storage constructor parameters (valDate, storageStart, storageEnd, curve, n_p, v_step, sVol, sMR)",
+    "Storage methods build(), flat(), profiled(), set_volume_states()",
+    "result attributes (fwd, x, v, strat, prob, exp_ex, delta)",
+    "customisable attributes (d_curve, i_curve/w_curve, i_cost/w_cost, i_ratch/w_ratch, mintunnel/max_tunnel)",
+    "notebook valuation workflow and plots for 6 TTF swing products",
+    "dependencies (numpy, numba, scipy, pandas, matplotlib)",
+    "performance levers (n_p, v_step, parallel price loop)"
+  ],
+  "cross_refs": [
+    "storage_model.py",
+    "Swing_new.ipynb",
+    "curve.csv",
+    "quotes.csv"
+  ],
+  "locked": false,
+  "precedence": 3,
+  "notes": "Type is manifest-declared (DOC, precedence 3). Classification confidence is high on independent grounds: prose-plus-reference documentation with no decision record, user stories or acceptance criteria. STALE CONTENT WARNING - an executed code review dated 2026-09-08 found four statements in this README to be false against the current code, so the synthesizer must treat them as inaccurate descriptions of existing behaviour and NOT as requirements, constraints or target behaviour: (1) Section 'Forward Curve' claims a one-shot additive correction is applied per month so smoothed daily averages exactly reproduce the original contract prices - this correction is not implemented. (2) The API reference documents sVol default 0.6 (60 %), but the code default is 0.9. (3) flat() and profiled() are documented as two different quantities (zero-optionality baseline vs profiled price starting fully loaded), but they were a single function returning the same value, so the documented 'Intrinsic = profiled - flat' decomposition does not hold. (4) The usage example's 'Extrinsic' line computes s_full.flat() - s_flat.flat(), which is a difference of flat prices rather than the extrinsic value described in the Value Decomposition table. Any requirement to make these statements true must come from a SPEC or ADR source, not from this README."
+}
