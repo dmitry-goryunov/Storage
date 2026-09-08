@@ -90,7 +90,17 @@ The remaining low-level items are recorded in `.planning/ROADMAP.md`. They were
 not mixed into this correctness port because tunnels, the backstop grid, tie
 tolerance and the inventory-state API require separate behavioural decisions.
 
-## Publication blocker
+## Publication (resolved 2026-09-08)
+
+The blocker below is historical, kept as the record of why the first attempt failed.
+
+Publication completed once GitHub write access worked: branch
+`review/reconcile-model-fixes` pushed, pull request #1 opened
+(https://github.com/dmitry-goryunov/Storage/pull/1), CI green on every commit, and merged
+as a merge commit `8e7997c` so the red-green pairing survives in history. Canonical `main`
+moved `2e1b5dd` -> `8e7997c`. The suite on `main` is 29 passing.
+
+### Original blocker (historical)
 
 The local Git branch is clean with all reconciliation work committed. Direct HTTPS push could not
 obtain GitHub credentials. The connected GitHub integration then returned HTTP
