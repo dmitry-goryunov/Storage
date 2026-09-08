@@ -35,6 +35,16 @@ This replaces planning derived from the stale Drive working tree.
    count in `resolve_grid`, days-to-fill in `params_for_run_valuation` -- which
    is why the guard covers `wdr_days` only.
 
+5. Fix the intrinsic split for struck call swings. Found 2026-09-08 while building
+   Products.ipynb: `value_call_swing` computes `intrinsic = profiled_metric -
+   flat_metric`, but `profiled_metric` is net of the strike while `flat_metric` is the
+   raw average forward, so intrinsic and total shift by about -K. On one deal, K = 0,
+   10 and 28 give intrinsic 0.314, -9.686 and -27.686 EUR/MWh; `extrinsic` (a
+   difference of two struck values) is correctly 0.921 throughout. The natural fix is
+   to benchmark against `flat_metric - strike`, which returns 0.314 for all three --
+   the exercise-day ranking does not depend on a constant strike. It changes a
+   reported number, so it needs the usual failing test and a before/after.
+
 ## Priority 2: performance and numerical policy
 
 1. Shorten the terminal backstop only after proving that the final exercise day and
