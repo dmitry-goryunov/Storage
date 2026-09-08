@@ -8,8 +8,12 @@ This replaces planning derived from the stale Drive working tree.
    before action, after action, or at both points. Then implement and test finding 13.
 2. Define curve-shape acceptance criteria for continuity, overshoot, positivity and
    valuation stability before reconsidering the exact knot solve.
-3. Agree the production discount-curve source and hedge reporting convention now
-   that `delta` is explicitly a discounted forward sensitivity.
+3. Agree the production discount-curve source. The hedge reporting convention is
+   SETTLED: `delta` is an undiscounted physical hedge volume (decision D-O2), the
+   invariant carries the discount weights, and both are documented in
+   docs/MODEL-CONVENTIONS.md. What remains is where a real `d_curve` comes from,
+   and the settlement-timing convention behind it -- the model currently assumes
+   cash settles on the exercise day.
 4. Decide how withdrawal capacity is expressed. Found 2026-09-08 and verified:
    `wdr_days` passed straight to `run_valuation` has no effect at all --
    30, 45, 90 and 365 all price a storage deal at 2.499672 EUR/MWh -- because
@@ -42,10 +46,12 @@ This replaces planning derived from the stale Drive working tree.
 
 1. Separate inventory grid size from initial inventory state instead of overloading
    `n_op_start` (finding 19), with a compatibility period for notebooks and callers.
-2. Deprecate and then remove unused `check_curve`, `valuation`, `get_exercise` and
-   `get_delta` helpers (finding 11).
-3. Remove unused tunnel arguments from `probabilities` when the public compatibility
-   impact has been checked (finding 12).
+2. DONE: removed unused `check_curve`, `valuation`, `get_exercise` and `get_delta`
+   (finding 11). Compatibility checked first -- no caller anywhere in the library,
+   apps, notebooks or tests; `get_exercise`/`get_delta` were only re-exported.
+3. DONE: `probabilities` no longer takes `i_curve`, `w_curve`, `i_ratch`, `w_ratch`,
+   `mintunnel` or `max_tunnel` (finding 12). All six were unread -- `strat` has held
+   the exact signed clip move since the reconciliation refactor.
 4. Review the 0.9 default annualised volatility and document or change it with
    calibration evidence (remaining part of finding 16).
 

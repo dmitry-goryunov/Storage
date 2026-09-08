@@ -179,10 +179,14 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
 
 
 @jit(nopython=True, parallel=True, cache=True)
-def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
-                  i_curve, w_curve, i_ratch, w_ratch,
-                  n_op_start, mintunnel, max_tunnel):
-    """Joint (price, volume) state probabilities under the optimal strategy."""
+def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d, n_op_start):
+    """Joint (price, volume) state probabilities under the optimal strategy.
+
+    Takes no exercise curves or ratchets: `strat` already holds the exact signed
+    clip move for every state, capped when it was chosen. The i_curve/w_curve,
+    i_ratch/w_ratch, mintunnel and max_tunnel arguments this used to accept were
+    never read.
+    """
     prob = np.zeros((n_t, 2*n_p+1, n_op), dtype=np.float64)
     for i in range(2*n_p+1):
         prob[0, i, n_op_start] = q[0, i]
@@ -209,23 +213,3 @@ def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
                                 else:          tp = p_m[i, j]
                                 prob[i+1, nj, k + dk] += tp * prob[i, j, k]
     return prob
-
-
-@jit(nopython=True, cache=True)
-def get_exercise(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve):
-    result = 0.
-    for j in range(2*n_p+1):
-        for k in range(n_op):
-            action = strat[i, j, k] * v_step   # signed clip count -> MWh
-            result += action * prob[i, j, k]
-    return -round(result, 3)
-
-
-@jit(nopython=True, cache=True)
-def get_delta(i, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
-    result = 0.
-    for j in range(2*n_p+1):
-        for k in range(n_op):
-            action = strat[i, j, k] * v_step   # signed clip count -> MWh
-            result += action * prob[i, j, k] * np.exp(x[i, j])
-    return -round(result / fwd[i], 3)
