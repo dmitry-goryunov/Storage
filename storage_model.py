@@ -16,8 +16,9 @@ Symbol glossary (used throughout this module and the kernels)
     x          log-price deviation from the forward at each (time, price) node
     strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
     exp_ex     expected daily exercise volume (MWh), length n_t+1
-    delta      discounted forward-price sensitivity (PV-equivalent MWh),
-               length n_t+1
+    delta      undiscounted hedge volume: the forward MWh to trade for each day
+               (E[S*Q]/F), length n_t+1. Not a PV sensitivity -- see
+               docs/MODEL-CONVENTIONS.md
     t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
     i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
@@ -37,9 +38,7 @@ import pandas as pd
 # Numba kernels live in storage_kernels.py so that edits to this file do not
 # invalidate their disk cache (which would trigger a 20-40s recompile).
 # Re-exported here for backward compatibility.
-from storage_kernels import (
-    _tree_core, run_model, probabilities, get_exercise, get_delta,
-)
+from storage_kernels import _tree_core, run_model, probabilities
 
 
 # ── Curve utilities ───────────────────────────────────────────────────────────
@@ -89,13 +88,6 @@ def smoothen_curve(coarse_curve, alpha=1.2):
     ).reindex(periods).values
 
     return smoothed
-
-
-def check_curve(coarse_curve, smoothed_curve):
-    print(pd.DataFrame({
-        'Stepped_Monthly_Avg':  coarse_curve.resample('ME').mean(),
-        'Smoothed_Monthly_Avg': smoothed_curve.resample('ME').mean(),
-    }))
 
 
 # ── Storage facility ──────────────────────────────────────────────────────────
@@ -233,8 +225,7 @@ class Storage:
 
         self.prob = probabilities(
             self.n_t, self.n_p, self.n_op, q, self.strat, p_u, p_m, p_d,
-            self.i_curve, self.w_curve, self.i_ratch, self.w_ratch,
-            self.n_op_start, self.mintunnel, self.max_tunnel)
+            self.n_op_start)
 
         self._assert_terminal_inventory_reached()
 
@@ -782,14 +773,6 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
 
 # ── Valuation helpers ─────────────────────────────────────────────────────────
 
-def valuation(n_p, v, q, n_op_start):
-    """Expected value at contract start, averaging over price states."""
-    result = 0
-    for i in range(max(n_p, 0), min(n_p, 2*n_p) + 1):
-        result += v[0, i, n_op_start] * q[0, i]
-    return result
-
-
 def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
                         w_curve, i_curve, d_curve, x, fwd):
     # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
@@ -798,9 +781,15 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
     pa     = prob * action
     exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
 
+    # `delta` is an UNDISCOUNTED physical hedge volume: the forward MWh to trade
+    # (decision D-O2). Hedging day i with h forwards gives PV = h*DF_i*F_i*eps
+    # against dV/deps = DF_i*E[S_i*Q_i], so the discount factor cancels and
+    # h = E[S_i*Q_i]/F_i. Discounting it here would make the reported number move
+    # with the yield curve while the gas did not, and under-hedge by DF (4.6 % at
+    # 3 %, 7.7 % at 5 %). The discount weights belong in the repricing identity
+    # instead: sum_i d_curve[i] * delta[i] * fwd[i] == v[0, n_p, n_op_start].
     exp_x    = np.exp(x)[:, :, None]
-    discount = np.asarray(d_curve[:n_t], dtype=float)[:, None, None]
-    delta    = list(-(pa * discount * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
+    delta    = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta
 

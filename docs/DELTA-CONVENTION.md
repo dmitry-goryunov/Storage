@@ -1,13 +1,15 @@
 # Decision memo — what should `delta` mean?
 
 Date: 2026-09-08
-Status: **open** — the code and the decision record disagree
+Status: **DECIDED 2026-09-08 — undiscounted.** The code now matches decision D-O2;
+`delta` carries no discount factor and the invariant carries the weights instead. The
+analysis below is kept as the reasoning behind that choice.
 Reproduce: the table below comes from a mandatory put swing buying 30 days of 2027,
 valued 2026-01-01 off `curve.csv`, `n_p = 20`, `sVol = 0.5`.
 
-## The disagreement
+## The disagreement (resolved)
 
-`compute_all_metrics` applies the discount factor to `delta`:
+`compute_all_metrics` used to apply the discount factor to `delta`:
 
 ```python
 discount = np.asarray(d_curve[:n_t], dtype=float)[:, None, None]

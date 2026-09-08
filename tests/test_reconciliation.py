@@ -174,12 +174,33 @@ def test_post_build_feasibility_check_accounts_for_ratchets():
         model.build()
 
 
-def test_delta_is_discounted_forward_sensitivity():
-    """Delta reprices present value when non-unit discount factors are used."""
+def test_delta_is_an_undiscounted_hedge_volume():
+    """`delta` is the forward MWh to trade, not a PV sensitivity (decision D-O2).
+
+    Hedging day i with h forwards gives PV = h*DF_i*F_i*eps against
+    dV/deps = DF_i*E[S_i*Q_i], so the discount factor cancels and h = E[S_i*Q_i]/F_i.
+    The identity therefore carries the discount weights, and reduces to
+    sum(delta*fwd) == V0 while d_curve is all ones.
+    """
     model = _direct_put(discount_rate=0.08)
     value = float(model.v[0, model.n_p, model.n_op_start])
-    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
-    assert abs(repriced - value) / abs(value) < 1e-9
+    delta = np.asarray(model.delta[:model.n_t])
+    discounted = float(np.dot(model.d_curve[:model.n_t] * delta, model.fwd))
+    assert abs(discounted - value) / abs(value) < 1e-9
+
+    # ...and the reported number must carry no discount factor of its own. Checked
+    # against a direct recomputation from the model's own policy, so it does not
+    # depend on the policy: the DP maximises PV, so WHICH days it exercises does
+    # legitimately shift with d_curve (~0.26 % of total delta at 8 %). What must not
+    # happen is the reported figure being scaled by DF on top of that.
+    action = model.strat[:model.n_t] * model.v_step
+    pa = model.prob[:model.n_t] * action
+    undiscounted = -(pa * np.exp(model.x)[:, :, None]).sum(axis=(1, 2)) / model.fwd
+    assert np.allclose(delta, undiscounted, rtol=1e-12, atol=1e-9), (
+        "delta is not the plain E[S*Q]/F hedge volume")
+    scaled = undiscounted * model.d_curve[:model.n_t]
+    assert not np.allclose(delta, scaled, rtol=1e-6), (
+        "delta still looks scaled by the discount factor")
 
 
 def test_multi_clip_ratchet_keeps_policy_probability_and_metrics_consistent():
