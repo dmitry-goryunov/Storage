@@ -89,3 +89,16 @@ debug scripts, `.git`, `.venv` and cache directories are not release inputs.
 The remaining low-level items are recorded in `.planning/ROADMAP.md`. They were
 not mixed into this correctness port because tunnels, the backstop grid, tie
 tolerance and the inventory-state API require separate behavioural decisions.
+
+## Publication blocker
+
+The local Git branch is clean at commit `ac5ffd5`. Direct HTTPS push could not
+obtain GitHub credentials. The connected GitHub integration then returned HTTP
+403, `Resource not accessible by integration`, when asked to create the branch.
+No remote branch or pull request was created. Publication requires repository
+write access to be enabled for the GitHub connection, or the following command
+to be run in a credentialled clone:
+
+```bash
+git push -u origin review/reconcile-model-fixes
+```
