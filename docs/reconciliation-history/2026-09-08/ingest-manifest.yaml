@@ -1,0 +1,16 @@
+# Manifest for /gsd-ingest-docs. The repo keeps its planning docs at the root
+# rather than under docs/adr|prd|spec, so convention discovery finds nothing.
+# Lower precedence value = higher precedence.
+docs:
+  - path: docs/SPEC-remaining-work.md
+    type: SPEC
+    precedence: 0        # the agreed plan; most current, wins on conflict
+  - path: code_review.md
+    type: SPEC
+    precedence: 1        # findings and their fix status
+  - path: finding.md
+    type: DOC
+    precedence: 2        # put-delta investigation + peer review (evidence)
+  - path: README.md
+    type: DOC
+    precedence: 3        # model documentation; known to contain stale claims
