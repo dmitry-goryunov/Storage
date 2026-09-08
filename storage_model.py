@@ -16,7 +16,8 @@ Symbol glossary (used throughout this module and the kernels)
     x          log-price deviation from the forward at each (time, price) node
     strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
     exp_ex     expected daily exercise volume (MWh), length n_t+1
-    delta      daily forward-equivalent delta (MWh), length n_t+1
+    delta      discounted forward-price sensitivity (PV-equivalent MWh),
+               length n_t+1
     t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
     i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
@@ -230,7 +231,7 @@ class Storage:
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
-            self.w_curve, self.i_curve, self.x, self.fwd)
+            self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd)
 
         return self
 
@@ -758,15 +759,17 @@ def valuation(n_p, v, q, n_op_start):
     return result
 
 
-def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
+def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
+                        w_curve, i_curve, d_curve, x, fwd):
     # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
 
     pa     = prob * action
     exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
 
-    exp_x  = np.exp(x)[:, :, None]
-    delta  = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
+    exp_x    = np.exp(x)[:, :, None]
+    discount = np.asarray(d_curve[:n_t], dtype=float)[:, None, None]
+    delta    = list(-(pa * discount * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta
 
