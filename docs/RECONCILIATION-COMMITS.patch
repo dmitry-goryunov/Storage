@@ -1,0 +1,1336 @@
+From 70cff4025bed8a37a06bab32c95448d0b9623d42 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:09:32 +0100
+Subject: [PATCH 01/16] test: expose rounded exercise metrics
+
+---
+ tests/test_reconciliation.py | 47 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+ create mode 100644 tests/test_reconciliation.py
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+new file mode 100644
+index 0000000..39bb9e2
+--- /dev/null
++++ b/tests/test_reconciliation.py
+@@ -0,0 +1,47 @@
++"""Regression tests for the September 2026 reconciliation findings."""
++
++import os
++import sys
++
++import numpy as np
++import pandas as pd
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++import storage_model as sm  # noqa: E402
++
++
++def _seasonal_daily_curve():
++    days = pd.date_range("2026-01-01", "2027-12-31", freq="D")
++    values = 25.0 + 5.0 * np.sin(np.arange(len(days)) * 2.0 * np.pi / 365.25)
++    return pd.Series(values, index=days)
++
++
++def _mandatory_put(n_p=20):
++    params = {
++        "product_type": "put_swing",
++        "valDate": "2026-01-01",
++        "storageStart": "2026-02-01",
++        "storageEnd": "2026-04-30",
++        "vol": 0.5,
++        "sMR": 1.0,
++        "n_p_full": n_p,
++        "run_intrinsic": False,
++        "daily_max": 1000.0,
++        "clips_per_day": 1,
++        "capacity_mwh": 10_000.0,
++        "strike": 0.0,
++        "daily_curve": _seasonal_daily_curve(),
++    }
++    model, _ = sm.run_valuation(None, params)
++    return model
++
++
++def test_expected_exercise_is_not_rounded_before_aggregation():
++    """The expected exercise schedule must exactly reprice the contract value."""
++    model = _mandatory_put()
++    value = float(model.v[0, model.n_p, model.n_op_start])
++    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
++
++    assert abs(repriced - value) / abs(value) < 1e-9
++    assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
+-- 
+2.51.1
+
+
+From a4ec8091d49df11923a07341c49053b044e3badb Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:09:55 +0100
+Subject: [PATCH 02/16] fix: preserve full precision in exercise metrics
+
+---
+ storage_model.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/storage_model.py b/storage_model.py
+index 596583d..11e64f6 100644
+--- a/storage_model.py
++++ b/storage_model.py
+@@ -699,10 +699,10 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w
+     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
+ 
+     pa     = prob * action
+-    exp_ex = list(-np.round(pa.sum(axis=(1, 2)), 3)) + [0.0]
++    exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
+ 
+     exp_x  = np.exp(x)[:, :, None]
+-    delta  = list(-np.round((pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t], 3)) + [0.0]
++    delta  = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
+ 
+     return exp_ex, delta
+ 
+-- 
+2.51.1
+
+
+From 9aaee6e443d658b9f0ffa93c0a599550d1a79b0a Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:10:26 +0100
+Subject: [PATCH 03/16] test: expose physical volume denominator defect
+
+---
+ tests/test_reconciliation.py | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 39bb9e2..59f2dfa 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -17,7 +17,7 @@ def _seasonal_daily_curve():
+     return pd.Series(values, index=days)
+ 
+ 
+-def _mandatory_put(n_p=20):
++def _mandatory_put(n_p=20, run_intrinsic=False):
+     params = {
+         "product_type": "put_swing",
+         "valDate": "2026-01-01",
+@@ -26,22 +26,32 @@ def _mandatory_put(n_p=20):
+         "vol": 0.5,
+         "sMR": 1.0,
+         "n_p_full": n_p,
+-        "run_intrinsic": False,
++        "run_intrinsic": run_intrinsic,
+         "daily_max": 1000.0,
+         "clips_per_day": 1,
+         "capacity_mwh": 10_000.0,
+         "strike": 0.0,
+         "daily_curve": _seasonal_daily_curve(),
+     }
+-    model, _ = sm.run_valuation(None, params)
+-    return model
++    return sm.run_valuation(None, params)
+ 
+ 
+ def test_expected_exercise_is_not_rounded_before_aggregation():
+     """The expected exercise schedule must exactly reprice the contract value."""
+-    model = _mandatory_put()
++    model, _ = _mandatory_put()
+     value = float(model.v[0, model.n_p, model.n_op_start])
+     repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+ 
+     assert abs(repriced - value) / abs(value) < 1e-9
+     assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
++
++
++def test_profiled_metrics_use_physical_expected_exercise_volume():
++    """Per-MWh metrics use expected physical exercise, not hedge delta."""
++    model, result = _mandatory_put()
++    value = float(model.v[0, model.n_p, model.n_op_start])
++    expected = value / float(sum(model.exp_ex))
++
++    assert abs(sum(model.exp_ex) - sum(model.delta)) > 1e-3
++    assert model.profiled() == expected
++    assert result["stochastic_metric"] == expected
+-- 
+2.51.1
+
+
+From d5096b10df7fb7eca5ec79d3c5e8af32b8a87256 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:12:00 +0100
+Subject: [PATCH 04/16] fix: normalise swing metrics by physical volume
+
+---
+ storage_model.py             | 28 ++++++++++++++++++----------
+ tests/test_reconciliation.py |  4 ++--
+ 2 files changed, 20 insertions(+), 12 deletions(-)
+
+diff --git a/storage_model.py b/storage_model.py
+index 11e64f6..782610a 100644
+--- a/storage_model.py
++++ b/storage_model.py
+@@ -239,11 +239,20 @@ class Storage:
+         return float(pd.Series(self.price_curve, index=self.date_span).loc[exercise_dates].mean())
+ 
+     def profiled(self):
+-        """Volume-weighted achieved price per MWh under the optimal strategy.
+-        Reads the central forward node v[0, n_p, .], so it is correct for both
+-        the intrinsic (n_p=0) and the full (n_p>0) build."""
+-        ACQ = np.sum(self.delta)
+-        return self.v[0, self.n_p, self.n_op_start] / ACQ
++        """Contract value per expected net exercised MWh.
++
++        This legacy method name is retained for compatibility. The denominator
++        is the physical expected exercise schedule, not the hedge delta. It is
++        therefore meaningful for one-directional swing contracts and raises for
++        a zero-net-volume strategy such as a cycling storage contract.
++        """
++        volume = float(np.sum(self.exp_ex))
++        gross_volume = float(np.sum(np.abs(self.exp_ex)))
++        if abs(volume) <= 1e-12 * max(gross_volume, 1.0):
++            raise ValueError(
++                "Value per net exercised MWh is undefined for a zero-net-volume strategy."
++            )
++        return self.v[0, self.n_p, self.n_op_start] / volume
+ 
+ 
+ def month_start(ts):
+@@ -485,7 +494,7 @@ def value_put_swing(curve, params):
+     if params["run_intrinsic"]:
+         s.build()
+         profiled_eur = s.v[0, 0, init_inv]
+-        acq = -np.sum(s.delta)
++        acq = -np.sum(s.exp_ex)
+         profiled_metric = s.profiled()
+         intrinsic = flat_metric - profiled_metric
+         intrinsic_profile_raw = -np.array(s.exp_ex)
+@@ -499,7 +508,7 @@ def value_put_swing(curve, params):
+     s.n_p = params["n_p_full"]
+     s.build()
+     full_eur = s.v[0, s.n_p, init_inv]
+-    stochastic_metric = full_eur / np.sum(s.delta)
++    stochastic_metric = s.profiled()
+     extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
+     extrinsic_profile_raw = -np.array(s.exp_ex)
+ 
+@@ -544,7 +553,7 @@ def value_call_swing(curve, params):
+     if params["run_intrinsic"]:
+         s.build()
+         profiled_eur = s.v[0, 0, init_inv]
+-        acq = np.sum(s.delta)
++        acq = np.sum(s.exp_ex)
+         profiled_metric = profiled_eur / acq if acq else np.nan
+         intrinsic = profiled_metric - flat_metric if acq else np.nan
+         intrinsic_profile_raw = np.array(s.exp_ex)
+@@ -558,8 +567,7 @@ def value_call_swing(curve, params):
+     s.n_p = params["n_p_full"]
+     s.build()
+     full_eur = s.v[0, s.n_p, init_inv]
+-    full_acq = np.sum(s.delta)
+-    stochastic_metric = full_eur / full_acq if full_acq else np.nan
++    stochastic_metric = s.profiled()
+     extrinsic = (full_eur - profiled_eur) / acq if (params["run_intrinsic"] and acq) else np.nan
+     extrinsic_profile_raw = np.array(s.exp_ex)
+ 
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 59f2dfa..f621c21 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -53,5 +53,5 @@ def test_profiled_metrics_use_physical_expected_exercise_volume():
+     expected = value / float(sum(model.exp_ex))
+ 
+     assert abs(sum(model.exp_ex) - sum(model.delta)) > 1e-3
+-    assert model.profiled() == expected
+-    assert result["stochastic_metric"] == expected
++    np.testing.assert_allclose(model.profiled(), expected, rtol=0.0, atol=1e-12)
++    np.testing.assert_allclose(result["stochastic_metric"], expected, rtol=0.0, atol=1e-12)
+-- 
+2.51.1
+
+
+From 785407b35ebcca5ed5287d3a463e21aff719095b Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:12:52 +0100
+Subject: [PATCH 05/16] test: expose invalid variable-volatility tree
+
+---
+ tests/test_reconciliation.py | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index f621c21..bd5dbac 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -55,3 +55,28 @@ def test_profiled_metrics_use_physical_expected_exercise_volume():
+     assert abs(sum(model.exp_ex) - sum(model.delta)) > 1e-3
+     np.testing.assert_allclose(model.profiled(), expected, rtol=0.0, atol=1e-12)
+     np.testing.assert_allclose(result["stochastic_metric"], expected, rtol=0.0, atol=1e-12)
++
++
++def test_time_varying_volatility_produces_valid_tree_probabilities():
++    """A later volatility spike must not create negative transition mass."""
++    n_t = 60
++    n_p = 5
++    forwards = np.full(n_t, 25.0)
++    volatility = np.r_[0.1, np.full(n_t - 1, 1.5)]
++    mean_reversion = np.ones(n_t)
++
++    _, _, q, p_u, p_m, p_d = sm.build_tree(
++        forwards, n_t, n_p, volatility, mean_reversion
++    )
++
++    for i in range(n_t):
++        live = slice(max(n_p - i, 0), min(n_p + i, 2 * n_p) + 1)
++        transitions = np.column_stack((p_u[i, live], p_m[i, live], p_d[i, live]))
++        assert np.isfinite(transitions).all()
++        assert transitions.min() >= -1e-12
++        assert transitions.max() <= 1.0 + 1e-12
++        np.testing.assert_allclose(transitions.sum(axis=1), 1.0, atol=1e-12)
++
++    assert np.isfinite(q).all()
++    assert q.min() >= -1e-12
++    np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
+-- 
+2.51.1
+
+
+From 2e4c17ddf30a0afc18ad0739112789890decf57a Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:14:14 +0100
+Subject: [PATCH 06/16] fix: validate tree and size lattice for peak volatility
+
+---
+ storage_model.py             | 40 ++++++++++++++++++++++++++++++++++--
+ tests/test_reconciliation.py |  6 ++++++
+ 2 files changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/storage_model.py b/storage_model.py
+index 782610a..34003c7 100644
+--- a/storage_model.py
++++ b/storage_model.py
+@@ -676,11 +676,28 @@ def run_valuation(curve, params):
+ # ── Price tree ────────────────────────────────────────────────────────────────
+ 
+ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
+-    dt      = 1. / 365.25
+-    dx      = vol_curve[0] * sqrt(3 * dt)
++    if n_t <= 0:
++        raise ValueError("Price tree requires at least one time step.")
++    if n_p < 0:
++        raise ValueError("Price-tree half-width n_p must be non-negative.")
++
+     vol_arr = np.asarray(vol_curve, dtype=np.float64)
+     mr_arr  = np.asarray(mr_curve,  dtype=np.float64)
+     fwd     = np.asarray(price_curve, dtype=np.float64)[:n_t]
++    if len(fwd) != n_t or len(vol_arr) < n_t or len(mr_arr) < n_t:
++        raise ValueError("Forward, volatility and mean-reversion curves must cover every time step.")
++    if not np.isfinite(fwd).all() or np.any(fwd <= 0.0):
++        raise ValueError("Forward prices must be finite and strictly positive.")
++    if not np.isfinite(vol_arr[:n_t]).all() or np.any(vol_arr[:n_t] < 0.0):
++        raise ValueError("Volatility values must be finite and non-negative.")
++    if not np.isfinite(mr_arr[:n_t]).all():
++        raise ValueError("Mean-reversion values must be finite.")
++
++    dt = 1. / 365.25
++    max_vol = float(np.max(vol_arr[:n_t]))
++    if n_p > 0 and max_vol == 0.0:
++        raise ValueError("A stochastic tree (n_p > 0) requires positive volatility.")
++    dx = max_vol * sqrt(3 * dt)
+ 
+     x   = np.zeros((n_t, 2*n_p+1))
+     p_u = np.zeros((n_t, 2*n_p+1))
+@@ -689,6 +706,25 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
+ 
+     q = _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt)
+ 
++    tolerance = 1e-12
++    for i in range(n_t):
++        j_s = max(n_p - i, 0)
++        j_e = min(n_p + i, 2*n_p) + 1
++        transitions = np.column_stack((p_u[i, j_s:j_e], p_m[i, j_s:j_e], p_d[i, j_s:j_e]))
++        if (not np.isfinite(transitions).all()
++                or np.min(transitions) < -tolerance
++                or np.max(transitions) > 1.0 + tolerance
++                or not np.allclose(transitions.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
++            raise ValueError(
++                f"Invalid transition probabilities at time step {i}; "
++                "check the volatility, mean-reversion and tree-width inputs."
++            )
++
++    if (not np.isfinite(q).all()
++            or np.min(q) < -tolerance
++            or not np.allclose(q.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
++        raise ValueError("Invalid propagated price-state probabilities.")
++
+     return fwd, x, q, p_u, p_m, p_d
+ 
+ 
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index bd5dbac..6f789bb 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -80,3 +80,9 @@ def test_time_varying_volatility_produces_valid_tree_probabilities():
+     assert np.isfinite(q).all()
+     assert q.min() >= -1e-12
+     np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
++
++
++def test_stochastic_tree_rejects_zero_volatility():
++    """A zero-width stochastic lattice is rejected with a useful error."""
++    with np.testing.assert_raises_regex(ValueError, "positive volatility"):
++        sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))
+-- 
+2.51.1
+
+
+From 7db91b716261f711d29ed8e192988af80d22ef1d Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:15:02 +0100
+Subject: [PATCH 07/16] test: expose ratchet-constrained infeasibility
+
+---
+ tests/test_reconciliation.py | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 6f789bb..c1b9cc5 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -86,3 +86,28 @@ def test_stochastic_tree_rejects_zero_volatility():
+     """A zero-width stochastic lattice is rejected with a useful error."""
+     with np.testing.assert_raises_regex(ValueError, "positive volatility"):
+         sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))
++
++
++def test_post_build_feasibility_check_accounts_for_ratchets():
++    """A nominally feasible terminal state can be unreachable under ratchets."""
++    model = sm.Storage(
++        "2026-01-01",
++        "2026-01-02",
++        "2026-01-10",
++        daily_curve=_seasonal_daily_curve(),
++        n_p=0,
++        v_step=1000.0,
++        sVol=0.5,
++        clips_per_day=1,
++    )
++    _, active = sm.active_masks(model)
++    model.i_curve = active
++    model.w_curve = np.zeros(len(model.date_span))
++    model.set_volume_states(2)
++    model.apply_ratchets([0.0, 1.0], [0.0, 0.0], [1.0, 1.0])
++    model.n_op_start = 0
++    model.t_p_curve = np.full(model.n_op + 2, -1e9)
++    model.t_p_curve[2] = 0.0
++
++    with np.testing.assert_raises_regex(ValueError, "terminal inventory"):
++        model.build()
+-- 
+2.51.1
+
+
+From a6ad8286b53d87f5a5cdf05320e4402753a1ac16 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:15:44 +0100
+Subject: [PATCH 08/16] fix: verify terminal inventory reachability
+
+---
+ storage_model.py | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/storage_model.py b/storage_model.py
+index 34003c7..08a52b8 100644
+--- a/storage_model.py
++++ b/storage_model.py
+@@ -225,6 +225,8 @@ class Storage:
+             self.i_curve, self.w_curve, self.i_ratch, self.w_ratch,
+             self.n_op_start, self.mintunnel, self.max_tunnel)
+ 
++        self._assert_terminal_inventory_reached()
++
+         self.exp_ex, self.delta = compute_all_metrics(
+             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
+             self.i_ratch, self.w_ratch, self.v_step,
+@@ -232,6 +234,24 @@ class Storage:
+ 
+         return self
+ 
++    def _assert_terminal_inventory_reached(self, tolerance=1e-9):
++        """Fail when the optimal policy cannot satisfy the terminal constraint.
++
++        Unlike the inexpensive pre-build swing guard, this check observes the
++        actual policy and therefore accounts for ratchets, date masks, tunnels,
++        asymmetric rates and arbitrary initial/terminal inventory states.
++        """
++        allowed = np.asarray(self.t_p_curve[:self.n_op]) > -1e9
++        if not allowed.any():
++            raise ValueError("No permitted terminal inventory state is configured.")
++        terminal_mass = float(self.prob[-1, :, allowed].sum())
++        if not np.isfinite(terminal_mass) or terminal_mass < 1.0 - tolerance:
++            raise ValueError(
++                "The terminal inventory constraint is infeasible under the configured "
++                f"rates, ratchets, date masks and tunnels: only {terminal_mass:.6%} of "
++                "model probability reaches a permitted terminal state."
++            )
++
+     def flat(self):
+         """Unweighted average forward price over the exercise window — the
+         zero-optionality baseline. Independent of n_p and the optimisation."""
+-- 
+2.51.1
+
+
+From 1e426d2d561fb3c566ed1d9d2721e6d208df330f Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:23:48 +0100
+Subject: [PATCH 09/16] test: expose undiscounted delta convention
+
+---
+ tests/test_reconciliation.py | 31 +++++++++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index c1b9cc5..20f5cee 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -36,6 +36,29 @@ def _mandatory_put(n_p=20, run_intrinsic=False):
+     return sm.run_valuation(None, params)
+ 
+ 
++def _direct_put(n_p=20, days=10, discount_rate=0.0, injection_ratchet=1.0):
++    model = sm.Storage(
++        "2026-01-01",
++        "2026-02-01",
++        "2026-04-30",
++        daily_curve=_seasonal_daily_curve(),
++        n_p=n_p,
++        v_step=1000.0,
++        sVol=0.5,
++        clips_per_day=1,
++    )
++    _, active = sm.active_masks(model)
++    model.i_curve = active
++    model.w_curve = np.zeros(len(model.date_span))
++    model.set_volume_states(days)
++    model.i_ratch[:] = injection_ratchet
++    model.n_op_start = 0
++    model.t_p_curve = np.full(model.n_op + 2, -1e9)
++    model.t_p_curve[days] = 0.0
++    model.d_curve = np.exp(-discount_rate * np.arange(model.n_t) / 365.25)
++    return model.build()
++
++
+ def test_expected_exercise_is_not_rounded_before_aggregation():
+     """The expected exercise schedule must exactly reprice the contract value."""
+     model, _ = _mandatory_put()
+@@ -111,3 +134,11 @@ def test_post_build_feasibility_check_accounts_for_ratchets():
+ 
+     with np.testing.assert_raises_regex(ValueError, "terminal inventory"):
+         model.build()
++
++
++def test_delta_is_discounted_forward_sensitivity():
++    """Delta reprices present value when non-unit discount factors are used."""
++    model = _direct_put(discount_rate=0.08)
++    value = float(model.v[0, model.n_p, model.n_op_start])
++    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
++    assert abs(repriced - value) / abs(value) < 1e-9
+-- 
+2.51.1
+
+
+From fa7444dce931d74f6ff7513a21b6e897d5a7accf Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:24:26 +0100
+Subject: [PATCH 10/16] fix: report discounted forward delta
+
+---
+ storage_model.py | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/storage_model.py b/storage_model.py
+index 08a52b8..0e8352f 100644
+--- a/storage_model.py
++++ b/storage_model.py
+@@ -16,7 +16,8 @@ Symbol glossary (used throughout this module and the kernels)
+     x          log-price deviation from the forward at each (time, price) node
+     strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
+     exp_ex     expected daily exercise volume (MWh), length n_t+1
+-    delta      daily forward-equivalent delta (MWh), length n_t+1
++    delta      discounted forward-price sensitivity (PV-equivalent MWh),
++               length n_t+1
+     t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
+     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
+     i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
+@@ -230,7 +231,7 @@ class Storage:
+         self.exp_ex, self.delta = compute_all_metrics(
+             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
+             self.i_ratch, self.w_ratch, self.v_step,
+-            self.w_curve, self.i_curve, self.x, self.fwd)
++            self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd)
+ 
+         return self
+ 
+@@ -758,15 +759,17 @@ def valuation(n_p, v, q, n_op_start):
+     return result
+ 
+ 
+-def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
++def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
++                        w_curve, i_curve, d_curve, x, fwd):
+     # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
+     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
+ 
+     pa     = prob * action
+     exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
+ 
+-    exp_x  = np.exp(x)[:, :, None]
+-    delta  = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
++    exp_x    = np.exp(x)[:, :, None]
++    discount = np.asarray(d_curve[:n_t], dtype=float)[:, None, None]
++    delta    = list(-(pa * discount * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
+ 
+     return exp_ex, delta
+ 
+-- 
+2.51.1
+
+
+From bb38de6471b7ad9fd7727b84d0b3a2f028e0c6ce Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:27:36 +0100
+Subject: [PATCH 11/16] test: consolidate reconciliation and app checks
+
+---
+ tests/test_reconciliation.py | 98 ++++++++++++++++++++++++++++++++++--
+ tests/test_regression.py     | 13 +++--
+ 2 files changed, 101 insertions(+), 10 deletions(-)
+
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 20f5cee..717654c 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -5,11 +5,14 @@ import sys
+ 
+ import numpy as np
+ import pandas as pd
++import pytest
+ 
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ 
+ import storage_model as sm  # noqa: E402
+ 
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
+ 
+ def _seasonal_daily_curve():
+     days = pd.date_range("2026-01-01", "2027-12-31", freq="D")
+@@ -61,12 +64,13 @@ def _direct_put(n_p=20, days=10, discount_rate=0.0, injection_ratchet=1.0):
+ 
+ def test_expected_exercise_is_not_rounded_before_aggregation():
+     """The expected exercise schedule must exactly reprice the contract value."""
+-    model, _ = _mandatory_put()
+-    value = float(model.v[0, model.n_p, model.n_op_start])
+-    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
++    for n_p in (0, 20):
++        model, _ = _mandatory_put(n_p=n_p)
++        value = float(model.v[0, model.n_p, model.n_op_start])
++        repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+ 
+-    assert abs(repriced - value) / abs(value) < 1e-9
+-    assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
++        assert abs(repriced - value) / abs(value) < 1e-9
++        assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
+ 
+ 
+ def test_profiled_metrics_use_physical_expected_exercise_volume():
+@@ -105,12 +109,45 @@ def test_time_varying_volatility_produces_valid_tree_probabilities():
+     np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
+ 
+ 
++def test_flat_volatility_tree_is_bit_identical_to_legacy_spacing():
++    n_t = 30
++    n_p = 5
++    forwards = np.linspace(25.0, 30.0, n_t)
++    volatility = np.full(n_t, 0.5)
++    mean_reversion = np.ones(n_t)
++    new = sm.build_tree(forwards, n_t, n_p, volatility, mean_reversion)
++
++    dt = 1.0 / 365.25
++    dx = volatility[0] * np.sqrt(3.0 * dt)
++    x = np.zeros((n_t, 2 * n_p + 1))
++    p_u = np.zeros_like(x)
++    p_m = np.zeros_like(x)
++    p_d = np.zeros_like(x)
++    q = sm._tree_core(
++        x, p_u, p_m, p_d, forwards.copy(), volatility, mean_reversion,
++        n_t, n_p, dx, dt,
++    )
++    legacy = (forwards, x, q, p_u, p_m, p_d)
++
++    for actual, expected in zip(new, legacy):
++        np.testing.assert_array_equal(actual, expected)
++
++
+ def test_stochastic_tree_rejects_zero_volatility():
+     """A zero-width stochastic lattice is rejected with a useful error."""
+     with np.testing.assert_raises_regex(ValueError, "positive volatility"):
+         sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))
+ 
+ 
++def test_unstable_tree_configuration_raises_instead_of_returning_nans():
++    n_t = 120
++    with np.testing.assert_raises_regex(ValueError, "Invalid transition probabilities"):
++        sm.build_tree(
++            np.full(n_t, 25.0), n_t, 20,
++            np.linspace(0.1, 1.2, n_t), np.ones(n_t),
++        )
++
++
+ def test_post_build_feasibility_check_accounts_for_ratchets():
+     """A nominally feasible terminal state can be unreachable under ratchets."""
+     model = sm.Storage(
+@@ -142,3 +179,54 @@ def test_delta_is_discounted_forward_sensitivity():
+     value = float(model.v[0, model.n_p, model.n_op_start])
+     repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+     assert abs(repriced - value) / abs(value) < 1e-9
++
++
++def test_multi_clip_ratchet_keeps_policy_probability_and_metrics_consistent():
++    model = _direct_put(days=10, injection_ratchet=2.0)
++    assert abs(-sum(model.exp_ex) - 10_000.0) < 1e-9
++    value = float(model.v[0, model.n_p, model.n_op_start])
++    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
++    assert abs(repriced - value) / abs(value) < 1e-9
++
++
++def test_tree_reprices_forward_curve_at_every_time_step():
++    n_t = 60
++    n_p = 10
++    forwards = 25.0 + 3.0 * np.sin(np.arange(n_t) / 9.0)
++    fwd, x, q, *_ = sm.build_tree(
++        forwards, n_t, n_p, np.full(n_t, 0.5), np.ones(n_t)
++    )
++    expected_spot = np.sum(q * np.exp(x), axis=1)
++    np.testing.assert_allclose(expected_spot, fwd, rtol=1e-12, atol=1e-12)
++
++
++def test_monthly_delta_matches_independent_finite_difference():
++    """Local monthly deltas agree with symmetric 5 bp price bumps."""
++    base = _direct_put(n_p=20)
++    dates = pd.DatetimeIndex(base.date_span[:base.n_t])
++    delta = pd.Series(base.delta[:base.n_t], index=dates)
++    fwd = pd.Series(base.fwd, index=dates)
++
++    for month in sorted(set(dates.to_period("M"))):
++        mask = dates.to_period("M") == month
++        analytic = float((delta[mask] * fwd[mask]).sum())
++
++        def bumped_value(epsilon):
++            model = _direct_put(n_p=20)
++            bumped = model.price_curve.copy()
++            bumped.loc[bumped.index.to_period("M") == month] *= 1.0 + epsilon
++            model.price_curve = bumped
++            model.build()
++            return float(model.v[0, model.n_p, model.n_op_start])
++
++        epsilon = 0.00005
++        finite_difference = (bumped_value(epsilon) - bumped_value(-epsilon)) / (2.0 * epsilon)
++        np.testing.assert_allclose(finite_difference, analytic, rtol=0.01, atol=5.0)
++
++
++@pytest.mark.parametrize("app_path", ["streamlit_app.py", "portfolio_app.py"])
++def test_streamlit_app_starts_without_exceptions(app_path):
++    from streamlit.testing.v1 import AppTest
++
++    app = AppTest.from_file(os.path.join(ROOT, app_path), default_timeout=60).run()
++    assert not app.exception
+diff --git a/tests/test_regression.py b/tests/test_regression.py
+index 8bf2d05..6681a6e 100644
+--- a/tests/test_regression.py
++++ b/tests/test_regression.py
+@@ -12,6 +12,7 @@ when those files are absent.
+ import os
+ import re
+ import sys
++from unittest import SkipTest
+ 
+ import numpy as np
+ import pandas as pd
+@@ -160,8 +161,7 @@ def test_products_bridge_runs_finite():
+     """load_product_params -> params_for_run_valuation -> run_valuation must not
+     KeyError or return NaN for any product in the workbook."""
+     if not _have("products.xlsx", "ttf q.xlsx"):
+-        print("SKIP test_products_bridge_runs_finite (missing data)")
+-        return
++        raise SkipTest("missing products.xlsx or ttf q.xlsx")
+     quotes = pd.read_excel(os.path.join(ROOT, "ttf q.xlsx"))
+     quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"}).dropna(subset=["quote_date"])
+     quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
+@@ -182,8 +182,7 @@ def test_products_bridge_runs_finite():
+ def test_portfolio_total_mtm():
+     """End-to-end portfolio MtM anchor: TOTAL = -56,901 EUR at VAL_DATE 2010-08-19."""
+     if not _have("ttf q.xlsx", "quotes_2.csv"):
+-        print("SKIP test_portfolio_total_mtm (missing data)")
+-        return
++        raise SkipTest("missing ttf q.xlsx or quotes_2.csv")
+     val_date = pd.Timestamp("2010-08-19")
+     quotes = pd.read_excel(os.path.join(ROOT, "ttf q.xlsx"))
+     quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"}).dropna(subset=["quote_date"])
+@@ -237,15 +236,19 @@ def test_portfolio_total_mtm():
+ if __name__ == "__main__":
+     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+     failed = 0
++    skipped = 0
+     for fn in fns:
+         try:
+             fn()
+             print(f"PASS  {fn.__name__}")
++        except SkipTest as exc:
++            skipped += 1
++            print(f"SKIP  {fn.__name__}: {exc}")
+         except AssertionError as exc:
+             failed += 1
+             print(f"FAIL  {fn.__name__}: {exc}")
+         except Exception as exc:  # noqa: BLE001
+             failed += 1
+             print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
+-    print(f"\n{len(fns) - failed}/{len(fns)} passed")
++    print(f"\n{len(fns) - failed - skipped}/{len(fns)} passed, {skipped} skipped")
+     sys.exit(1 if failed else 0)
+-- 
+2.51.1
+
+
+From 541d6528592507b4371346ff4b0a35230ab09c80 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:30:21 +0100
+Subject: [PATCH 12/16] docs: clarify delta convention and pin environment
+
+---
+ README.md             | 18 +++++++--------
+ portfolio_app.py      |  5 +++++
+ requirements-lock.txt | 51 +++++++++++++++++++++++++++++++++++++++++++
+ requirements.txt      | 17 ++++++++-------
+ streamlit_app.py      |  7 +++++-
+ 5 files changed, 79 insertions(+), 19 deletions(-)
+ create mode 100644 requirements-lock.txt
+
+diff --git a/README.md b/README.md
+index f9259eb..46d34de 100644
+--- a/README.md
++++ b/README.md
+@@ -83,10 +83,11 @@ Raw monthly contract prices are vectorised into a daily series, then smoothed vi
+ A trinomial tree discretises log-normal price dynamics with Ornstein-Uhlenbeck mean reversion:
+ 
+ - Time step `dt = 1 / 365.25` (daily)
+-- Grid spacing `dx = σ · √(3 · dt)` for numerical stability
++- Grid spacing `dx = max(σ(t)) · √(3 · dt)` so a volatility term structure cannot outgrow the lattice
+ - **Growing phase** (steps 0 → `n_p`): tree width expands from 1 to `2·n_p+1` nodes
+ - **Full-width phase** (steps `n_p` → `n_t`): constant-width grid; up/middle/down transition probabilities recalculated each step
+ - **Forward-fitting**: at every step the central node is shifted so the tree reproduces the input forward curve exactly
++- **Validation**: live transition probabilities and propagated state probabilities must be finite, non-negative and sum to one
+ 
+ Returns `fwd`, `x` (log-price deviations), `q` (state probabilities), and `p_u / p_m / p_d` transition arrays.
+ 
+@@ -101,7 +102,7 @@ Backward induction from `n_t − 1` to `0` over the full `(time, price, volume)`
+   - Inventory floor/ceiling tunnels (`mintunnel`, `max_tunnel`)
+ - Selects the clip count maximising expected discounted continuation value
+ - The price dimension (`k`) is parallelised via `prange`; the volume (`l`) and clip-count (`d`) loops are scalar
+-- Infeasible terminal inventories are penalised with a large negative value (`−1e9`)
++- Forbidden terminal inventories carry a large negative sentinel (`−1e9`); a post-build probability check rejects any policy that fails to reach a permitted terminal state
+ 
+ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state) over the full grid.
+ 
+@@ -110,8 +111,7 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
+ | Function | Purpose |
+ |---|---|
+ | `probabilities` | Forward simulation of joint (price, volume) state probabilities under the optimal strategy |
+-| `get_exercise` / `compute_all_metrics` | Expected daily exercise volume (MWh) and delta hedge ratios at each time step |
+-| `valuation` | Contract value at start, averaged over price states |
++| `compute_all_metrics` | Expected daily physical exercise (MWh) and discounted forward-price sensitivities at each time step |
+ 
+ ### 5. Value Decomposition
+ 
+@@ -137,7 +137,7 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
+ | `v_step` | MWh per inventory state (the "clip" size) |
+ | `clips_per_day` | max clips injected/withdrawn per active day (the daily rate) |
+ | `strat` | signed clip count moved per state (neg = withdraw, pos = inject, 0 = idle) |
+-| `exp_ex` / `delta` | expected daily exercise volume / forward-equivalent delta (MWh) |
++| `exp_ex` / `delta` | expected daily physical exercise / discounted forward-price sensitivity (PV-equivalent MWh) |
+ | `t_p_curve` | terminal inventory payoff/penalty by state (`-1e9` forbids a state) |
+ | `i_ratch` / `w_ratch` | per-inventory-level inject/withdraw rate multipliers (ratchets) |
+ 
+@@ -179,7 +179,7 @@ Storage(
+ | `strat` | `(n_t, 2·n_p+1, n_op)` | Signed clip count moved: negative = withdraw, positive = inject, 0 = hold (magnitude up to `clips_per_day`) |
+ | `prob` | `(n_t, 2·n_p+1, n_op)` | Joint state probabilities under optimal strategy |
+ | `exp_ex` | `list[float]` (n_t+1) | Expected daily exercise volume (MWh) |
+-| `delta` | `list[float]` (n_t+1) | Delta hedge ratios (volume-weighted, price-normalised) |
++| `delta` | `list[float]` (n_t+1) | Discounted forward-price sensitivities (PV-equivalent MWh) |
+ 
+ #### Customisable attributes (set before `build()`)
+ 
+@@ -235,10 +235,8 @@ s_full = Storage(
+ )
+ s_full.build()
+ # Extrinsic = optionality premium. Both EUR values are divided by the SAME
+-# (intrinsic) acquired volume — the run_valuation convention — so it is >= 0.
+-# (Don't subtract two profiled() calls: their delta denominators differ between
+-# the n_p=0 and n_p=30 builds, which can make the difference go negative.)
+-acq           = np.sum(s_flat.delta)
++# (intrinsic) physical exercise volume — the run_valuation convention.
++acq           = np.sum(s_flat.exp_ex)
+ intrinsic_eur = s_flat.v[0, 0, s_flat.n_op_start]
+ full_eur      = s_full.v[0, s_full.n_p, s_full.n_op_start]
+ extrinsic     = (full_eur - intrinsic_eur) / acq
+diff --git a/portfolio_app.py b/portfolio_app.py
+index c0f8ba6..39c5f2c 100644
+--- a/portfolio_app.py
++++ b/portfolio_app.py
+@@ -481,6 +481,11 @@ st.dataframe(fmt_mtm, width="stretch")
+ # ── Step 6: Monthly exposure ───────────────────────────────────────────────────
+ 
+ st.subheader("Monthly Forward Exposure")
++st.caption(
++    "Local discounted forward sensitivities at the current optimal exercise policies, "
++    "in PV-equivalent MWh. Large curve moves can change those policies, so scenario P&L "
++    "also contains convexity."
++)
+ 
+ monthly_exp = pd.DataFrame(
+     {n: p.resample("MS").sum() for n, p in delta_profiles.items()}
+diff --git a/requirements-lock.txt b/requirements-lock.txt
+new file mode 100644
+index 0000000..70cdd69
+--- /dev/null
++++ b/requirements-lock.txt
+@@ -0,0 +1,51 @@
++Jinja2==3.1.6
++MarkupSafe==3.0.3
++Pygments==2.21.0
++altair==6.2.2
++anyio==4.15.1
++attrs==26.1.0
++certifi==2026.7.22
++charset-normalizer==3.5.1
++click==8.5.0
++contourpy==1.3.3
++cycler==0.12.1
++et_xmlfile==2.0.0
++fonttools==4.64.0
++h11==0.16.0
++httptools==0.8.0
++idna==3.19
++iniconfig==2.3.0
++itsdangerous==2.2.0
++jsonschema-specifications==2025.9.1
++jsonschema==4.26.0
++kiwisolver==1.5.1
++llvmlite==0.49.0
++matplotlib==3.11.1
++narwhals==2.25.0
++numba==0.67.0
++numpy==2.5.3
++openpyxl==3.1.5
++packaging==26.3
++pandas==3.0.5
++pillow==12.3.0
++pluggy==1.6.0
++protobuf==7.36.1
++pyarrow==25.0.1
++pydeck==0.9.3
++pyparsing==3.3.2
++pytest==9.1.1
++python-dateutil==2.9.0.post0
++python-multipart==0.0.32
++referencing==0.37.0
++requests==2.34.2
++rpds-py==2026.6.3
++scipy==1.18.1
++six==1.17.0
++starlette==1.6.0
++streamlit==1.63.0
++toml==0.10.2
++typing_extensions==4.16.0
++urllib3==2.7.0
++uvicorn==0.52.4
++watchdog==6.0.0
++websockets==16.1.1
+diff --git a/requirements.txt b/requirements.txt
+index fba9b0c..bbbfbaf 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,8 +1,9 @@
+-streamlit
+-pandas
+-numpy
+-matplotlib
+-numba
+-scipy
+-openpyxl
+-pyarrow
++streamlit==1.63.0
++pandas==3.0.5
++numpy==2.5.3
++matplotlib==3.11.1
++numba==0.67.0
++scipy==1.18.1
++openpyxl==3.1.5
++pyarrow==25.0.1
++pytest==9.1.1
+diff --git a/streamlit_app.py b/streamlit_app.py
+index 0421194..ac75d5d 100644
+--- a/streamlit_app.py
++++ b/streamlit_app.py
+@@ -279,7 +279,12 @@ for ax, profile, title, color in [
+ plt.tight_layout()
+ st.pyplot(fig)
+ 
+-st.subheader("Monthly Native Deltas")
++st.subheader("Monthly Discounted Forward Deltas")
++st.caption(
++    "Local sensitivities at the current optimal exercise policy, in PV-equivalent MWh. "
++    "Large forward-curve moves can switch exercise decisions, so scenario changes also "
++    "contain convexity and will not generally equal delta multiplied by the price move."
++)
+ monthly_delta = extrinsic_delta_profile.loc[storageStart:storageEnd]
+ monthly_delta_by_period = monthly_delta.resample("MS").sum()
+ monthly_delta_table = pd.DataFrame({
+-- 
+2.51.1
+
+
+From f292d2d87583ed9b1532785adf1a7b2317d8c7aa Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:31:40 +0100
+Subject: [PATCH 13/16] ci: gate model portfolio apps and notebooks
+
+---
+ .github/workflows/test.yml   | 17 +++++++++++++++++
+ tests/test_reconciliation.py | 20 ++++++++++++++++++++
+ 2 files changed, 37 insertions(+)
+ create mode 100644 .github/workflows/test.yml
+
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+new file mode 100644
+index 0000000..ea5a759
+--- /dev/null
++++ b/.github/workflows/test.yml
+@@ -0,0 +1,17 @@
++name: tests
++
++on:
++  push:
++  pull_request:
++
++jobs:
++  test:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.12"
++          cache: pip
++      - run: pip install -r requirements-lock.txt
++      - run: python -m pytest -q
+diff --git a/tests/test_reconciliation.py b/tests/test_reconciliation.py
+index 717654c..29dadf8 100644
+--- a/tests/test_reconciliation.py
++++ b/tests/test_reconciliation.py
+@@ -1,5 +1,6 @@
+ """Regression tests for the September 2026 reconciliation findings."""
+ 
++import json
+ import os
+ import sys
+ 
+@@ -200,6 +201,14 @@ def test_tree_reprices_forward_curve_at_every_time_step():
+     np.testing.assert_allclose(expected_spot, fwd, rtol=1e-12, atol=1e-12)
+ 
+ 
++def test_smoothed_curve_reprices_each_monthly_contract():
++    stepped = _seasonal_daily_curve()
++    smoothed = sm.smoothen_curve(stepped)
++    expected = stepped.resample("ME").mean()
++    actual = smoothed.resample("ME").mean()
++    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
++
++
+ def test_monthly_delta_matches_independent_finite_difference():
+     """Local monthly deltas agree with symmetric 5 bp price bumps."""
+     base = _direct_put(n_p=20)
+@@ -230,3 +239,14 @@ def test_streamlit_app_starts_without_exceptions(app_path):
+ 
+     app = AppTest.from_file(os.path.join(ROOT, app_path), default_timeout=60).run()
+     assert not app.exception
++
++
++@pytest.mark.parametrize(
++    "notebook",
++    ["Swing_new.ipynb", "forward.ipynb", "portfolio.ipynb", "pricing.ipynb"],
++)
++def test_notebook_is_valid_json(notebook):
++    with open(os.path.join(ROOT, notebook), encoding="utf-8") as handle:
++        payload = json.load(handle)
++    assert isinstance(payload.get("cells"), list)
++    assert payload.get("nbformat") == 4
+-- 
+2.51.1
+
+
+From ac5ffd5102dd7dbf370ff5f730fed73c161100c4 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:33:54 +0100
+Subject: [PATCH 14/16] docs: record reconciliation outcome and roadmap
+
+---
+ .planning/ROADMAP.md          | 38 +++++++++++++++
+ .planning/STATE.md            | 14 ++++++
+ docs/RECONCILIATION-REPORT.md | 91 +++++++++++++++++++++++++++++++++++
+ 3 files changed, 143 insertions(+)
+ create mode 100644 .planning/ROADMAP.md
+ create mode 100644 .planning/STATE.md
+ create mode 100644 docs/RECONCILIATION-REPORT.md
+
+diff --git a/.planning/ROADMAP.md b/.planning/ROADMAP.md
+new file mode 100644
+index 0000000..a5d580f
+--- /dev/null
++++ b/.planning/ROADMAP.md
+@@ -0,0 +1,38 @@
++# Roadmap from the reconciled baseline
++
++This replaces planning derived from the stale Drive working tree.
++
++## Priority 1: behavioural specifications
++
++1. Define hard versus soft tunnel semantics, including whether constraints apply
++   before action, after action, or at both points. Then implement and test finding 13.
++2. Define curve-shape acceptance criteria for continuity, overshoot, positivity and
++   valuation stability before reconsidering the exact knot solve.
++3. Agree the production discount-curve source and hedge reporting convention now
++   that `delta` is explicitly a discounted forward sensitivity.
++
++## Priority 2: performance and numerical policy
++
++1. Shorten the terminal backstop only after proving that the final exercise day and
++   terminal payoff indices remain unchanged. Benchmark finding 14 before and after.
++2. Replace the absolute `1e-6` exercise tie threshold with a documented scale-aware
++   rule, then run policy-stability and portfolio regressions for finding 17.
++
++## Priority 3: API and maintenance
++
++1. Separate inventory grid size from initial inventory state instead of overloading
++   `n_op_start` (finding 19), with a compatibility period for notebooks and callers.
++2. Deprecate and then remove unused `check_curve`, `valuation`, `get_exercise` and
++   `get_delta` helpers (finding 11).
++3. Remove unused tunnel arguments from `probabilities` when the public compatibility
++   impact has been checked (finding 12).
++4. Review the 0.9 default annualised volatility and document or change it with
++   calibration evidence (remaining part of finding 16).
++
++## Release discipline
++
++- GitHub is the only writable source tree.
++- Drive review material is read-only evidence, not a second branch.
++- Every behavioural change starts with a failing test.
++- Pull requests must pass model, portfolio, app and notebook gates from the lockfile.
++- Report software verification separately from market calibration and model validation.
+diff --git a/.planning/STATE.md b/.planning/STATE.md
+new file mode 100644
+index 0000000..80b7832
+--- /dev/null
++++ b/.planning/STATE.md
+@@ -0,0 +1,14 @@
++# Reconciled state
++
++Date: 2026-09-08
++
++- Canonical baseline: GitHub `main` at `2e1b5dd`
++- Active branch: `review/reconcile-model-fixes`
++- Applicable review findings resolved: 12 of 19
++- Reconciled test suite: 27 passing, 0 failing, 0 skipped with repository data present
++- Clean lockfile reproduction: passing
++- Curve correction: additive method retained pending model-governance criteria
++- Release status: technically ready for pull-request review after the branch is pushed
++
++The 12 resolved findings are 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15 and 18.
++Finding 16 is partial. Finding 20 is not applicable to canonical `main`.
+diff --git a/docs/RECONCILIATION-REPORT.md b/docs/RECONCILIATION-REPORT.md
+new file mode 100644
+index 0000000..22a3975
+--- /dev/null
++++ b/docs/RECONCILIATION-REPORT.md
+@@ -0,0 +1,91 @@
++# Reconciliation execution report
++
++Date: 2026-09-08  
++Canonical repository: `dmitry-goryunov/Storage`  
++Baseline: `main` at `2e1b5ddacd9649b211e7ce45cedd3bbb944a7f1a`  
++Working branch: `review/reconcile-model-fixes`
++
++## Outcome
++
++The September review was ported by hand onto a fresh clone of canonical `main`.
++The stale Drive working tree was used only as review evidence. No source file,
++virtual environment, cache or Git metadata was copied from it.
++
++The reconciled branch fixes findings 1, 6, 9 and 18, and completes finding 4
++with a generic post-build reachability check. Finding 10 is resolved in both
++apps. Existing fixes on `main` were preserved.
++
++## Verified changes
++
++| Finding | Change | Evidence |
++|---|---|---|
++| 18 | Removed three-decimal rounding from expected exercise and delta aggregation | Contract value reprices from daily delta at relative error below `1e-9` |
++| 1 | Swing per-MWh metrics now divide by expected physical exercise, not hedge delta | Call-swing stochastic metric changed from 20.0093 to 20.0845 EUR/MWh on the current workbook |
++| 6 | Tree spacing uses peak term volatility; inputs and every live probability are validated | Variable-volatility test is valid; unstable configurations raise; flat-vol output is bit-identical |
++| 4 | Added terminal permitted-state probability check after the forward pass | Ratchet-constrained but calendar-feasible case now raises instead of returning the sentinel |
++| 9 | Delta includes the discount factor and is defined as discounted forward-price sensitivity | Discounted repricing identity passes below `1e-9` |
++| 10 | Added convexity and local-sensitivity explanation to both apps | Both Streamlit entrypoints pass smoke tests |
++
++## Product and portfolio impact
++
++The plan expected six products, but the current `products.xlsx` contains two.
++Both were checked.
++
++| Product | Quantity | Baseline | Reconciled | Change |
++|---|---:|---:|---:|---:|
++| `call_swing_2010` | Raw value, EUR | 1,205,068.7769 | 1,205,068.7769 | 0 |
++| `call_swing_2010` | Profiled metric, EUR/MWh | 20.0268 | 20.0268 | 0 |
++| `call_swing_2010` | Stochastic metric, EUR/MWh | 20.0093 | 20.0845 | +0.0752 (+0.376%) |
++| `storage_2010` | Raw value, EUR | 549,074.1441 | 549,074.1441 | 0 |
++| `storage_2010` | Total, EUR/MWh of capacity | 9.1512 | 9.1512 | 0 |
++
++Storage remains normalised by working capacity, not net exercise. Its optimal
++injections and withdrawals net to approximately zero, so value per net exercised
++MWh is deliberately undefined. The portfolio MtM regression remains
++approximately -56,901 EUR and passes unchanged.
++
++## Verification gates
++
++- Original baseline: 9 tests passed in 20.64 seconds in the first isolated run.
++- Reconciled suite: 27 tests passed in 7.12 seconds with warmed Numba caches.
++- A second clean virtual environment installed from `requirements-lock.txt` and
++  passed all tests: 27 passed in 6.94 seconds.
++- Tests include the greedy deterministic solver anchor, portfolio MtM anchor,
++  monthly finite differences, exact mandatory volume, multi-clip ratchets,
++  terminal reachability, curve and tree repricing, app startup and notebook JSON.
++- Continuous integration now installs the lock on Python 3.12 and runs the suite
++  on pushes and pull requests.
++
++These are software verification results. They are not evidence of market model
++calibration or independent model validation.
++
++## Curve-method decision
++
++The existing additive monthly correction was compared with an experimental
++least-squares knot solve. Both repriced monthly contracts to numerical precision.
++
++| Curve | Maximum month-boundary daily step, additive / knot (EUR/MWh) | Call value change | Storage value change |
++|---|---:|---:|---:|
++| Repository `curve.csv` | 0.476 / 0.150 | +0.017% | +0.749% |
++| Moderate 22/32 zigzag | 4.340 / 0.819 | +5.454% | +14.918% |
++| One-month 45 spike on 25 | 6.807 / 1.448 | +4.969% | +31.925% |
++| 45 to 18 slope | 0.033 / 0.023 | +0.0001% | -0.039% |
++
++Decision: retain the additive correction in this reconciliation. The knot solve
++reduces month-boundary steps, but it changes exercise and valuation materially in
++stress cases and can increase spline overshoot. Replacing it is a model change,
++not a safe defect port. It requires explicit curve-shape acceptance criteria and
++calibration evidence before implementation.
++
++## Source inventory decision
++
++Canonical source remains GitHub. Drive-only `code_review.md`, `finding.md`,
++`review_checks.py` and `test_model.py` remain historical evidence. Their live
++assertions were adapted into `tests/test_reconciliation.py`. Stale Drive source,
++debug scripts, `.git`, `.venv` and cache directories are not release inputs.
++
++## Deferred work
++
++The remaining low-level items are recorded in `.planning/ROADMAP.md`. They were
++not mixed into this correctness port because tunnels, the backstop grid, tie
++tolerance and the inventory-state API require separate behavioural decisions.
+-- 
+2.51.1
+
+
+From acc04f3bd5bc63f59dc1776fc548429153ed8914 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:36:17 +0100
+Subject: [PATCH 15/16] docs: record publication blocker
+
+---
+ .planning/STATE.md            |  2 +-
+ docs/RECONCILIATION-REPORT.md | 13 +++++++++++++
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/.planning/STATE.md b/.planning/STATE.md
+index 80b7832..25bde87 100644
+--- a/.planning/STATE.md
++++ b/.planning/STATE.md
+@@ -8,7 +8,7 @@ Date: 2026-09-08
+ - Reconciled test suite: 27 passing, 0 failing, 0 skipped with repository data present
+ - Clean lockfile reproduction: passing
+ - Curve correction: additive method retained pending model-governance criteria
+-- Release status: technically ready for pull-request review after the branch is pushed
++- Release status: technically ready, but remote publication is blocked by GitHub integration HTTP 403
+ 
+ The 12 resolved findings are 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15 and 18.
+ Finding 16 is partial. Finding 20 is not applicable to canonical `main`.
+diff --git a/docs/RECONCILIATION-REPORT.md b/docs/RECONCILIATION-REPORT.md
+index 22a3975..dc0c69a 100644
+--- a/docs/RECONCILIATION-REPORT.md
++++ b/docs/RECONCILIATION-REPORT.md
+@@ -89,3 +89,16 @@ debug scripts, `.git`, `.venv` and cache directories are not release inputs.
+ The remaining low-level items are recorded in `.planning/ROADMAP.md`. They were
+ not mixed into this correctness port because tunnels, the backstop grid, tie
+ tolerance and the inventory-state API require separate behavioural decisions.
++
++## Publication blocker
++
++The local Git branch is clean at commit `ac5ffd5`. Direct HTTPS push could not
++obtain GitHub credentials. The connected GitHub integration then returned HTTP
++403, `Resource not accessible by integration`, when asked to create the branch.
++No remote branch or pull request was created. Publication requires repository
++write access to be enabled for the GitHub connection, or the following command
++to be run in a credentialled clone:
++
++```bash
++git push -u origin review/reconcile-model-fixes
++```
+-- 
+2.51.1
+
+
+From b0416078f22fb36364ffad8626822af147f6552f Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Tue, 8 Sep 2026 14:36:34 +0100
+Subject: [PATCH 16/16] docs: keep publication state commit-independent
+
+---
+ docs/RECONCILIATION-REPORT.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/RECONCILIATION-REPORT.md b/docs/RECONCILIATION-REPORT.md
+index dc0c69a..e440894 100644
+--- a/docs/RECONCILIATION-REPORT.md
++++ b/docs/RECONCILIATION-REPORT.md
+@@ -92,7 +92,7 @@ tolerance and the inventory-state API require separate behavioural decisions.
+ 
+ ## Publication blocker
+ 
+-The local Git branch is clean at commit `ac5ffd5`. Direct HTTPS push could not
++The local Git branch is clean with all reconciliation work committed. Direct HTTPS push could not
+ obtain GitHub credentials. The connected GitHub integration then returned HTTP
+ 403, `Resource not accessible by integration`, when asked to create the branch.
+ No remote branch or pull request was created. Publication requires repository
+-- 
+2.51.1
+

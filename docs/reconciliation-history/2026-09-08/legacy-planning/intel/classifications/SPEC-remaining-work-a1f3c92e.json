@@ -1,0 +1,36 @@
+{
+  "source_path": "H:/My Drive/Github/dmitry-goryunov/Storage/docs/SPEC-remaining-work.md",
+  "type": "SPEC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "SPEC \u2014 Remaining work on the storage/swing pricing model",
+  "summary": "Defines remaining work items, invariants and acceptance criteria for the gas storage/swing trinomial-tree pricing model following the 2026-09-08 model review.",
+  "scope": [
+    "storage_model.py",
+    "streamlit_app.py",
+    "test_model.py",
+    "smoothen_curve monthly curve smoothing",
+    "PCHIP knot solve for exact contract repricing",
+    "partial first/last month curve bias",
+    "trinomial tree DP solver",
+    "n_p_full convergence default",
+    "wdr_days withdrawal capacity input",
+    "bucketed monthly deltas and gamma reporting",
+    "delta discounting convention (d_curve)",
+    "dead code removal (get_exercise, get_delta, valuation, check_curve)",
+    "probabilities tunnel arguments and penalty scale",
+    "debug_delta scripts consolidation into review_checks.py",
+    "DP grid backStop truncation",
+    "README documentation accuracy"
+  ],
+  "cross_refs": [
+    "../code_review.md",
+    "../finding.md",
+    "code_review.md",
+    "finding.md",
+    "README"
+  ],
+  "locked": false,
+  "precedence": 0,
+  "notes": ""
+}

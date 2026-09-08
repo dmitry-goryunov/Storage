@@ -1,0 +1,42 @@
+{
+  "source_path": "H:/My Drive/Github/dmitry-goryunov/Storage/code_review.md",
+  "type": "SPEC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "Code Review \u2014 storage_model.py, streamlit_app.py",
+  "summary": "Executed code review of the gas storage/swing pricing library and Streamlit front end, enumerating 20 numbered defects with measured impact, fixes and regression tests.",
+  "scope": [
+    "storage_model.py",
+    "streamlit_app.py",
+    "test_model.py regression suite",
+    "stochastic_metric denominator (value per MWh vs per delta)",
+    "Storage.flat() and Storage.profiled() price-state indexing",
+    "fractional ratchet conventions (i_ratch, w_ratch)",
+    "-1e9 infeasibility sentinel returned as a price",
+    "smoothen_curve monthly contract repricing",
+    "build_tree dx from vol_curve[0] vs max(vol_curve)",
+    "trinomial tree probability validity (p_u, p_m, p_d)",
+    "n_p_full convergence default in Streamlit",
+    "wdr_days dead input / asymmetric withdrawal capacity",
+    "delta discounting against d_curve",
+    "bucketed monthly delta convexity and gamma reporting",
+    "compute_all_metrics",
+    "run_model DP solver and strat tolerance",
+    "probabilities prange race-freedom and tunnel arguments",
+    "DP grid backStop tail truncation",
+    "curve coverage validation and load_direct_curve",
+    "dead code (get_exercise, get_delta, valuation, check_curve)",
+    "debug_delta*.py script duplication",
+    "README documentation accuracy"
+  ],
+  "cross_refs": [
+    "finding.md",
+    "test_model.py",
+    "review_checks.py",
+    "Swing_new.ipynb",
+    "README"
+  ],
+  "locked": false,
+  "precedence": 1,
+  "notes": ""
+}

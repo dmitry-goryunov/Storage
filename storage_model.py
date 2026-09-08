@@ -16,7 +16,8 @@ Symbol glossary (used throughout this module and the kernels)
     x          log-price deviation from the forward at each (time, price) node
     strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
     exp_ex     expected daily exercise volume (MWh), length n_t+1
-    delta      daily forward-equivalent delta (MWh), length n_t+1
+    delta      discounted forward-price sensitivity (PV-equivalent MWh),
+               length n_t+1
     t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
     i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
@@ -140,20 +141,18 @@ class Storage:
         else:
             if curve is None:
                 raise ValueError("Storage requires either `curve` or `daily_curve`.")
-            self.price_curve = smoothen_curve(
-                map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
-            )
+            # Check coverage BEFORE smoothing: smoothen_curve fits a spline through
+            # the monthly means, and SciPy rejects NaN knots with "`y` must contain
+            # only finite values" -- which says nothing about the real problem. The
+            # guard below never fired on this path until the check moved up here.
+            mapped = map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
+            self._require_full_coverage(mapped, "curve")
+            self.price_curve = smoothen_curve(mapped)
 
         # Fail loudly on curve gaps. Otherwise NaNs propagate silently through the
         # tree and the valuation returns garbage with no error (a real foot-gun on
         # the contract-curve path, where days outside any contract stay NaN).
-        if self.price_curve.isna().any():
-            n_missing = int(self.price_curve.isna().sum())
-            raise ValueError(
-                f"Price curve has {n_missing} missing day(s) over the valuation grid "
-                f"{self.date_span[0]:%Y-%m-%d}..{self.date_span[-1]:%Y-%m-%d}: the supplied "
-                f"curve/daily_curve does not cover the full storage period (including the "
-                f"month-end backstop at {self.backStop:%Y-%m-%d}). Extend the curve.")
+        self._require_full_coverage(self.price_curve, "curve/daily_curve")
 
         # Price-tree vol / mean-reversion profiles
         self.sVol = [sVol] * self.n_t
@@ -180,6 +179,18 @@ class Storage:
         # Volume states — call set_volume_states() to override
         self.n_op_start = (self.storageEnd - self.storageStart).days + 1
         self._init_volume_arrays()
+
+    def _require_full_coverage(self, series, what):
+        """Raise unless `series` covers every day of the valuation grid."""
+        if series.isna().any():
+            n_missing = int(series.isna().sum())
+            gap = series.index[series.isna()]
+            raise ValueError(
+                f"Price curve has {n_missing} missing day(s) over the valuation grid "
+                f"{self.date_span[0]:%Y-%m-%d}..{self.date_span[-1]:%Y-%m-%d} "
+                f"(first {gap[0]:%Y-%m-%d}, last {gap[-1]:%Y-%m-%d}): the supplied "
+                f"{what} does not cover the full storage period, including the "
+                f"month-end backstop at {self.backStop:%Y-%m-%d}. Extend the curve.")
 
     def _init_volume_arrays(self):
         """(Re-)build arrays that depend on n_op_start / n_op."""
@@ -225,12 +236,32 @@ class Storage:
             self.i_curve, self.w_curve, self.i_ratch, self.w_ratch,
             self.n_op_start, self.mintunnel, self.max_tunnel)
 
+        self._assert_terminal_inventory_reached()
+
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
-            self.w_curve, self.i_curve, self.x, self.fwd)
+            self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd)
 
         return self
+
+    def _assert_terminal_inventory_reached(self, tolerance=1e-9):
+        """Fail when the optimal policy cannot satisfy the terminal constraint.
+
+        Unlike the inexpensive pre-build swing guard, this check observes the
+        actual policy and therefore accounts for ratchets, date masks, tunnels,
+        asymmetric rates and arbitrary initial/terminal inventory states.
+        """
+        allowed = np.asarray(self.t_p_curve[:self.n_op]) > -1e9
+        if not allowed.any():
+            raise ValueError("No permitted terminal inventory state is configured.")
+        terminal_mass = float(self.prob[-1, :, allowed].sum())
+        if not np.isfinite(terminal_mass) or terminal_mass < 1.0 - tolerance:
+            raise ValueError(
+                "The terminal inventory constraint is infeasible under the configured "
+                f"rates, ratchets, date masks and tunnels: only {terminal_mass:.6%} of "
+                "model probability reaches a permitted terminal state."
+            )
 
     def flat(self):
         """Unweighted average forward price over the exercise window — the
@@ -239,11 +270,20 @@ class Storage:
         return float(pd.Series(self.price_curve, index=self.date_span).loc[exercise_dates].mean())
 
     def profiled(self):
-        """Volume-weighted achieved price per MWh under the optimal strategy.
-        Reads the central forward node v[0, n_p, .], so it is correct for both
-        the intrinsic (n_p=0) and the full (n_p>0) build."""
-        ACQ = np.sum(self.delta)
-        return self.v[0, self.n_p, self.n_op_start] / ACQ
+        """Contract value per expected net exercised MWh.
+
+        This legacy method name is retained for compatibility. The denominator
+        is the physical expected exercise schedule, not the hedge delta. It is
+        therefore meaningful for one-directional swing contracts and raises for
+        a zero-net-volume strategy such as a cycling storage contract.
+        """
+        volume = float(np.sum(self.exp_ex))
+        gross_volume = float(np.sum(np.abs(self.exp_ex)))
+        if abs(volume) <= 1e-12 * max(gross_volume, 1.0):
+            raise ValueError(
+                "Value per net exercised MWh is undefined for a zero-net-volume strategy."
+            )
+        return self.v[0, self.n_p, self.n_op_start] / volume
 
 
 def month_start(ts):
@@ -485,7 +525,7 @@ def value_put_swing(curve, params):
     if params["run_intrinsic"]:
         s.build()
         profiled_eur = s.v[0, 0, init_inv]
-        acq = -np.sum(s.delta)
+        acq = -np.sum(s.exp_ex)
         profiled_metric = s.profiled()
         intrinsic = flat_metric - profiled_metric
         intrinsic_profile_raw = -np.array(s.exp_ex)
@@ -499,7 +539,7 @@ def value_put_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    stochastic_metric = full_eur / np.sum(s.delta)
+    stochastic_metric = s.profiled()
     extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = -np.array(s.exp_ex)
 
@@ -544,7 +584,7 @@ def value_call_swing(curve, params):
     if params["run_intrinsic"]:
         s.build()
         profiled_eur = s.v[0, 0, init_inv]
-        acq = np.sum(s.delta)
+        acq = np.sum(s.exp_ex)
         profiled_metric = profiled_eur / acq if acq else np.nan
         intrinsic = profiled_metric - flat_metric if acq else np.nan
         intrinsic_profile_raw = np.array(s.exp_ex)
@@ -558,8 +598,7 @@ def value_call_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    full_acq = np.sum(s.delta)
-    stochastic_metric = full_eur / full_acq if full_acq else np.nan
+    stochastic_metric = s.profiled()
     extrinsic = (full_eur - profiled_eur) / acq if (params["run_intrinsic"] and acq) else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)
 
@@ -582,6 +621,27 @@ def value_storage(curve, params):
     # Optional asymmetric daily clip rates (clips/day): set params["inj_rate"] /
     # params["wdr_rate"] for "30 in, 45 out" style storage. Both default to the
     # symmetric resolve_grid rate `cpd`, preserving prior behaviour.
+    # Capacity expressed in days is NOT read here — only inj_rate/wdr_rate are.
+    # Accepting it silently gave the caller the default symmetric rate instead of
+    # the deal they described: wdr_days of 30, 45, 90 and 365 all priced alike
+    # while the rate itself moves the value by ~2.6 % across 1..10 clips/day.
+    # params_for_run_valuation converts days -> rate; callers building params by
+    # hand must do the same rather than have the input dropped.
+    # NB `inj_days` is read — resolve_grid uses it as the inventory-state count on
+    # the legacy path — but `wdr_days` is read by nothing here, so accepting it
+    # silently gave the caller the default symmetric rate instead of the deal they
+    # described: 30, 45, 90 and 365 all priced alike, while the rate itself moves
+    # the value ~2.6 % across 1..10 clips/day.
+    if params.get("wdr_days") is not None and params.get("wdr_rate") is None:
+        raise ValueError(
+            f"value_storage reads `wdr_rate` (clips per active day), not `wdr_days`, so "
+            f"`wdr_days={params['wdr_days']}` would be ignored and the deal priced at the "
+            f"symmetric default of {cpd} clip(s)/day. Pass `wdr_rate`, or build the params "
+            f"with params_for_run_valuation(), which derives it as "
+            f"max(1, round(n_states / wdr_days)). Two cautions: the rate is a whole number "
+            f"of clips, so anything slower than 1 clip/day needs a smaller v_step; and on "
+            f"this path `inj_days` means the inventory-state count, not days to fill.")
+
     inj_rate = int(params["inj_rate"]) if params.get("inj_rate") is not None else cpd
     wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
     clips_per_day = max(inj_rate, wdr_rate)
@@ -668,11 +728,28 @@ def run_valuation(curve, params):
 # ── Price tree ────────────────────────────────────────────────────────────────
 
 def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
-    dt      = 1. / 365.25
-    dx      = vol_curve[0] * sqrt(3 * dt)
+    if n_t <= 0:
+        raise ValueError("Price tree requires at least one time step.")
+    if n_p < 0:
+        raise ValueError("Price-tree half-width n_p must be non-negative.")
+
     vol_arr = np.asarray(vol_curve, dtype=np.float64)
     mr_arr  = np.asarray(mr_curve,  dtype=np.float64)
     fwd     = np.asarray(price_curve, dtype=np.float64)[:n_t]
+    if len(fwd) != n_t or len(vol_arr) < n_t or len(mr_arr) < n_t:
+        raise ValueError("Forward, volatility and mean-reversion curves must cover every time step.")
+    if not np.isfinite(fwd).all() or np.any(fwd <= 0.0):
+        raise ValueError("Forward prices must be finite and strictly positive.")
+    if not np.isfinite(vol_arr[:n_t]).all() or np.any(vol_arr[:n_t] < 0.0):
+        raise ValueError("Volatility values must be finite and non-negative.")
+    if not np.isfinite(mr_arr[:n_t]).all():
+        raise ValueError("Mean-reversion values must be finite.")
+
+    dt = 1. / 365.25
+    max_vol = float(np.max(vol_arr[:n_t]))
+    if n_p > 0 and max_vol == 0.0:
+        raise ValueError("A stochastic tree (n_p > 0) requires positive volatility.")
+    dx = max_vol * sqrt(3 * dt)
 
     x   = np.zeros((n_t, 2*n_p+1))
     p_u = np.zeros((n_t, 2*n_p+1))
@@ -680,6 +757,25 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
     p_m = np.zeros((n_t, 2*n_p+1))
 
     q = _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt)
+
+    tolerance = 1e-12
+    for i in range(n_t):
+        j_s = max(n_p - i, 0)
+        j_e = min(n_p + i, 2*n_p) + 1
+        transitions = np.column_stack((p_u[i, j_s:j_e], p_m[i, j_s:j_e], p_d[i, j_s:j_e]))
+        if (not np.isfinite(transitions).all()
+                or np.min(transitions) < -tolerance
+                or np.max(transitions) > 1.0 + tolerance
+                or not np.allclose(transitions.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
+            raise ValueError(
+                f"Invalid transition probabilities at time step {i}; "
+                "check the volatility, mean-reversion and tree-width inputs."
+            )
+
+    if (not np.isfinite(q).all()
+            or np.min(q) < -tolerance
+            or not np.allclose(q.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
+        raise ValueError("Invalid propagated price-state probabilities.")
 
     return fwd, x, q, p_u, p_m, p_d
 
@@ -694,15 +790,17 @@ def valuation(n_p, v, q, n_op_start):
     return result
 
 
-def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w_curve, i_curve, x, fwd):
+def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
+                        w_curve, i_curve, d_curve, x, fwd):
     # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
 
     pa     = prob * action
-    exp_ex = list(-np.round(pa.sum(axis=(1, 2)), 3)) + [0.0]
+    exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
 
-    exp_x  = np.exp(x)[:, :, None]
-    delta  = list(-np.round((pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t], 3)) + [0.0]
+    exp_x    = np.exp(x)[:, :, None]
+    discount = np.asarray(d_curve[:n_t], dtype=float)[:, None, None]
+    delta    = list(-(pa * discount * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta
 

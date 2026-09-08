@@ -279,7 +279,12 @@ for ax, profile, title, color in [
 plt.tight_layout()
 st.pyplot(fig)
 
-st.subheader("Monthly Native Deltas")
+st.subheader("Monthly Discounted Forward Deltas")
+st.caption(
+    "Local sensitivities at the current optimal exercise policy, in PV-equivalent MWh. "
+    "Large forward-curve moves can switch exercise decisions, so scenario changes also "
+    "contain convexity and will not generally equal delta multiplied by the price move."
+)
 monthly_delta = extrinsic_delta_profile.loc[storageStart:storageEnd]
 monthly_delta_by_period = monthly_delta.resample("MS").sum()
 monthly_delta_table = pd.DataFrame({

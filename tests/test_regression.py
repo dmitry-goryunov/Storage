@@ -12,6 +12,7 @@ when those files are absent.
 import os
 import re
 import sys
+from unittest import SkipTest
 
 import numpy as np
 import pandas as pd
@@ -160,8 +161,7 @@ def test_products_bridge_runs_finite():
     """load_product_params -> params_for_run_valuation -> run_valuation must not
     KeyError or return NaN for any product in the workbook."""
     if not _have("products.xlsx", "ttf q.xlsx"):
-        print("SKIP test_products_bridge_runs_finite (missing data)")
-        return
+        raise SkipTest("missing products.xlsx or ttf q.xlsx")
     quotes = pd.read_excel(os.path.join(ROOT, "ttf q.xlsx"))
     quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"}).dropna(subset=["quote_date"])
     quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
@@ -182,8 +182,7 @@ def test_products_bridge_runs_finite():
 def test_portfolio_total_mtm():
     """End-to-end portfolio MtM anchor: TOTAL = -56,901 EUR at VAL_DATE 2010-08-19."""
     if not _have("ttf q.xlsx", "quotes_2.csv"):
-        print("SKIP test_portfolio_total_mtm (missing data)")
-        return
+        raise SkipTest("missing ttf q.xlsx or quotes_2.csv")
     val_date = pd.Timestamp("2010-08-19")
     quotes = pd.read_excel(os.path.join(ROOT, "ttf q.xlsx"))
     quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"}).dropna(subset=["quote_date"])
@@ -237,15 +236,19 @@ def test_portfolio_total_mtm():
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
+    skipped = 0
     for fn in fns:
         try:
             fn()
             print(f"PASS  {fn.__name__}")
+        except SkipTest as exc:
+            skipped += 1
+            print(f"SKIP  {fn.__name__}: {exc}")
         except AssertionError as exc:
             failed += 1
             print(f"FAIL  {fn.__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001
             failed += 1
             print(f"ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
-    print(f"\n{len(fns) - failed}/{len(fns)} passed")
+    print(f"\n{len(fns) - failed - skipped}/{len(fns)} passed, {skipped} skipped")
     sys.exit(1 if failed else 0)

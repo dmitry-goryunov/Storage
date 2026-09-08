@@ -1,0 +1,32 @@
+{
+  "source_path": "H:/My Drive/Github/dmitry-goryunov/Storage/finding.md",
+  "type": "DOC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "Put Swing Delta Investigation",
+  "summary": "Investigation plus independent peer review of two anomalies in the put-swing delta profile, concluding both are correct model behaviour driven by the mandatory quota.",
+  "scope": [
+    "put swing option delta profile",
+    "mandatory quota hard terminal constraint (t_p_curve -1e9 sentinel)",
+    "January step-down at Jan 31 / leading exercise wave",
+    "December delta amplification and E[S | exercise] / F ratio",
+    "trinomial tree geometry (n_p, dx, truncated boundary probabilities)",
+    "_tree_core transition probabilities and forward fitting",
+    "compute_all_metrics delta formula",
+    "soft graduated penalty experiment and penalty-multiplier threshold",
+    "finite-difference validation of monthly bucketed deltas",
+    "bucket convexity / gamma caveat for summer vs winter buckets",
+    "sum(delta * F) = V0 repricing invariant as regression test",
+    "value_put_swing stochastic_metric denominator defect",
+    "streamlit_app.py monthly delta table",
+    "review_checks.py verification script"
+  ],
+  "cross_refs": [
+    "review_checks.py",
+    "streamlit_app.py",
+    "code_review.md"
+  ],
+  "locked": false,
+  "precedence": 2,
+  "notes": ""
+}
