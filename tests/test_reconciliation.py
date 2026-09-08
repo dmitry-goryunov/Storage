@@ -1,5 +1,6 @@
 """Regression tests for the September 2026 reconciliation findings."""
 
+import json
 import os
 import sys
 
@@ -200,6 +201,14 @@ def test_tree_reprices_forward_curve_at_every_time_step():
     np.testing.assert_allclose(expected_spot, fwd, rtol=1e-12, atol=1e-12)
 
 
+def test_smoothed_curve_reprices_each_monthly_contract():
+    stepped = _seasonal_daily_curve()
+    smoothed = sm.smoothen_curve(stepped)
+    expected = stepped.resample("ME").mean()
+    actual = smoothed.resample("ME").mean()
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
+
+
 def test_monthly_delta_matches_independent_finite_difference():
     """Local monthly deltas agree with symmetric 5 bp price bumps."""
     base = _direct_put(n_p=20)
@@ -230,3 +239,14 @@ def test_streamlit_app_starts_without_exceptions(app_path):
 
     app = AppTest.from_file(os.path.join(ROOT, app_path), default_timeout=60).run()
     assert not app.exception
+
+
+@pytest.mark.parametrize(
+    "notebook",
+    ["Swing_new.ipynb", "forward.ipynb", "portfolio.ipynb", "pricing.ipynb"],
+)
+def test_notebook_is_valid_json(notebook):
+    with open(os.path.join(ROOT, notebook), encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert isinstance(payload.get("cells"), list)
+    assert payload.get("nbformat") == 4
