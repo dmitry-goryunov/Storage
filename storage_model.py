@@ -79,9 +79,15 @@ class Storage:
         self._active   = len(pd.date_range(self.valDate, self.storageEnd, freq='D'))
 
         # Forward / price curve
-        self.price_curve = smoothen_curve(
-            map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
-        )
+        mapped = map_curve_to_dates(self.date_span, curve)
+        if mapped.isna().any():
+            gap = mapped.index[mapped.isna()]
+            raise ValueError(
+                f"Forward curve does not cover {gap[0]:%Y-%m-%d} .. {gap[-1]:%Y-%m-%d}. "
+                f"The curve must span valDate ({self.valDate:%Y-%m-%d}) to backStop "
+                f"({self.backStop:%Y-%m-%d}) — one month past storageEnd — because the DP "
+                f"carries the terminal condition past the exercise window.")
+        self.price_curve = smoothen_curve(mapped.to_frame(name='value')['value'])
 
         # Price-tree vol / mean-reversion profiles
         self.sVol = [sVol] * self.n_t
@@ -122,11 +128,40 @@ class Storage:
         self.n_op_start = n_op_start
         self._init_volume_arrays()
 
+    def _validate(self):
+        """Reject configurations the solver would silently mis-price."""
+        for name in ('i_ratch', 'w_ratch'):
+            r = np.asarray(getattr(self, name), dtype=float)
+            if np.any(r < 0):
+                raise ValueError(f"{name} must be non-negative, got min {r.min()}")
+            if np.any(np.abs(r - np.round(r)) > 1e-9):
+                bad = r[np.abs(r - np.round(r)) > 1e-9][0]
+                raise ValueError(
+                    f"{name} must be a whole number of volume clips, got {bad}. Fractional "
+                    f"ratchets are not supported: the DP truncates them, so a value like 1.5 "
+                    f"would price a ratchet of 1 while the reported volume assumed 1.5. "
+                    f"Use a smaller v_step to express finer capacity.")
+
+    def _check_terminal_feasibility(self):
+        """The DP prices infeasible paths with the -1e9 sentinel; never return that."""
+        allowed = self.t_p_curve[:self.n_op] > -1e8
+        mass = float(self.prob[self.n_t - 1][:, allowed].sum())
+        if mass < 1 - 1e-6:
+            n_ex = int(np.count_nonzero(self.i_curve[:self.n_t]) or
+                       np.count_nonzero(self.w_curve[:self.n_t]))
+            raise ValueError(
+                f"The terminal condition cannot be met: only {mass:.4%} of paths reach a "
+                f"permitted terminal inventory state {list(np.flatnonzero(allowed))}, so the "
+                f"value would be the -1e9 infeasibility sentinel rather than a price. "
+                f"There are {n_ex} exercisable days and {self.n_op - 1} volume clips to move.")
+
     def build(self):
         """Build price tree, run DP model, compute probabilities and metrics.
         Results stored as: self.fwd, self.x, self.v, self.strat,
                            self.prob, self.exp_ex, self.delta
         """
+        self._validate()
+
         self.fwd, self.x, q, p_u, p_m, p_d = build_tree(
             self.price_curve, self.n_t, self.n_p, self.sVol, self.sMR)
 
@@ -140,6 +175,8 @@ class Storage:
             self.i_curve, self.w_curve, self.i_ratch, self.w_ratch,
             self.n_op_start, self.mintunnel, self.max_tunnel)
 
+        self._check_terminal_feasibility()
+
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
@@ -147,12 +184,34 @@ class Storage:
 
         return self
 
-    def flat(self):
-        return self.v[0, 0, self.n_op_start] / np.sum(self.delta)
+    def price_per_mwh(self):
+        """
+        Contract value per MWh actually exercised, at the starting inventory state.
 
-    def profiled(self):
-        ACQ = np.sum(self.delta)
-        return self.v[0, 0, self.n_op_start] / ACQ
+        Two things are easy to get wrong here:
+
+        * the price index must be `n_p`, not 0 — at t=0 the tree has not branched
+          and every other price state is untouched zeros;
+        * the denominator must be exercised volume (`exp_ex`), not `delta`.
+          `delta` is the price-weighted forward-equivalent volume, which equals
+          volume only when n_p == 0.
+
+        Undefined for two-sided products (storage), where injections and
+        withdrawals cancel in the denominator.
+        """
+        volume = np.sum(self.exp_ex)
+        if abs(volume) < 1e-9:
+            raise ValueError(
+                "price_per_mwh() needs a one-directional contract: expected exercise nets "
+                "to zero (a storage deal both buys and sells). Divide the value by the "
+                "contract's own reference volume instead.")
+        return self.v[0, self.n_p, self.n_op_start] / volume
+
+    # Same quantity under two names, kept for the notebooks: `flat` is it called
+    # on a model with no volume constraint, `profiled` on one with the volume
+    # states set. The distinction lives in the model configuration, not here.
+    flat     = price_per_mwh
+    profiled = price_per_mwh
 
 
 def month_start(ts):
@@ -294,9 +353,9 @@ def value_put_swing(curve, params):
     s.t_p_curve[term_inv] = 0.0
     if params["run_intrinsic"]:
         s.build()
-        profiled_eur = s.v[0, 0, init_inv]
-        acq = -np.sum(s.delta)
-        profiled_metric = s.profiled()
+        profiled_eur = s.v[0, s.n_p, init_inv]
+        acq = -np.sum(s.exp_ex)          # MWh bought; not sum(delta), see price_per_mwh
+        profiled_metric = s.price_per_mwh()
         intrinsic = flat_metric - profiled_metric
         intrinsic_profile_raw = -np.array(s.exp_ex)
     else:
@@ -309,7 +368,7 @@ def value_put_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    stochastic_metric = full_eur / np.sum(s.delta)
+    stochastic_metric = s.price_per_mwh()          # value / MWh bought
     extrinsic = (full_eur - profiled_eur) / acq if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = -np.array(s.exp_ex)
 
@@ -349,8 +408,8 @@ def value_call_swing(curve, params):
 
     if params["run_intrinsic"]:
         s.build()
-        profiled_eur = s.v[0, 0, init_inv]
-        acq = np.sum(s.delta)
+        profiled_eur = s.v[0, s.n_p, init_inv]
+        acq = np.sum(s.exp_ex)           # MWh sold; not sum(delta), see price_per_mwh
         profiled_metric = profiled_eur / acq if acq else np.nan
         intrinsic = profiled_metric - flat_metric if acq else np.nan
         intrinsic_profile_raw = np.array(s.exp_ex)
@@ -364,7 +423,7 @@ def value_call_swing(curve, params):
     s.n_p = params["n_p_full"]
     s.build()
     full_eur = s.v[0, s.n_p, init_inv]
-    full_acq = np.sum(s.delta)
+    full_acq = np.sum(s.exp_ex)
     stochastic_metric = full_eur / full_acq if full_acq else np.nan
     extrinsic = (full_eur - profiled_eur) / acq if (params["run_intrinsic"] and acq) else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)
@@ -508,11 +567,46 @@ def _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt):
     return q
 
 
+def _check_tree(p_u, p_m, p_d, n_t, n_p, dx, vol_arr, mr_arr):
+    """
+    Trinomial probabilities must lie in [0, 1] on every reachable node.
+
+    One grid spacing has to serve every step, so a vol term structure is
+    constrained from both ends: dx is sized from max(sVol) to keep the
+    high-vol steps stable, and the low-vol steps then need enough diffusion to
+    cover the mean-reversion drift at the outer nodes, roughly
+
+        (min(sVol) / max(sVol))^2  >  3 * sMR * dt * n_p
+
+    Violating either end used to produce NaNs with no warning.
+    """
+    i_idx = np.arange(n_t)[:, None]
+    j_idx = np.arange(2*n_p + 1)[None, :]
+    live  = (j_idx >= np.maximum(n_p - i_idx, 0)) & (j_idx <= np.minimum(n_p + i_idx, 2*n_p))
+    for name, p in (('p_u', p_u), ('p_m', p_m), ('p_d', p_d)):
+        bad = live & ((p < -1e-12) | (p > 1 + 1e-12))
+        if bad.any():
+            i_bad = int(np.argmax(bad.any(axis=1)))
+            ratio = float(vol_arr.min() / vol_arr.max())
+            bound = float(3 * mr_arr.max() / 365.25 * n_p)
+            raise ValueError(
+                f"Trinomial tree is unstable: {name} leaves [0, 1] at step {i_bad} "
+                f"(value {p[i_bad][bad[i_bad]][0]:.4f}), where sVol={vol_arr[i_bad]:.3f} against "
+                f"dx={dx:.5f} sized from max(sVol)={vol_arr.max():.3f}. "
+                f"min/max sVol = {ratio:.3f}, which must exceed sqrt(3*sMR*dt*n_p) = "
+                f"{sqrt(bound):.3f} for this n_p={n_p} and sMR={mr_arr.max():.2f}. "
+                f"Narrow the vol range, lower n_p, or lower sMR. "
+                f"(Before this check the tree returned NaNs silently.)")
+
+
 def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
     dt      = 1. / 365.25
-    dx      = vol_curve[0] * sqrt(3 * dt)
     vol_arr = np.asarray(vol_curve, dtype=np.float64)
     mr_arr  = np.asarray(mr_curve,  dtype=np.float64)
+    # dx must accommodate the largest vol in the curve, not just its first point:
+    # sizing it from vol_curve[0] makes every later step with a higher vol produce
+    # negative transition probabilities.
+    dx      = float(vol_arr.max()) * sqrt(3 * dt)
     fwd     = np.asarray(price_curve, dtype=np.float64)[:n_t]
 
     x   = np.zeros((n_t, 2*n_p+1))
@@ -521,6 +615,7 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
     p_m = np.zeros((n_t, 2*n_p+1))
 
     q = _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt)
+    _check_tree(p_u, p_m, p_d, n_t, n_p, dx, vol_arr, mr_arr)
 
     return fwd, x, q, p_u, p_m, p_d
 
@@ -651,8 +746,11 @@ def probabilities(n_t, n_p, n_op, q, strat, p_u, p_m, p_d,
                         wdr_step = w_curve[i] * w_ratch[k]
                         inj_step = i_curve[i] * i_ratch[k]
                         dki = strat[i, j, k]
-                        if   dki == -1: dk = -int(round(min(wdr_step, k)))
-                        elif dki ==  1: dk =  int(round(min(inj_step, n_op - 1 - k)))
+                        # int() truncates, matching run_model's .astype(np.int64);
+                        # Storage._validate guarantees whole-clip ratchets, so all
+                        # three of DP / forward pass / metrics move the same distance.
+                        if   dki == -1: dk = -int(min(wdr_step, k))
+                        elif dki ==  1: dk =  int(min(inj_step, n_op - 1 - k))
                         else:           dk = 0
                         for dj in range(-1, 2):
                             nj = j + dj
@@ -698,15 +796,16 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w
     i_step = (i_curve[:n_t, None] * i_ratch[None, :])[:, None, :]
     l_bc   = l_arr[None, None, :]
 
-    wdr_amt = np.minimum(w_step, l_bc) * v_step
-    inj_amt = np.minimum(i_step, (n_op - 1) - l_bc) * v_step
+    # np.floor keeps the same whole-clip convention as run_model and probabilities
+    wdr_amt = np.floor(np.minimum(w_step, l_bc)) * v_step
+    inj_amt = np.floor(np.minimum(i_step, (n_op - 1) - l_bc)) * v_step
     action  = np.where(strat == -1, -wdr_amt,
                        np.where(strat == 1, inj_amt, 0.0))
 
     pa     = prob * action
-    exp_ex = list(-np.round(pa.sum(axis=(1, 2)), 3)) + [0.0]
+    exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
 
     exp_x  = np.exp(x)[:, :, None]
-    delta  = list(-np.round((pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t], 3)) + [0.0]
+    delta  = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta

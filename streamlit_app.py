@@ -120,6 +120,16 @@ if storageEnd < storageStart:
     st.error("storageEnd must be on or after storageStart.")
     st.stop()
 
+window_days = (storageEnd - storageStart).days + 1
+if product_type in ("put_swing", "call_swing") and days > window_days:
+    st.error(f"days ({days}) exceeds the {window_days}-day exercise window "
+             f"{storageStart:%Y-%m-%d} to {storageEnd:%Y-%m-%d}: the volume quota could never "
+             f"be met, so there is no price to report.")
+    st.stop()
+if product_type == "storage" and inj_days > window_days:
+    st.error(f"inj_days ({inj_days}) exceeds the {window_days}-day operating window.")
+    st.stop()
+
 params = {
     "product_type": product_type,
     "FDDate": FDDate,
@@ -161,6 +171,12 @@ with st.spinner("Running valuation. First run may compile Numba kernels..."):
     try:
         warm_numba_kernels()
         s, result = cached_run_valuation(curve, params)
+    except ValueError as exc:
+        # The model raises ValueError for configurations it refuses to price
+        # (curve coverage, infeasible terminal state, bad ratchets) — show the
+        # message, not a traceback.
+        st.error(str(exc))
+        st.stop()
     except Exception as exc:
         st.exception(exc)
         st.stop()

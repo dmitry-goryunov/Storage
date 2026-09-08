@@ -2,6 +2,24 @@
 
 *Reviewer: Claude (Opus 5), 2026-09-08. Scope: the pricing library and the Streamlit front end, at the working-tree state of 2026-09-08 (uncommitted). Every claim below was executed, not inferred; reproduce with `python review_checks.py <section>`. The delta investigation itself is reviewed separately at the end of [finding.md](finding.md).*
 
+## Status (updated 2026-09-08, after batches 0–2)
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | `stochastic_metric` denominator | **fixed** — now value / MWh exercised |
+| 2 | `flat()` / `profiled()` return 0 on a full tree | **fixed** — one `price_per_mwh()`, correct price state and denominator |
+| 3 | Three ratchet conventions | **fixed** — one whole-clip convention; non-integer ratchets rejected |
+| 4 | `−1e9` sentinel returned as a price | **fixed** — `build()` checks terminal feasibility and raises |
+| 5 | Curve does not reprice input months | open — Batch 3 |
+| 6 | `dx` from `vol_curve[0]` | **fixed** — `dx` from `max(sVol)`, plus a tree stability check |
+| 7 | `n_p_full = 10` default | open — Batch 4 |
+| 8 | `wdr_days` dead input | open — Batch 4 |
+| 9 | delta ignores `d_curve` | open — needs a convention decision |
+| 10 | Bucketed delta convexity | open — Batch 4 (display caveat) |
+| 11–20 | Minor | open, except #15 (curve coverage message, **fixed**) and #18 (cosmetic `round(...,3)`, **removed** — it was masking the repricing identity at 1e-7) |
+
+Regression suite added in [test_model.py](test_model.py) (13 tests, `python test_model.py`); it went 3/13 → 13/13 across the two fix batches. No valuation changed: `intrinsic`, `extrinsic`, `total` and `v0` are identical before and after for all 6 quoted products, the finding.md put swing and the storage case; only `stochastic_metric` moved (+1.2 % to +5.5 % for the call swings, −7.6 % for the put swing) and `flat()`/`profiled()` went from 0.0 to a real price.
+
 ## What is solid
 
 Worth stating first, because it narrows where the problems can be:
