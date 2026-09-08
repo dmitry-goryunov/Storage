@@ -100,8 +100,20 @@ forward, and the fractional-ratchet rejection is obsolete under `strat`-as-clip-
 Notably 9 of the 13 archived tests pass unmodified against the reconciled model.
 
 `pytest.ini` now sets `testpaths = tests`, so the maintained suite is the only one
-collected and `python -m pytest -q` in CI stays at 27 passed. The archived suite remains
-readable as evidence.
+collected and `python -m pytest -q` in CI stays green. The archived suite remains readable
+as evidence.
+
+**Cross-check completed.** Each of the 4 failures was run against the reconciled code to
+separate API drift from real gaps:
+
+| Archived test | Verdict |
+|---|---|
+| `test_price_methods_work_on_a_full_tree` | API drift. `flat()` now means the window-mean forward; covered by `test_flat_is_window_mean_and_below_profiled` and `test_profiled_central_node_nonzero_at_np30` |
+| `test_fractional_ratchets_are_rejected` | Obsolete by design. `strat`-as-clip-count removes the three-way inconsistency; `test_multi_clip_ratchet_keeps_policy_probability_and_metrics_consistent` covers it better |
+| `test_unstable_vol_term_structure_raises_instead_of_returning_nans` | Message wording only. The reconciled code does raise — "Invalid transition probabilities at time step 1" — and my assertion required the word `sVol` |
+| `test_curve_that_stops_short_raises_a_useful_message` | **Real defect.** Fixed in `d78161a`: the coverage guard ran after `smoothen_curve`, so contract-curve gaps surfaced as SciPy's "`y` must contain only finite values" and the guard's own message was unreachable |
+
+Suite is now 28 tests.
 
 ## Open items — not closed by this migration
 
