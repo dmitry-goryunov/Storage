@@ -699,10 +699,10 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step, w
     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
 
     pa     = prob * action
-    exp_ex = list(-np.round(pa.sum(axis=(1, 2)), 3)) + [0.0]
+    exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
 
     exp_x  = np.exp(x)[:, :, None]
-    delta  = list(-np.round((pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t], 3)) + [0.0]
+    delta  = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta
 
