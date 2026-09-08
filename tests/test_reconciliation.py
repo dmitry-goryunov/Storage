@@ -350,3 +350,40 @@ def test_set_volume_states_defaults_the_start_to_a_full_grid():
     m = _grid_model()
     m.set_volume_states(7)
     assert m.initial_state == 7 and m.n_states == 7
+
+
+def _struck(product_type, strike, run_intrinsic=True):
+    return sm.run_valuation(None, dict(
+        product_type=product_type, valDate="2026-01-01",
+        storageStart="2026-02-01", storageEnd="2026-04-30",
+        capacity_mwh=10_000, daily_max=1_000, clips_per_day=1,
+        vol=0.5, sMR=1.0, n_p_full=10, run_intrinsic=run_intrinsic,
+        strike=strike, daily_curve=_seasonal_daily_curve()))[1]
+
+
+def _struck_call(strike, run_intrinsic=True):
+    return _struck("call_swing", strike, run_intrinsic)
+
+
+@pytest.mark.parametrize("product_type", ["call_swing", "put_swing"])
+def test_struck_swing_intrinsic_is_benchmarked_net_of_the_strike(product_type):
+    """`intrinsic` compared a strike-net value against a raw forward average.
+
+    A mandatory swing takes the N best days whatever the strike -- a constant
+    per-MWh amount cannot reorder them -- so the intrinsic spread it captures is
+    the same for every K. It used to shift by K instead, in opposite directions:
+    the call gave 0.314, -9.686, -27.686 for K = 0, 10, 28, and the put gave
+    0.157, 10.157, 20.157 for K = 0, 10, 20.
+    """
+    base = _struck(product_type, 0.0)
+    for K in (10.0, 20.0):
+        r = _struck(product_type, K)
+        assert abs(r["intrinsic"] - base["intrinsic"]) < 1e-9, (
+            f"K={K}: intrinsic {r['intrinsic']:.4f} vs {base['intrinsic']:.4f} at K=0")
+        assert abs(r["extrinsic"] - base["extrinsic"]) < 1e-9, "extrinsic was never affected"
+        # The benchmark must move with the strike, since the payoff does.
+        assert abs(r["flat_metric"] - (base["flat_metric"] - K)) < 1e-9
+        # ...and the decomposition must still add up on the reported figures.
+        spread = (r["profiled_metric"] - r["flat_metric"]) if product_type == "call_swing"             else (r["flat_metric"] - r["profiled_metric"])
+        assert abs(spread - r["intrinsic"]) < 1e-9
+        assert abs((r["intrinsic"] + r["extrinsic"]) - r["total"]) < 1e-9

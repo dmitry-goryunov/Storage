@@ -108,6 +108,13 @@ error that moved the wrong way as optionality was added. `flat()` is a different
 the unweighted average forward over the exercise window, independent of `n_p` and of the
 optimisation.
 
+The reported `flat_metric` is that average **net of any strike**, because the value it
+benchmarks is. Selling every day at the average forward earns `mean(F) - K` per MWh, not
+`mean(F)`. Benchmarking a strike-net value against a raw average made `intrinsic` shift by
+`K` — downwards for a call, upwards for a put — while the spread it is meant to measure
+does not depend on the strike at all: a constant per-MWh amount cannot reorder the exercise
+days. Fixed 2026-09-08; `flat()` on the `Storage` object is unchanged and still raw.
+
 ## Kernel constants
 
 | Constant | Meaning |

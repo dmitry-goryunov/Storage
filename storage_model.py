@@ -536,7 +536,12 @@ def value_put_swing(curve, params):
     if strike:
         s.i_cost[s.Dt:s._active] = -strike   # per-clip inject profit = strike - price
 
-    flat_metric = daily_arithmetic_flat_metric(s)
+    # Net of the strike, for the same reason as the call swing below: `profiled_metric`
+    # is the effective price after the strike leg, so the zero-optionality benchmark
+    # must be too. Buying on average days nets mean(F) - K per MWh. Without this the
+    # put's intrinsic shifted by +K -- 0.157, 10.157 and 20.157 EUR/MWh for K = 0, 10
+    # and 20 on one deal -- the mirror of the call's -K.
+    flat_metric = daily_arithmetic_flat_metric(s) - strike
 
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else n_states
@@ -583,11 +588,18 @@ def value_put_swing(curve, params):
 def value_call_swing(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "days")
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"))
-    flat_metric = daily_arithmetic_flat_metric(s)
-
     init_inv     = params["initial_inv_clips"]  if params.get("initial_inv_clips")  is not None else n_states
     term_inv     = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
     strike       = params.get("strike", 0.0)
+
+    # The zero-optionality benchmark must be net of the strike, because the value it
+    # is compared against is. Selling every day at the average forward earns
+    # mean(F) - K per MWh, not mean(F). Benchmarking a strike-net value against a raw
+    # forward average made `intrinsic` (and `total`) shift by about -K: on one deal,
+    # K = 0, 10 and 28 gave 0.314, -9.686 and -27.686 EUR/MWh for what is the same
+    # spread. A constant per-MWh strike cannot reorder the days, so the intrinsic
+    # spread a mandatory swing captures does not depend on it.
+    flat_metric = daily_arithmetic_flat_metric(s) - strike
     zero_penalty = params.get("zero_penalty", False)
 
     if strike:
