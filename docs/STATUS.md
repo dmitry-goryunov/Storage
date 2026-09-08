@@ -1,5 +1,13 @@
 # Status — storage/swing pricing model
 
+> **SUPERSEDED IN PART, 2026-09-08.** This branch was built on a baseline that is 18
+> commits behind GitHub `origin/main`, which already contains six of the ten findings
+> fixed plus a kernel split, portfolio valuation and its own test suite. The
+> "5 commits ahead of main, fast-forwardable" statement below is withdrawn — the branches
+> have diverged 18 vs 6 and share no file history for the library. Read
+> [RECONCILIATION-PLAN.md](RECONCILIATION-PLAN.md) first; the roadmap in `.planning/`
+> is derived from the stale baseline and must be regenerated.
+
 As of 2026-09-08, branch `review/model-fixes` (5 commits ahead of `main`, fast-forwardable).
 Suite: `python test_model.py` → 13/13. Working tree clean.
 
