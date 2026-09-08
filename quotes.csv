@@ -1,0 +1,7 @@
+Product,market,valDate,Start,End, N_days , bid , ask ,notes
+xxx,TTF,01-Jan-26,01-Jan-26,31-Dec-26,120,1.45,1.78,
+xxx,TTF,01-Jan-26,01-Oct-26,30-Sep-27,180,0.4,0.8,
+xxx,TTF,01-Jan-26,01-Jan-26,30-Jun-26,90,0.4,0.8,
+xxx,TTF,01-Jan-26,01-Apr-26,30-Sep-26,90,0.73,0.8,
+xxx,TTF,01-Jan-26,01-Apr-26,31-Oct-26,90,0.9,1.05,
+xxx,TTF,01-Jan-26,01-Oct-27,30-Sep-28,180,0.6,0.85,
