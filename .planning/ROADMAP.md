@@ -35,6 +35,16 @@ This replaces planning derived from the stale Drive working tree.
    count in `resolve_grid`, days-to-fill in `params_for_run_valuation` -- which
    is why the guard covers `wdr_days` only.
 
+5. Fix the intrinsic split for struck call swings. Found 2026-09-08 while building
+   Products.ipynb: `value_call_swing` computes `intrinsic = profiled_metric -
+   flat_metric`, but `profiled_metric` is net of the strike while `flat_metric` is the
+   raw average forward, so intrinsic and total shift by about -K. On one deal, K = 0,
+   10 and 28 give intrinsic 0.314, -9.686 and -27.686 EUR/MWh; `extrinsic` (a
+   difference of two struck values) is correctly 0.921 throughout. The natural fix is
+   to benchmark against `flat_metric - strike`, which returns 0.314 for all three --
+   the exercise-day ranking does not depend on a constant strike. It changes a
+   reported number, so it needs the usual failing test and a before/after.
+
 ## Priority 2: performance and numerical policy
 
 1. Shorten the terminal backstop only after proving that the final exercise day and
@@ -44,8 +54,13 @@ This replaces planning derived from the stale Drive working tree.
 
 ## Priority 3: API and maintenance
 
-1. Separate inventory grid size from initial inventory state instead of overloading
-   `n_op_start` (finding 19), with a compatibility period for notebooks and callers.
+1. DONE: `n_states` (grid size) and `initial_state` (starting inventory) replace the
+   overloaded `n_op_start` (finding 19). Both are settable in one call as
+   `set_volume_states(n_states, initial_state=...)`, and `n_op_start` remains as a
+   deprecated alias so existing notebooks and callers keep working. `build()` now
+   rejects a start outside the grid -- previously an out-of-range value indexed past
+   the value array inside a Numba kernel, where that is undefined rather than an
+   IndexError.
 2. DONE: removed unused `check_curve`, `valuation`, `get_exercise` and `get_delta`
    (finding 11). Compatibility checked first -- no caller anywhere in the library,
    apps, notebooks or tests; `get_exercise`/`get_delta` were only re-exported.
