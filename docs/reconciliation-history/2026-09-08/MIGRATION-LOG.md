@@ -91,6 +91,18 @@ overwritten.
 former `.planning/` tree under `legacy-planning/` (14 files including the ingest
 classifications and conflict report).
 
+## Collection guard added
+
+Archiving `test_model.py` under `docs/reconciliation-history/` made pytest collect it from
+the repository root: 40 tests ran, 4 failed. The failures were not regressions but the API
+changes the reconciliation plan predicted in its §7 — `flat()` now means the window-mean
+forward, and the fractional-ratchet rejection is obsolete under `strat`-as-clip-count.
+Notably 9 of the 13 archived tests pass unmodified against the reconciled model.
+
+`pytest.ini` now sets `testpaths = tests`, so the maintained suite is the only one
+collected and `python -m pytest -q` in CI stays at 27 passed. The archived suite remains
+readable as evidence.
+
 ## Open items — not closed by this migration
 
 1. **Publication.** `review/reconcile-model-fixes` has not been pushed; GitHub returned
