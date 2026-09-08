@@ -10,6 +10,18 @@ This replaces planning derived from the stale Drive working tree.
    valuation stability before reconsidering the exact knot solve.
 3. Agree the production discount-curve source and hedge reporting convention now
    that `delta` is explicitly a discounted forward sensitivity.
+4. Decide how withdrawal capacity is expressed. Found 2026-09-08 and verified:
+   `wdr_days` passed straight to `run_valuation` has no effect at all --
+   30, 45, 90 and 365 all price a storage deal at 2.499672 EUR/MWh -- because
+   `value_storage` reads `wdr_rate`, which only `params_for_run_valuation` derives.
+   `pricing.ipynb` passes `wdr_days` directly and so silently ignores it, while
+   `forward.ipynb` converts it correctly. Worse, the conversion itself collapses:
+   `wdr_rate = max(1, round(n_states / wdr_days))` with 30 states gives rate 1 for
+   30, 45 and 90 days alike, so any withdrawal slower than one clip per day is
+   inexpressible on the current grid. "30 in, 90 out" is silently priced as
+   "30 in, 30 out". Either accept `inj_days`/`wdr_days` in `run_valuation` and
+   convert there, or reject unknown params loudly; and decide whether sub-clip
+   daily rates need a finer `v_step` or fractional rates in the DP.
 
 ## Priority 2: performance and numerical policy
 
