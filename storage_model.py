@@ -141,20 +141,18 @@ class Storage:
         else:
             if curve is None:
                 raise ValueError("Storage requires either `curve` or `daily_curve`.")
-            self.price_curve = smoothen_curve(
-                map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
-            )
+            # Check coverage BEFORE smoothing: smoothen_curve fits a spline through
+            # the monthly means, and SciPy rejects NaN knots with "`y` must contain
+            # only finite values" -- which says nothing about the real problem. The
+            # guard below never fired on this path until the check moved up here.
+            mapped = map_curve_to_dates(self.date_span, curve).to_frame(name='value')['value']
+            self._require_full_coverage(mapped, "curve")
+            self.price_curve = smoothen_curve(mapped)
 
         # Fail loudly on curve gaps. Otherwise NaNs propagate silently through the
         # tree and the valuation returns garbage with no error (a real foot-gun on
         # the contract-curve path, where days outside any contract stay NaN).
-        if self.price_curve.isna().any():
-            n_missing = int(self.price_curve.isna().sum())
-            raise ValueError(
-                f"Price curve has {n_missing} missing day(s) over the valuation grid "
-                f"{self.date_span[0]:%Y-%m-%d}..{self.date_span[-1]:%Y-%m-%d}: the supplied "
-                f"curve/daily_curve does not cover the full storage period (including the "
-                f"month-end backstop at {self.backStop:%Y-%m-%d}). Extend the curve.")
+        self._require_full_coverage(self.price_curve, "curve/daily_curve")
 
         # Price-tree vol / mean-reversion profiles
         self.sVol = [sVol] * self.n_t
@@ -181,6 +179,18 @@ class Storage:
         # Volume states — call set_volume_states() to override
         self.n_op_start = (self.storageEnd - self.storageStart).days + 1
         self._init_volume_arrays()
+
+    def _require_full_coverage(self, series, what):
+        """Raise unless `series` covers every day of the valuation grid."""
+        if series.isna().any():
+            n_missing = int(series.isna().sum())
+            gap = series.index[series.isna()]
+            raise ValueError(
+                f"Price curve has {n_missing} missing day(s) over the valuation grid "
+                f"{self.date_span[0]:%Y-%m-%d}..{self.date_span[-1]:%Y-%m-%d} "
+                f"(first {gap[0]:%Y-%m-%d}, last {gap[-1]:%Y-%m-%d}): the supplied "
+                f"{what} does not cover the full storage period, including the "
+                f"month-end backstop at {self.backStop:%Y-%m-%d}. Extend the curve.")
 
     def _init_volume_arrays(self):
         """(Re-)build arrays that depend on n_op_start / n_op."""

@@ -250,3 +250,23 @@ def test_notebook_is_valid_json(notebook):
         payload = json.load(handle)
     assert isinstance(payload.get("cells"), list)
     assert payload.get("nbformat") == 4
+
+
+def test_contract_curve_gap_reports_the_coverage_problem():
+    """A contract curve that stops short of the backstop must say so.
+
+    The coverage guard in Storage.__init__ carries a message naming the missing
+    days and the backstop date, but it runs *after* smoothen_curve, which raises
+    SciPy's "`y` must contain only finite values" first. On the contract-curve
+    path -- the one the guard was written for -- the useful message was
+    unreachable.
+    """
+    starts = pd.date_range("2026-01-01", "2026-03-01", freq="MS")
+    short = pd.DataFrame({
+        "contractStart": starts,
+        "contractEnd": starts + pd.offsets.MonthEnd(0),
+        "value": 25.0,
+    })
+    with np.testing.assert_raises_regex(ValueError, "missing day"):
+        sm.Storage("2026-01-01", "2026-02-01", "2026-04-30", curve=short,
+                   n_p=0, v_step=1000.0, sVol=0.5)
