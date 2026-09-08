@@ -80,3 +80,9 @@ def test_time_varying_volatility_produces_valid_tree_probabilities():
     assert np.isfinite(q).all()
     assert q.min() >= -1e-12
     np.testing.assert_allclose(q.sum(axis=1), 1.0, atol=1e-12)
+
+
+def test_stochastic_tree_rejects_zero_volatility():
+    """A zero-width stochastic lattice is rejected with a useful error."""
+    with np.testing.assert_raises_regex(ValueError, "positive volatility"):
+        sm.build_tree(np.full(5, 25.0), 5, 2, np.zeros(5), np.ones(5))

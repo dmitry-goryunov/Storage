@@ -676,11 +676,28 @@ def run_valuation(curve, params):
 # ── Price tree ────────────────────────────────────────────────────────────────
 
 def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
-    dt      = 1. / 365.25
-    dx      = vol_curve[0] * sqrt(3 * dt)
+    if n_t <= 0:
+        raise ValueError("Price tree requires at least one time step.")
+    if n_p < 0:
+        raise ValueError("Price-tree half-width n_p must be non-negative.")
+
     vol_arr = np.asarray(vol_curve, dtype=np.float64)
     mr_arr  = np.asarray(mr_curve,  dtype=np.float64)
     fwd     = np.asarray(price_curve, dtype=np.float64)[:n_t]
+    if len(fwd) != n_t or len(vol_arr) < n_t or len(mr_arr) < n_t:
+        raise ValueError("Forward, volatility and mean-reversion curves must cover every time step.")
+    if not np.isfinite(fwd).all() or np.any(fwd <= 0.0):
+        raise ValueError("Forward prices must be finite and strictly positive.")
+    if not np.isfinite(vol_arr[:n_t]).all() or np.any(vol_arr[:n_t] < 0.0):
+        raise ValueError("Volatility values must be finite and non-negative.")
+    if not np.isfinite(mr_arr[:n_t]).all():
+        raise ValueError("Mean-reversion values must be finite.")
+
+    dt = 1. / 365.25
+    max_vol = float(np.max(vol_arr[:n_t]))
+    if n_p > 0 and max_vol == 0.0:
+        raise ValueError("A stochastic tree (n_p > 0) requires positive volatility.")
+    dx = max_vol * sqrt(3 * dt)
 
     x   = np.zeros((n_t, 2*n_p+1))
     p_u = np.zeros((n_t, 2*n_p+1))
@@ -688,6 +705,25 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
     p_m = np.zeros((n_t, 2*n_p+1))
 
     q = _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt)
+
+    tolerance = 1e-12
+    for i in range(n_t):
+        j_s = max(n_p - i, 0)
+        j_e = min(n_p + i, 2*n_p) + 1
+        transitions = np.column_stack((p_u[i, j_s:j_e], p_m[i, j_s:j_e], p_d[i, j_s:j_e]))
+        if (not np.isfinite(transitions).all()
+                or np.min(transitions) < -tolerance
+                or np.max(transitions) > 1.0 + tolerance
+                or not np.allclose(transitions.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
+            raise ValueError(
+                f"Invalid transition probabilities at time step {i}; "
+                "check the volatility, mean-reversion and tree-width inputs."
+            )
+
+    if (not np.isfinite(q).all()
+            or np.min(q) < -tolerance
+            or not np.allclose(q.sum(axis=1), 1.0, rtol=0.0, atol=tolerance)):
+        raise ValueError("Invalid propagated price-state probabilities.")
 
     return fwd, x, q, p_u, p_m, p_d
 
