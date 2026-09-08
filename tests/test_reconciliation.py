@@ -36,6 +36,29 @@ def _mandatory_put(n_p=20, run_intrinsic=False):
     return sm.run_valuation(None, params)
 
 
+def _direct_put(n_p=20, days=10, discount_rate=0.0, injection_ratchet=1.0):
+    model = sm.Storage(
+        "2026-01-01",
+        "2026-02-01",
+        "2026-04-30",
+        daily_curve=_seasonal_daily_curve(),
+        n_p=n_p,
+        v_step=1000.0,
+        sVol=0.5,
+        clips_per_day=1,
+    )
+    _, active = sm.active_masks(model)
+    model.i_curve = active
+    model.w_curve = np.zeros(len(model.date_span))
+    model.set_volume_states(days)
+    model.i_ratch[:] = injection_ratchet
+    model.n_op_start = 0
+    model.t_p_curve = np.full(model.n_op + 2, -1e9)
+    model.t_p_curve[days] = 0.0
+    model.d_curve = np.exp(-discount_rate * np.arange(model.n_t) / 365.25)
+    return model.build()
+
+
 def test_expected_exercise_is_not_rounded_before_aggregation():
     """The expected exercise schedule must exactly reprice the contract value."""
     model, _ = _mandatory_put()
@@ -111,3 +134,11 @@ def test_post_build_feasibility_check_accounts_for_ratchets():
 
     with np.testing.assert_raises_regex(ValueError, "terminal inventory"):
         model.build()
+
+
+def test_delta_is_discounted_forward_sensitivity():
+    """Delta reprices present value when non-unit discount factors are used."""
+    model = _direct_put(discount_rate=0.08)
+    value = float(model.v[0, model.n_p, model.n_op_start])
+    repriced = float(np.dot(model.delta[:model.n_t], model.fwd))
+    assert abs(repriced - value) / abs(value) < 1e-9
