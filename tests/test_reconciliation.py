@@ -1,6 +1,7 @@
 """Regression tests for the September 2026 reconciliation findings."""
 
 import json
+import glob
 import itertools
 import math
 import os
@@ -1750,3 +1751,31 @@ def test_the_tree_carries_the_clewlow_strickland_variance_term_structure():
         if previous_vol is not None:
             assert effective < previous_vol, "the comparable vol must fall with maturity"
         previous_vol = effective
+
+
+def test_no_notebook_carries_stray_control_characters():
+    """Control characters in a cell mean an escape was eaten on the way in.
+
+    `SwingVsOption.ipynb` shipped with ten of them: LaTeX written into a
+    non-raw Python string turned `\alpha` into BEL and `\frac` into formfeed.
+    Both are *valid* Python escapes, so nothing warned -- the only symptom was
+    KaTeX refusing to render, which no test would have seen. Markdown is not
+    executed, so this is the only place the damage can be caught.
+
+    Tabs and newlines are legitimate; nothing else below 0x20 is.
+    """
+    notebooks = sorted(glob.glob(os.path.join(ROOT, "*.ipynb")))
+    assert notebooks, "expected notebooks at the repository root"
+
+    offenders = []
+    for path in notebooks:
+        with open(path, encoding="utf-8") as handle:
+            notebook = json.load(handle)
+        for index, cell in enumerate(notebook.get("cells", [])):
+            source = "".join(cell.get("source", []))
+            for position, char in enumerate(source):
+                if ord(char) < 32 and char not in "\n\t":
+                    offenders.append(
+                        f"{os.path.basename(path)} cell {index} ({cell.get('cell_type')}): "
+                        f"{hex(ord(char))} in {source[max(0, position - 25):position + 10]!r}")
+    assert not offenders, "stray control characters:\n" + "\n".join(offenders)
