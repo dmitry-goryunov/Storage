@@ -2,6 +2,14 @@
 
 This replaces planning derived from the stale Drive working tree.
 
+## Priority 0: verification gates
+
+Completed 2026-09-09. An independent exhaustive oracle now checks four-day put swing, call
+swing and storage valuations. Rate configuration has one validation path across the library,
+workbook, notebook and app; an explicit zero discount rate can no longer be mistaken for an
+absent field. The app treasury scenario is exercised end to end, and every code section of
+`Products.ipynb` runs in a fresh-process smoke test that also rejects stale stored output.
+
 ## Priority 1: behavioural specifications
 
 1. Define hard versus soft tunnel semantics, including whether constraints apply
@@ -11,7 +19,11 @@ This replaces planning derived from the stale Drive working tree.
 3. PARTLY ADDRESSED: `discount_rate` now builds `d_curve` (annual, continuously
    compounded) on `Storage` and through `run_valuation`, so time value is priced and
    the optimiser prefers early withdrawal; the flat benchmark is PV'd to match. What
-   remains is the same question in its production form. Agree the discount-curve source. The hedge reporting convention is
+   remains is the same question in its production form. Agree the market discount-curve
+   source, contractual settlement-date mapping, and whether each reported rate is a market
+   discount, treasury funding or internal hurdle rate. These are different economic views.
+   `borrow_rate`/`invest_rate` are only explicit treasury scenarios; genuine asymmetric
+   funding requires a cash-balance state or equivalent nonlinear recursion. The hedge reporting convention is
    SETTLED: `delta` is an undiscounted physical hedge volume (decision D-O2), the
    invariant carries the discount weights, and both are documented in
    docs/MODEL-CONVENTIONS.md. What remains is where a real `d_curve` comes from,

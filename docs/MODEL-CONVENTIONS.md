@@ -136,10 +136,10 @@ trusting a monthly bucket across a large move.
   `d_curve[i] = exp(-r·i/365.25)` — as a `Storage` argument or a `run_valuation` param.
   It defaults to `0.0`, which gives all ones and changes nothing. Assign `d_curve`
   directly for a real, non-flat curve.
-- **This is what makes the model prefer early withdrawal.** The DP multiplies every day's
-  cash flow by `d_curve[i]`, so cash released sooner is worth more, and the optimiser
-  reschedules accordingly. Before the rate existed, the timing of a withdrawal carried no
-  value at all and the intrinsic leg could not see it.
+- **This is what makes the model prefer early settlement of receipts.** The DP multiplies
+  every day's cash flow by `d_curve[i]`, so an earlier receipt has a larger PV and the
+  optimiser reschedules accordingly. Payments move the other way. Before the rate existed,
+  settlement timing carried no value in the optimiser.
 - **The benchmark is PV'd too.** `daily_arithmetic_flat_metric` returns the mean of
   `DF·(F − K)` over the window, not the raw mean forward. Both legs of
   `intrinsic = profiled − flat` must be present-valued or the difference measures the
@@ -163,38 +163,48 @@ trusting a monthly bucket across a large move.
   convention. A real gas contract paying month-end + N days would need `d_curve` built
   accordingly.
 
-## Financing is a cash flow, and the curve can charge for it
+## Discounting, settlement timing and funding are different
 
-**It is interest, not an artefact.** The deterministic schedule and the flat benchmark move
+**The model's settlement-timing attribution can be represented as interest under the stated
+scenario.** The deterministic schedule and the flat benchmark move
 identical gas at identical prices, so their nominal totals match exactly and only the timing
-differs. The gap is money the deal has not paid out; the PV of the interest it earns at
-`discount_rate` *is* the financing number. On the 10-day put swing, flat 40, `K = 30` at
+differs. The gap is money the deal has not paid out; under this scenario, the PV of interest
+at `discount_rate` matches the legacy timing attribution. On the 10-day put swing, flat 40, `K = 30` at
 10 %: 100,000.00 EUR nominal on both legs, a balance peaking at 97,260.27 EUR on
 2027-12-21, and 4,192.93 EUR of PV interest against 4,192.36 EUR reported — 0.01 %. You
-receive it only if that balance genuinely earns the rate. It is a hurdle-rate gain on your
-own cash, not something the gas market pays.
+receive it only if that balance genuinely earns or avoids the rate. This is not established
+merely by discounting the commodity cash flow.
 
-**A curve in contango at the discount rate charges the gas for it, with no new input.** The
-optimiser never sees `F`; it sees `DF · F`. A flat forward curve beside a positive rate is
-internally inconsistent — gas costs the same in December as in January while money costs
-10 % — and the financing gain is the model reporting that inconsistency as free money. Put
-the curve in contango at the same rate and `DF · F` is flat to 1e-14: `intrinsic` is exactly
-zero, and its two halves come out large and equal-and-opposite, buying early being cheaper
-on the curve by precisely what paying early costs in funding. Extrinsic is untouched (2.67
-on the reference deal), because optionality comes from volatility, not slope.
+**A constructed curve growing at the discount rate makes `DF · F` flat.** The optimiser
+never sees `F` in isolation; it sees `DF · F`. If the test curve is defined as
+`F(t) = F(0)·exp(r·t)` and the same `r` is used for discounting, deterministic timing value
+vanishes exactly. This is a useful invariant of the implementation. It is not a general
+commodity-carry relationship, and it does not show that an observed flat gas forward curve
+at positive rates is inconsistent. Storage costs, convenience yield, seasonality, transport
+constraints and supply/demand can offset or dominate financial carry.
 
-**`borrow_rate` / `invest_rate` replace the single rate when the two directions differ.**
-`discount_rate` assumes spare cash earns exactly what borrowed cash costs. Give the pair
-instead and the rate follows the deal's own direction — a net payer funds at the borrow
-rate, a net receiver places cash at the invest rate. Direction is taken from the sign of the
-mean forward net of strike, not the product type, because a strike flips it: a put swing
-struck above the curve receives rather than pays. Setting both forms raises, as does setting
-one of the pair alone, as does a storage deal, which pays on injection and receives on
-withdrawal and so has no single direction.
+**`borrow_rate` / `invest_rate` are explicit treasury scenarios, not an FVA model.** Give
+the pair together and set `funding_direction` to `borrow` or `invest`. The direction is not
+inferred: optional exercise can select receipts even when the window-average `F-K` is a
+payment, and stochastic prices can cross the strike. Setting both `discount_rate` and the
+pair raises, as does setting one of the pair alone. Storage is refused because it pays on
+injection and receives on withdrawal and has no single direction.
 
-It is **one rate for the whole deal, not one per day.** A rate chosen from the sign of each
-day's cash flow would make the value non-linear in the price level and break the master
-invariant below.
+The same validation is used by `run_valuation`, optional columns in `products.xlsx`,
+`Products.ipynb` and the single-deal Streamlit app. Presence is explicit:
+`discount_rate=0.0` selects the market/valuation-rate mode and therefore still conflicts
+with a borrow/invest pair. Blank fields are absent; zero and negative finite rates are not.
+
+The helper still applies **one scenario rate for the whole deal**. A genuine asymmetric
+funding valuation is nonlinear and requires the cash balance in the state, or an equivalent
+nonlinear recursion. It should not be approximated by silently choosing a rate from the
+mean forward or by applying different discount factors to individual expected cash flows.
+
+For production use, record at least: rate purpose (market discount, treasury funding or
+internal hurdle), curve currency and source, as-of date, day count, compounding,
+interpolation, contractual settlement dates and payment lag. `run_valuation` currently
+supports a scalar continuously compounded `discount_rate`; a production term-curve source
+and settlement-date mapping remain roadmap work.
 
 ## How the reported metrics compose
 
@@ -202,16 +212,32 @@ They nest. They are not terms to add side by side:
 
     flat                     the benchmark: F - K per MWh, with no choice of days
       -  intrinsic           what choosing days is worth on today's forward curve
-           =  shape          ... from picking cheaper days
-           +  financing      ... from picking later ones; zero without a discount rate
+           =  shape          ... price selection at the benchmark discount factor
+           +  timing         ... settlement timing at the benchmark price
+           +  interaction    ... price-selection × timing cross-effect
       -  extrinsic           what re-choosing as prices move adds
       =  price               what the deal actually pays
 
 So `flat = price + intrinsic + extrinsic` for a buyer and `price = flat + intrinsic +
-extrinsic` for a seller, with `shape` and `financing` the two halves of `intrinsic`
-rather than two more terms beside it. `vs flat` in the notebook is measured off the
+extrinsic` for a seller. `vs flat` in the notebook is measured off the
 prices and `total` off the decomposition, so those agreeing is a cross-check; both are
 asserted in `tests/` to 1e-9 on either side, struck and unstruck.
+
+### Intrinsic attribution is not unique
+
+When both the forward curve and discount factors vary, price selection and settlement
+timing interact. Writing `P` for the schedule's undiscounted average price net of strike,
+`Fbar` for the window average and `DF_paid`/`DF_bench` for their effective discount factors:
+
+    intrinsic = DF_bench·(P-Fbar)
+              + Fbar·(DF_paid-DF_bench)
+              + (P-Fbar)·(DF_paid-DF_bench)
+
+The terms are day selection at the benchmark discount factor, settlement timing at the
+benchmark price, and their interaction. `intrinsic_attribution()` reports all three.
+Legacy `intrinsic_components()` preserves its two-number API by adding the interaction to
+the second value. Calling that combined value “financing” is an attribution convention;
+it is not proof that the balance can be funded or invested at the discount rate.
 
 ## `intrinsic` is not an option's intrinsic value
 
@@ -224,12 +250,13 @@ quantity: what you gain by **choosing days** rather than taking the window flat.
 | | |
 |---|---|
 | `flat` | the moneyness, `F - K` per MWh. What the deal is worth with no choice of days at all |
-| `intrinsic` | what the *deterministic* optimum adds over that by picking days on today's forward curve — plus financing, once a rate is on |
+| `intrinsic` | what the *deterministic* optimum adds over the flat schedule through price selection, settlement timing and their interaction |
 | `extrinsic` | what re-picking as prices move adds on top |
 
-So with a flat curve at 40 and `K = 30`, `flat` is **10.000** — that is the 10 you would
-look for — and `intrinsic` is **0**, correctly: no day beats any other, so choosing them is
-worth nothing.
+So with a flat curve at 40 and `K = 30`, `flat` is **10.000** at a zero rate, and
+`intrinsic` is **0**: no day beats any other and settlement timing has no value. At a
+positive rate the same curve can have non-zero intrinsic solely because the exercise-day
+settlement dates differ.
 
 **A `put_swing` is also not a put.** It is the obligation to buy, so there is no
 `max(·, 0)` anywhere. At a zero rate the value is exactly linear in the strike —
@@ -258,18 +285,18 @@ At level 40, put swing over calendar 2027, valued 2026-03-06, `sMR = 1.0`:
 |---|---|---|
 | no vol, no rate | nothing to gain | I+E = 9e-06, pays 39.999991 |
 | vol 50 %, no rate | **intrinsic exactly 0** — no shape, no deterministic edge | 0.00e+00 at every size |
-| no vol, rate 10 % | **extrinsic exactly 0** — no optionality left, so all value is financing | −6e-15, intrinsic 1.677 |
+| no vol, rate 10 % | **extrinsic exactly 0** — no optionality left, so all intrinsic is settlement timing | −6e-15, intrinsic 1.677 |
 | forced to take all 365 days | pays the curve exactly | 40.000000, I+E = 0 |
 | deal size rising | price rises monotonically towards the level | 35.819 → 40.000, no reversal |
 
 Two readings worth keeping:
 
-- **On a flat curve, intrinsic *is* the discount rate.** It is 0 at 0 % and 1.677 at 10 %
-  for the 10-day deal. None of that is day selection; there is none to be had. If
+- **On a flat curve, intrinsic is settlement-timing value under the selected rate.** It is
+  0 at 0 % and 1.677 at 10 % for the 10-day deal. None of that is day selection. If
   intrinsic is not ~0 at 0 % on a flat curve, something other than the rate is moving.
 - **Vol is what pulls exercise forward.** With no vol at 10 % the buyer defers to the very
   end — mean exercise day 359.5 of 365, because when you pay is the only thing left to
-  optimise. Switch vol back on and it sits at 195: the financing pull towards the end
+  optimise. Switch vol back on and it sits at 195: the settlement-timing pull towards the end
   against the option to wait for a dip.
 
 **Put and call are mirror images, but not in euros.** At vol 50 % the put buys 4.181 below
@@ -307,10 +334,10 @@ and the `K` leg is a constant times a fixed volume, so it cannot reorder the exe
 schedule and split come out identical struck or not. Discounted it becomes
 `sum DF_i (P_i - K) q_i`, and the `-K sum DF_i q_i` term rewards days with *large* discount
 factors, pulling exercise earlier against the deferral the rate otherwise buys. Because the
-financing gain scales with the net cash actually moving rather than the gross index, a deep
+timing attribution scales with the net cash actually moving rather than the gross index, a deep
 strike nearly removes it: on the seasonal test curve a 20.00 strike against a ~25 average
-takes financing from 0.481 to 0.002 and returns the schedule to its undiscounted optimum.
-Pass the run's strike to `intrinsic_components`, or the discount factors it divides out are
+takes the legacy timing component from 0.481 to 0.002 and returns the schedule to its undiscounted optimum.
+Pass the run's strike to `intrinsic_attribution` or `intrinsic_components`, or the discount factors they divide out are
 recovered from the wrong legs.
 
 ## Kernel constants

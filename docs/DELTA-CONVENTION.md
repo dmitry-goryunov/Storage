@@ -76,12 +76,13 @@ yield curve does.
 If the PV sensitivity is wanted as well, report it as a second, separately named series
 rather than overloading `delta`.
 
-## Either way, this is invisible today
+## Subsequent implementation
 
-`d_curve` is `np.ones` on every current path — `Storage.__init__` sets it and nothing in
-`run_valuation`, the apps or the workbook loader overrides it. No published number changes
-under either convention until someone supplies a real discount curve. That is exactly why
-it should be settled now rather than after.
+PR #6 added `discount_rate` to `Storage` and `run_valuation`, so `d_curve` is no longer one
+on every path. The original decision remains: `delta` is the undiscounted OTC-forward hedge
+volume, while `delta_pv = d_curve · delta` is the PV sensitivity or futures-equivalent
+series. Neither label removes the need to state the hedge instrument, margining and
+settlement convention.
 
 ## If the decision is "keep discounted"
 

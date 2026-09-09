@@ -1,7 +1,9 @@
 """Regression tests for the September 2026 reconciliation findings."""
 
 import json
+import itertools
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -271,6 +273,64 @@ def test_notebook_is_valid_json(notebook):
         payload = json.load(handle)
     assert isinstance(payload.get("cells"), list)
     assert payload.get("nbformat") == 4
+
+
+def test_products_notebook_executes_clean_with_treasury_rate_scenario():
+    """Run every code cell in a new interpreter and reject stored stale output.
+
+    Products.ipynb contains ordinary Python rather than notebook magics, so a
+    fresh subprocess is a stricter and lighter smoke test than reusing pytest's
+    interpreter. The smoke flag reduces tree width and the number of deal sizes;
+    it does not skip any notebook section.
+    """
+    path = os.path.join(ROOT, "Products.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            assert cell.get("execution_count") is None
+            assert not cell.get("outputs", [])
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("Products.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    source = "".join(cell.get("source", []))
+    exec(compile(source, f"Products.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+assert namespace["RATE_PARAMS"] == {
+    "borrow_rate": 0.12,
+    "invest_rate": 0.03,
+    "funding_direction": "invest",
+}
+assert abs(namespace["RUNS"][10][0].discount_rate - 0.03) < 1e-15
+print("PRODUCTS_NOTEBOOK_OK rate=0.03")
+'''
+    env = os.environ.copy()
+    env.update({
+        "STORAGE_NOTEBOOK_SMOKE": "1",
+        "STORAGE_RATE_MODE": "treasury_scenario",
+        "STORAGE_BORROW_RATE": "0.12",
+        "STORAGE_INVEST_RATE": "0.03",
+        "STORAGE_FUNDING_DIRECTION": "invest",
+        "MPLBACKEND": "Agg",
+    })
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=180, check=False,
+    )
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}"
+    )
+    assert "PRODUCTS_NOTEBOOK_OK rate=0.03" in completed.stdout
 
 
 def test_contract_curve_gap_reports_the_coverage_problem():
@@ -719,6 +779,27 @@ def test_on_a_flat_curve_every_euro_of_intrinsic_is_financing():
             assert financing > 0.0, f"a buyer gains by deferring: {financing:.4f}"
 
 
+def test_three_way_attribution_exposes_the_shape_timing_interaction():
+    """The old two-way split is exact but is not a unique economic attribution.
+
+    When both the curve and discount factors vary, changing exercise dates changes
+    price and timing together. The explicit interaction is non-zero on the seasonal
+    case, and the three terms reconstruct intrinsic exactly. The legacy second
+    component deliberately contains timing plus interaction.
+    """
+    curve = _seasonal_daily_curve()
+    model = _deterministic(curve, 0.10)
+    attribution = sm.intrinsic_attribution(model)
+    shape, legacy_timing = sm.intrinsic_components(model)
+    _, result, _ = _timed("put_swing", 0.10, curve, n_p_full=20)
+
+    assert abs(attribution["interaction"]) > 0.01
+    assert abs(sum(attribution.values()) - result["intrinsic"]) < 1e-9
+    assert abs(shape - attribution["day_selection"]) < 1e-12
+    assert abs(legacy_timing - (attribution["settlement_timing"]
+                                + attribution["interaction"])) < 1e-12
+
+
 def test_the_intrinsic_split_refuses_a_two_sided_deal():
     """Storage buys and sells, so value per net MWh -- and the split -- is undefined."""
     params = {
@@ -950,13 +1031,14 @@ def test_the_reported_metrics_compose_into_the_price():
             f"{res['intrinsic']:.9f}")
 
 
-def test_financing_is_interest_on_cash_the_deal_has_not_paid_out():
-    """The financing gain is a real cash flow, not a discount-factor artefact.
+def test_flat_curve_timing_matches_interest_under_the_assumed_rate():
+    """The flat-curve timing attribution matches a declared cash-interest scenario.
 
     The deterministic schedule and the flat benchmark move the same gas at the
     same prices, so their nominal totals are identical and only the timing
-    differs. The balance between them is money still in hand; the present value
-    of the interest it earns at the discount rate is the financing number.
+    differs. The balance between them is money still in hand. Its interest matches
+    the model attribution only under the assumption that the balance genuinely
+    earns or avoids the selected rate.
     """
     curve = _flat_daily_curve(40.0)
     rate, strike = 0.10, 30.0
@@ -984,15 +1066,14 @@ def test_financing_is_interest_on_cash_the_deal_has_not_paid_out():
 
 
 def test_a_curve_in_contango_at_the_discount_rate_leaves_no_timing_gain():
-    """Charging financing on the gas needs no new input -- the curve does it.
+    """`DF * F` flat is a model identity, not a general commodity carry claim.
 
-    A flat forward curve beside a positive rate is internally inconsistent: it
-    says gas costs the same in December as in January while money costs 10 %.
-    The financing gain is the model reporting that inconsistency as free money.
-    Put the curve in contango at the same rate and `DF * F` -- the only curve the
-    optimiser ever sees -- is flat, so the timing gain vanishes exactly. Day
-    selection and financing are then equal and opposite: buying early is cheaper
-    on the curve by precisely what paying early costs in funding.
+    If this test curve grows at exactly the selected discount rate, `DF * F` --
+    the curve the optimiser sees -- is flat, so the timing gain vanishes exactly.
+    Day selection and settlement timing are then equal and opposite. This does
+    not imply that an observed flat gas forward curve is inconsistent: storage
+    costs, convenience yield, seasonality and physical constraints can offset
+    financial carry.
 
     Optionality is untouched, because that comes from volatility, not slope.
     """
@@ -1014,18 +1095,187 @@ def test_a_curve_in_contango_at_the_discount_rate_leaves_no_timing_gain():
         f"contango at the discount rate must leave no intrinsic, got {res['intrinsic']:.3e}")
     assert abs(shape + financing) < 1e-9, (shape, financing)
     assert shape < -0.5 and financing > 0.5, (
-        f"and the two halves should be large and opposite, got {shape:.4f}, {financing:.4f}")
+        f"the two legacy components should be large and opposite, "
+        f"got {shape:.4f}, {financing:.4f}")
     assert res["extrinsic"] > 0.5, (
         f"optionality comes from vol, not slope, and must survive: {res['extrinsic']:.4f}")
 
 
-def test_borrow_and_invest_rates_follow_the_deal_direction():
-    """One rate assumes spare cash earns what borrowed cash costs. It need not.
+def _enumerated_schedule_value(prices, discount, actions, initial, terminal, capacity,
+                               injection_cost=0.0, withdrawal_cost=0.0):
+    """Independent exhaustive oracle for a tiny deterministic contract."""
+    best = -np.inf
+    for schedule in itertools.product(actions, repeat=len(prices)):
+        inventory = initial
+        value = 0.0
+        feasible = True
+        for price, df, action in zip(prices, discount, schedule):
+            inventory += action
+            if inventory < 0 or inventory > capacity:
+                feasible = False
+                break
+            if action > 0:
+                value += action * df * (-price - injection_cost)
+            elif action < 0:
+                value += (-action) * df * (price - withdrawal_cost)
+        if feasible and inventory == terminal:
+            best = max(best, value)
+    if not np.isfinite(best):
+        raise AssertionError("The exhaustive test contract has no feasible schedule.")
+    return best
 
-    Given the pair, the rate follows the sign of the deal's own cash: a net payer
-    funds at the borrow rate, a net receiver places cash at the invest rate. The
-    direction comes from the forward net of strike, not the product type, because
-    a strike flips it -- a put swing struck above the curve receives.
+
+@pytest.mark.parametrize("product_type", ["put_swing", "call_swing", "storage"])
+def test_tiny_contract_matches_independent_exhaustive_schedule_oracle(product_type):
+    """The DP must equal direct enumeration, not only its own reconciliations.
+
+    Four active days make every feasible physical schedule enumerable. This
+    independently tests discounted daily cash flow, strike, exercise direction,
+    inventory transitions and the terminal state for all three products.
+    """
+    val_date = pd.Timestamp("2026-01-01")
+    active_dates = pd.date_range("2026-01-02", periods=4, freq="D")
+    active_prices = np.array([35.0, 10.0, 50.0, 20.0])
+    curve = pd.Series(
+        [35.0, *active_prices, 20.0],
+        index=pd.date_range(val_date, periods=6, freq="D"),
+    )
+    rate = 0.17
+    discount = np.exp(
+        -rate * (active_dates - val_date).days.to_numpy(dtype=float) / 365.25
+    )
+    params = dict(
+        product_type=product_type, valDate=val_date,
+        storageStart=active_dates[0], storageEnd=active_dates[-1],
+        vol=0.0, sMR=1.0, n_p_full=0, run_intrinsic=False,
+        daily_max=1.0, clips_per_day=1, discount_rate=rate,
+        daily_curve=curve,
+    )
+
+    if product_type == "put_swing":
+        strike = 25.0
+        params.update(capacity_mwh=2.0, strike=strike)
+        expected = _enumerated_schedule_value(
+            active_prices, discount, (0, 1), initial=0, terminal=2, capacity=2,
+            injection_cost=-strike,
+        )
+        initial_state = 0
+    elif product_type == "call_swing":
+        strike = 25.0
+        params.update(capacity_mwh=2.0, strike=strike)
+        expected = _enumerated_schedule_value(
+            active_prices, discount, (0, -1), initial=2, terminal=0, capacity=2,
+            withdrawal_cost=strike,
+        )
+        initial_state = 2
+    else:
+        params.update(
+            capacity_mwh=1.0, inj_cost=0.7, wdr_cost=0.4,
+            inj_rate=1, wdr_rate=1, initial_inv_clips=0, terminal_inv_clips=0,
+        )
+        expected = _enumerated_schedule_value(
+            active_prices, discount, (-1, 0, 1), initial=0, terminal=0, capacity=1,
+            injection_cost=0.7, withdrawal_cost=0.4,
+        )
+        initial_state = 0
+
+    model, _ = sm.run_valuation(None, params)
+    actual = float(model.v[0, 0, initial_state])
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-10)
+
+
+def test_zero_discount_rate_still_conflicts_with_treasury_rates():
+    """An explicit zero is a selected discounting mode, not an absent field."""
+    with pytest.raises(ValueError, match="either `discount_rate`.*not both"):
+        sm.normalise_rate_parameters({
+            "discount_rate": 0.0,
+            "borrow_rate": 0.12,
+            "invest_rate": 0.03,
+            "funding_direction": "borrow",
+        })
+
+    params = dict(
+        product_type="put_swing", valDate="2026-01-01",
+        storageStart="2026-02-01", storageEnd="2026-12-31",
+        capacity_mwh=10_000, daily_max=1_000, clips_per_day=1,
+        vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+        daily_curve=_flat_daily_curve(40.0), discount_rate=0.0,
+        borrow_rate=0.12, invest_rate=0.03, funding_direction="borrow",
+    )
+    with pytest.raises(ValueError, match="either `discount_rate`.*not both"):
+        sm.run_valuation(None, params)
+
+
+def test_workbook_rate_fields_reach_the_valuation_without_inference(tmp_path):
+    """Workbook -> loader -> bridge -> model preserves the selected scenario."""
+    workbook = tmp_path / "rate-product.xlsx"
+    row = pd.DataFrame([{
+        "product": "rate_case", "product_type": "call_swing",
+        "FDDate": "2026-01-01", "valDate": "2026-01-01",
+        "storageStart": "2026-01-02", "storageEnd": "2026-01-05",
+        "vol": 0.0, "n_p_full": 0, "run_intrinsic": False,
+        "capacity_mwh": 2.0, "initial_storage_mwh": 0.0,
+        "terminal_storage_mwh": 0.0, "inj_days": 2, "wdr_days": 2,
+        "n_states": 2, "inj_cost": 0.0, "wdr_cost": 0.0,
+        "ratchet_profile": "", "notes": "rate plumbing",
+        "borrow_rate": 0.12, "invest_rate": 0.03,
+        "funding_direction": "invest",
+    }])
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        row.to_excel(writer, sheet_name="products", index=False)
+
+    loaded = sm.load_product_params(workbook, "rate_case")
+    params = sm.params_for_run_valuation(loaded)
+    assert {key: params[key] for key in (
+        "borrow_rate", "invest_rate", "funding_direction"
+    )} == {
+        "borrow_rate": 0.12,
+        "invest_rate": 0.03,
+        "funding_direction": "invest",
+    }
+    params["daily_curve"] = pd.Series(
+        40.0, index=pd.date_range("2026-01-01", "2026-02-28", freq="D")
+    )
+    model, _ = sm.run_valuation(None, params)
+    assert model.discount_rate == 0.03
+
+
+def test_streamlit_treasury_inputs_reach_the_model_rate():
+    """Exercise the real widgets and require the selected scenario in output."""
+    from streamlit.testing.v1 import AppTest
+
+    app = AppTest.from_file(
+        os.path.join(ROOT, "streamlit_app.py"), default_timeout=120
+    ).run()
+    next(widget for widget in app.selectbox if widget.label == "Rate mode").select(
+        "Treasury scenario"
+    )
+    app.run()
+    next(widget for widget in app.number_input if widget.label == "n_p_full").set_value(0)
+    next(widget for widget in app.checkbox
+         if widget.label == "Run intrinsic decomposition").uncheck()
+    next(widget for widget in app.number_input
+         if widget.label.startswith("borrow_rate")).set_value(0.12)
+    next(widget for widget in app.number_input
+         if widget.label.startswith("invest_rate")).set_value(0.03)
+    next(widget for widget in app.selectbox
+         if widget.label == "funding_direction").select("invest")
+    next(widget for widget in app.button if widget.label == "Run valuation").click()
+    app.run(timeout=120)
+
+    assert not app.exception
+    assert any(
+        "Applied annual continuously compounded rate: 3.0000%." in caption.value
+        for caption in app.caption
+    )
+
+
+def test_borrow_and_invest_scenario_requires_an_explicit_direction():
+    """The mean forward net of strike cannot safely select a funding direction.
+
+    Borrow/invest rates are treasury scenarios, not a complete asymmetric-funding
+    valuation. The caller must state which scenario is wanted; the model must not
+    infer it from a window mean that may differ from optimally selected cash flows.
     """
     curve = _flat_daily_curve(40.0)
     borrow, invest = 0.12, 0.03
@@ -1040,19 +1290,24 @@ def test_borrow_and_invest_rates_follow_the_deal_direction():
         model, _ = sm.run_valuation(None, params)
         return float(model.v[0, model.n_p, model.initial_state]), model.discount_rate
 
-    for product, strike, expected in (("put_swing", 30.0, borrow),    # pays: K below
-                                      ("put_swing", 50.0, invest),    # receives: K above
-                                      ("call_swing", 30.0, invest),   # receives
-                                      ("call_swing", 50.0, borrow)):  # pays
-        value, used = run(product, strike, borrow_rate=borrow, invest_rate=invest)
+    for product, strike, direction, expected in (
+            ("put_swing", 30.0, "borrow", borrow),
+            ("put_swing", 50.0, "invest", invest),
+            ("call_swing", 30.0, "invest", invest),
+            ("call_swing", 50.0, "borrow", borrow)):
+        value, used = run(product, strike, borrow_rate=borrow, invest_rate=invest,
+                          funding_direction=direction)
         assert used == expected, f"{product} K={strike}: used {used}, expected {expected}"
         single, _ = run(product, strike, discount_rate=expected)
         assert abs(value - single) < 1e-9, (value, single)
 
     with pytest.raises(ValueError, match="not.*both"):
-        run("put_swing", 30.0, discount_rate=0.10, borrow_rate=borrow, invest_rate=invest)
+        run("put_swing", 30.0, discount_rate=0.10, borrow_rate=borrow,
+            invest_rate=invest, funding_direction="borrow")
     with pytest.raises(ValueError, match="together"):
         run("put_swing", 30.0, borrow_rate=borrow)
+    with pytest.raises(ValueError, match="explicit.*funding_direction"):
+        run("call_swing", 30.0, borrow_rate=borrow, invest_rate=invest)
     with pytest.raises(ValueError, match="no single funding direction"):
         sm.run_valuation(None, dict(
             product_type="storage", valDate="2026-01-01", storageStart="2026-02-01",
@@ -1060,6 +1315,36 @@ def test_borrow_and_invest_rates_follow_the_deal_direction():
             clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
             daily_curve=curve, inj_cost=0.0, wdr_cost=0.0,
             borrow_rate=borrow, invest_rate=invest))
+
+
+def test_mean_forward_can_give_the_wrong_funding_direction():
+    """A call can receive even when the window-average `F - K` is negative.
+
+    Ten high-price days are embedded in a long low-price window. The mandatory
+    call selects only those days and receives 60 EUR/MWh, although the window
+    mean is 7.90 EUR/MWh below strike. The removed automatic selector chose the
+    borrowing rate here. Explicit direction keeps that economic judgement with
+    the caller.
+    """
+    curve = _flat_daily_curve(30.0)
+    curve.loc[pd.date_range("2026-06-01", "2026-06-10")] = 100.0
+    params = dict(product_type="call_swing", valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=10_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.0, sMR=1.0, n_p_full=0, run_intrinsic=False,
+                  strike=40.0, daily_curve=curve,
+                  borrow_rate=0.12, invest_rate=0.03)
+
+    window = curve.loc["2026-02-01":"2026-12-31"]
+    assert window.mean() - params["strike"] < 0.0
+    with pytest.raises(ValueError, match="explicit.*funding_direction"):
+        sm.run_valuation(None, params)
+
+    model, _ = sm.run_valuation(None, dict(params, funding_direction="invest"))
+    ex = np.asarray(model.exp_ex[:model.n_t])
+    exercised_price = float(np.dot(ex, np.asarray(model.price_curve[:model.n_t])) / ex.sum())
+    assert exercised_price == 100.0
+    assert model.discount_rate == 0.03
 
 
 def test_the_pnl_bridge_sums_to_the_model_value():

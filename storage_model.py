@@ -433,7 +433,68 @@ def active_masks(model):
 
 def discount_factors(n_t, rate):
     """Daily discount factors to the valuation date, continuously compounded."""
-    return np.exp(-float(rate) * np.arange(n_t) / 365.25)
+    rate = float(rate)
+    if not np.isfinite(rate):
+        raise ValueError("Discount and funding rates must be finite numbers.")
+    return np.exp(-rate * np.arange(n_t) / 365.25)
+
+
+def normalise_rate_parameters(params):
+    """Validate and return the selected valuation-rate configuration.
+
+    The model supports either one market/valuation ``discount_rate`` or a pair
+    of treasury scenario rates with an explicit ``funding_direction``. Presence
+    is tested explicitly, so ``discount_rate=0.0`` remains a supplied rate and
+    cannot silently coexist with the treasury scenario fields.
+
+    An empty configuration is valid and leaves the model's default zero rate in
+    place. Negative finite rates are also valid.
+    """
+    supplied = {
+        key: params.get(key)
+        for key in ("discount_rate", "borrow_rate", "invest_rate", "funding_direction")
+        if key in params and params.get(key) is not None
+    }
+    if not supplied:
+        return {}
+
+    has_discount = "discount_rate" in supplied
+    has_treasury = any(
+        key in supplied for key in ("borrow_rate", "invest_rate", "funding_direction")
+    )
+    if has_discount and has_treasury:
+        raise ValueError(
+            "Set either `discount_rate` or the `borrow_rate`/`invest_rate` pair, not "
+            "both; otherwise which one prices the deal is silent."
+        )
+
+    if has_discount:
+        rate = float(supplied["discount_rate"])
+        if not np.isfinite(rate):
+            raise ValueError("`discount_rate` must be a finite number.")
+        return {"discount_rate": rate}
+
+    if "borrow_rate" not in supplied or "invest_rate" not in supplied:
+        raise ValueError(
+            "`borrow_rate` and `invest_rate` must be given together; one alone leaves "
+            "the other direction undefined."
+        )
+    direction = supplied.get("funding_direction")
+    if direction not in ("borrow", "invest"):
+        raise ValueError(
+            "A `borrow_rate`/`invest_rate` pair requires an explicit "
+            "`funding_direction` of 'borrow' or 'invest'. Direction cannot be "
+            "inferred safely from product type or mean forward net of strike."
+        )
+    borrow = float(supplied["borrow_rate"])
+    invest = float(supplied["invest_rate"])
+    if not np.isfinite(borrow) or not np.isfinite(invest):
+        raise ValueError("`borrow_rate` and `invest_rate` must be finite numbers.")
+    return {
+        "borrow_rate": borrow,
+        "invest_rate": invest,
+        "funding_direction": direction,
+    }
 
 
 def daily_arithmetic_flat_metric(model, strike=0.0):
@@ -452,57 +513,111 @@ def daily_arithmetic_flat_metric(model, strike=0.0):
 
 
 def apply_funding_rate(model, params, side, strike=0.0):
-    r"""Set the discount curve from a borrow/invest pair instead of one rate.
+    r"""Apply an explicitly selected borrow/invest *scenario* rate.
 
-    `discount_rate` is a single rate in both directions, which assumes spare cash
-    earns exactly what borrowed cash costs. Give `borrow_rate` and `invest_rate`
-    instead and the rate follows the deal's own direction: a net payer funds at
-    the borrow rate, a net receiver places cash at the invest rate.
+    This is not a market FVA model.  It replaces the valuation discount curve with
+    one treasury scenario rate for the whole deal.  Give `borrow_rate` and
+    `invest_rate` together and select one explicitly with
+    `funding_direction="borrow"` or `"invest"`.
 
-    Direction comes from the sign of the mean forward net of strike, not from the
-    product type, because a strike flips it -- a put swing struck above the curve
-    receives rather than pays. `side` says which way the product runs: "payer"
-    for a put swing (it pays `P - K`), "receiver" for a call swing (it receives
-    it), "both" for storage, which has no single direction and is refused.
+    Direction must not be inferred from the mean forward net of strike.  Optional
+    exercise can select receipts even when the window mean is a payment (and vice
+    versa), while stochastic prices can cross the strike.  The old inference was
+    therefore wrong for otherwise ordinary swings.  `side="both"` identifies
+    storage, whose injections and withdrawals have no single funding direction;
+    it remains unsupported here.
 
-    One rate for the whole deal, not one per day: the DP's value must stay linear
-    in the price level or the repricing invariant breaks, and a rate chosen from
-    the sign of each day's cash flow is not linear. Returns the rate in force.
+    A genuine asymmetric-funding valuation would track the cash balance (or solve
+    an equivalent nonlinear recursion) and is outside this helper.  Returns the
+    scenario rate put in force.
     """
-    borrow, invest = params.get("borrow_rate"), params.get("invest_rate")
-    if borrow is None and invest is None:
+    has_discount = "discount_rate" in params and params.get("discount_rate") is not None
+    has_borrow = "borrow_rate" in params and params.get("borrow_rate") is not None
+    has_invest = "invest_rate" in params and params.get("invest_rate") is not None
+    if side == "both" and not has_discount and has_borrow and has_invest:
+        raise ValueError(
+            "A storage deal pays on injection and receives on withdrawal, so it has no "
+            "single funding direction. Use a market `discount_rate`/`d_curve`, or "
+            "model the cash balance explicitly."
+        )
+
+    rates = normalise_rate_parameters(params)
+    if not rates:
         return model.discount_rate
-    if params.get("discount_rate"):
-        raise ValueError(
-            "Set either `discount_rate` or the `borrow_rate`/`invest_rate` pair, not "
-            "both — otherwise which one prices the deal is silent.")
-    if borrow is None or invest is None:
-        raise ValueError(
-            "`borrow_rate` and `invest_rate` must be given together; one alone leaves "
-            "the other direction undefined.")
+    if "discount_rate" in rates:
+        rate = rates["discount_rate"]
+        model.discount_rate = rate
+        model.d_curve = discount_factors(model.n_t, rate)
+        return rate
     if side == "both":
         raise ValueError(
             "A storage deal pays on injection and receives on withdrawal, so it has no "
-            "single funding direction. Use `discount_rate`, or build `d_curve` yourself.")
+            "single funding direction. Use a market `discount_rate`/`d_curve`, or "
+            "model the cash balance explicitly.")
 
-    win = slice(model.Dt, model._active)
-    net = float(np.mean(np.asarray(model.price_curve, dtype=float)[win])) - float(strike)
-    receives = (net < 0.0) if side == "payer" else (net > 0.0)
-    rate = float(invest if receives else borrow)
+    direction = rates["funding_direction"]
+    rate = rates["borrow_rate"] if direction == "borrow" else rates["invest_rate"]
     model.discount_rate = rate
     model.d_curve = discount_factors(model.n_t, rate)
     return rate
 
 
+def intrinsic_attribution(model, strike=0.0):
+    r"""Return a transparent three-way attribution of deterministic intrinsic.
+
+    Price selection and settlement timing interact.  There is therefore no unique
+    two-way split into "shape" and "financing" once both the forward curve and
+    discount factors vary.  This function reports the chosen reference-ordering
+    explicitly:
+
+        day_selection       = sign * DF_bench * (P - Fbar)
+        settlement_timing   = sign * Fbar * (DF_paid - DF_bench)
+        interaction         = sign * (P - Fbar) * (DF_paid - DF_bench)
+
+    The three terms sum exactly to intrinsic.  Calling the second term
+    "financing" does not establish that the business can borrow or invest at the
+    discount rate; that requires a separate treasury assumption.
+    """
+    n = model.n_t
+    win = slice(model.Dt, model._active)
+    net = np.asarray(model.price_curve, dtype=float)[:n] - float(strike)
+    ex = np.asarray(model.exp_ex[:n], dtype=float)
+    volume = float(ex.sum())
+    if abs(volume) <= 1e-12 * max(float(np.abs(ex).sum()), 1.0):
+        raise ValueError(
+            "The intrinsic attribution is undefined for a zero-net-volume strategy."
+        )
+    net_bar = float(np.mean(net[win]))
+    paid = float(np.dot(ex, net) / volume)
+    if abs(net_bar) < 1e-12 or abs(paid) < 1e-12:
+        raise ValueError(
+            "The intrinsic attribution is undefined when the strike sits on the curve: "
+            f"mean forward net of strike is {net_bar:.3e} and the schedule pays "
+            f"{paid:.3e}, so the discount factors it divides out are not recoverable."
+        )
+    df_bench = float(np.mean(model.d_curve[win] * net[win])) / net_bar
+    df_paid = model.profiled() / paid
+    sign = 1.0 if volume > 0 else -1.0
+    selection = sign * df_bench * (paid - net_bar) + 0.0
+    timing = sign * net_bar * (df_paid - df_bench) + 0.0
+    interaction = sign * (paid - net_bar) * (df_paid - df_bench) + 0.0
+    return {
+        "day_selection": selection,
+        "settlement_timing": timing,
+        "interaction": interaction,
+    }
+
+
 def intrinsic_components(model, strike=0.0):
-    r"""Split `intrinsic` into what the schedule saves on price and on timing.
+    r"""Return the legacy two-way attribution of deterministic intrinsic.
 
     `model` is the **deterministic** run -- the `n_p = 0` build whose schedule
     produces `profiled_metric`. Returns `(day_selection, financing)`, which sum
     to `intrinsic` exactly.
 
     Intrinsic is the gain from choosing days rather than spreading evenly over
-    the window, and with a discount rate that is two different gains. A flat
+    the window.  With a varying curve and a non-zero rate, price selection and
+    settlement timing have an interaction, so a two-way split is not unique. A flat
     forward curve is not flat once discounted: the curve the optimiser actually
     sees is `DF * F`, and at 10 % a flat 40 slopes from 36.84 on 1 Jan to 33.34
     on 31 Dec. There is then something to choose with no price shape at all.
@@ -512,39 +627,21 @@ def intrinsic_components(model, strike=0.0):
         intrinsic = df_bench * (P - Fbar)  +  P * (df_paid - df_bench)
                     \___ day selection __/    \_____ financing _____/
 
-    The first term is what the schedule saves on price, held at the benchmark's
-    own discount factor. The second is what it saves by settling on different
-    days. **On a flat curve the first is exactly zero and every euro of
-    intrinsic is financing** -- a hurdle-rate gain on deferred cash, not a
-    commodity gain, and realised by actually deferring rather than by trading.
+    This legacy function allocates the entire interaction to the second term. Use
+    `intrinsic_attribution()` to see day selection, settlement timing and their
+    interaction separately. **On a flat curve the interaction is zero and the
+    first term is exactly zero.** The remaining timing attribution becomes an
+    actual financing benefit only if the relevant balance can genuinely earn or
+    avoid the selected rate.
 
     Raises for a two-sided strategy, where `profiled_metric` is undefined.
     """
-    n = model.n_t
-    win = slice(model.Dt, model._active)
-    net = np.asarray(model.price_curve, dtype=float)[:n] - float(strike)
-    ex = np.asarray(model.exp_ex[:n], dtype=float)
-    volume = float(ex.sum())
-    if abs(volume) <= 1e-12 * max(float(np.abs(ex).sum()), 1.0):
-        raise ValueError(
-            "The intrinsic split is undefined for a zero-net-volume strategy."
-        )
-    net_bar = float(np.mean(net[win]))
-    paid = float(np.dot(ex, net) / volume)
-    if abs(net_bar) < 1e-12 or abs(paid) < 1e-12:
-        raise ValueError(
-            "The intrinsic split is undefined when the strike sits on the curve: "
-            f"mean forward net of strike is {net_bar:.3e} and the schedule pays "
-            f"{paid:.3e}, so the discount factors it divides out are not recoverable."
-        )
-    df_bench = float(np.mean(model.d_curve[win] * net[win])) / net_bar
-    df_paid = model.profiled() / paid
-    sign = 1.0 if volume > 0 else -1.0
-    # The trailing `+ 0.0` normalises a signed zero. On a flat curve the first
-    # term is -1.0 * 0.0 = -0.0, which renders as "-0.000" in a table and reads
-    # like a defect; adding zero is exact for every other value.
-    return (sign * df_bench * (paid - net_bar) + 0.0,
-            sign * paid * (df_paid - df_bench) + 0.0)
+    attribution = intrinsic_attribution(model, strike=strike)
+    # Preserve the published two-number API: the old "financing" term is the
+    # reference-price timing effect plus the interaction.  The additions of zero
+    # in intrinsic_attribution normalise signed zeros for display.
+    return (attribution["day_selection"],
+            attribution["settlement_timing"] + attribution["interaction"] + 0.0)
 
 
 def resolve_grid(params, states_key):
@@ -733,8 +830,9 @@ def value_call_swing(curve, params):
     # mean(F) - K per MWh, not mean(F). Benchmarking a strike-net value against a raw
     # forward average made `intrinsic` (and `total`) shift by about -K: on one deal,
     # K = 0, 10 and 28 gave 0.314, -9.686 and -27.686 EUR/MWh for what is the same
-    # spread. A constant per-MWh strike cannot reorder the days, so the intrinsic
-    # spread a mandatory swing captures does not depend on it.
+    # spread. At a zero discount rate a constant per-MWh strike cannot reorder the
+    # days. At a non-zero rate its settlement timing can, so intrinsic and
+    # extrinsic may then depend on the strike.
     flat_metric = daily_arithmetic_flat_metric(s, strike)
     zero_penalty = params.get("zero_penalty", False)
 
@@ -991,6 +1089,8 @@ def load_product_params(path="products.xlsx", product=None):
         FDDate, valDate, storageStart, storageEnd, vol, n_p_full, run_intrinsic,
         capacity_mwh, initial_storage_mwh, terminal_storage_mwh, inj_days,
         wdr_days, n_states, inj_cost, wdr_cost, ratchet_profile, notes.
+        Optional rate columns are discount_rate, or borrow_rate, invest_rate and
+        funding_direction together.
       * sheet 'ratchets' — named rate-multiplier profiles. Columns: profile,
         fullness, injection, withdrawal. A blank ratchet_profile disables
         ratchets for that product.
@@ -1055,6 +1155,19 @@ def load_product_params(path="products.xlsx", product=None):
         "wdr_cost":             float(_req("wdr_cost")),
         "notes":                "" if pd.isna(row.get("notes")) else str(row.get("notes")),
     }
+
+    # Optional rate fields use the same validation as the app, notebook and core
+    # valuation entry point. Blank workbook cells are absent, while an explicit
+    # zero remains a supplied discount rate.
+    rate_inputs = {}
+    for name in ("discount_rate", "borrow_rate", "invest_rate"):
+        value = row.get(name)
+        if pd.notna(value):
+            rate_inputs[name] = float(value)
+    direction = row.get("funding_direction")
+    if pd.notna(direction) and str(direction).strip():
+        rate_inputs["funding_direction"] = str(direction).strip()
+    params.update(normalise_rate_parameters(rate_inputs))
 
     if params["storageEnd"] < params["storageStart"]:
         raise ValueError(f"Product {params['product']!r}: storageEnd before storageStart")
