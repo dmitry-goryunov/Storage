@@ -144,6 +144,36 @@ trusting a monthly bucket across a large move.
   convention. A real gas contract paying month-end + N days would need `d_curve` built
   accordingly.
 
+## `intrinsic` is not an option's intrinsic value
+
+The names collide, and the two mean different things.
+
+An option splits its value into **intrinsic** — the moneyness, `max(F - K, 0)` — plus time
+value. A swing has many exercise days rather than one, so the split here is of a different
+quantity: what you gain by **choosing days** rather than taking the window flat.
+
+| | |
+|---|---|
+| `flat` | the moneyness, `F - K` per MWh. What the deal is worth with no choice of days at all |
+| `intrinsic` | what the *deterministic* optimum adds over that by picking days on today's forward curve — plus financing, once a rate is on |
+| `extrinsic` | what re-picking as prices move adds on top |
+
+So with a flat curve at 40 and `K = 30`, `flat` is **10.000** — that is the 10 you would
+look for — and `intrinsic` is **0**, correctly: no day beats any other, so choosing them is
+worth nothing.
+
+**A `put_swing` is also not a put.** It is the obligation to buy, so there is no
+`max(·, 0)` anywhere. At a zero rate the value is exactly linear in the strike —
+`dV/dK` is 10,000 MWh at every strike from 0 to 60 on the 10-day deal, the fixed volume,
+with no kink at the money and a straight line to 1.6e-16 relative. A real 30-strike put
+against a 40 forward is out of the money, worth zero, and would never be exercised; this
+contract buys anyway.
+
+Turn the rate on and a little genuine convexity in `K` does appear — `dV/dK` rises from
+8,761 to 8,891 across the same range, 0.4 %. That is not option payoff convexity; it is the
+schedule responding to the strike, which it can only do because `-K sum DF_i q_i` depends
+on when you exercise. See the strike note above.
+
 ## Sense-checking on a flat curve
 
 A curve with no shape has no day-selection value, so the model's outputs collapse to

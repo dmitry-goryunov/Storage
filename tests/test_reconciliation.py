@@ -881,3 +881,42 @@ def test_the_split_reports_an_unsigned_zero():
     # And with no rate at all, where both terms are zero.
     for term in sm.intrinsic_components(_deterministic(_flat_daily_curve(40.0), 0.0)):
         assert term == 0.0 and not np.signbit(term), term
+
+
+def test_a_put_swing_is_an_obligation_not_an_option_on_the_strike():
+    """Value is linear in K with no kink, so `intrinsic` cannot mean moneyness.
+
+    An option's value is convex in the strike with a kink at the money, and its
+    intrinsic value is `max(.,0)` of the moneyness. A `put_swing` here is the
+    obligation to buy: total volume is fixed, so at a zero rate the value is
+    `K * volume - sum P_i q_i` and `dV/dK` is exactly the volume at every strike,
+    in or out of the money.
+
+    Discounting adds a little real convexity -- the slope becomes `sum DF_i q_i`,
+    which the schedule can raise by exercising earlier as K grows. It is the
+    schedule responding, not an option payoff.
+    """
+    curve = _flat_daily_curve(40.0)
+    strikes = [0.0, 15.0, 30.0, 45.0, 60.0]
+
+    def value(strike, rate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="put_swing", valDate="2026-01-01", storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=20, run_intrinsic=False,
+            discount_rate=rate, strike=strike, daily_curve=curve))
+        return float(model.v[0, model.n_p, model.initial_state])
+
+    flat_slopes = [(value(b, 0.0) - value(a, 0.0)) / (b - a)
+                   for a, b in zip(strikes, strikes[1:])]
+    for s in flat_slopes:
+        assert abs(s - 30_000.0) < 1e-3, (
+            f"dV/dK must be the fixed volume at every strike, got {s:,.3f}")
+
+    disc_slopes = [(value(b, 0.10) - value(a, 0.10)) / (b - a)
+                   for a, b in zip(strikes, strikes[1:])]
+    assert all(s < 30_000.0 for s in disc_slopes), disc_slopes
+    assert all(b > a for a, b in zip(disc_slopes, disc_slopes[1:])), (
+        f"discounting should make the value convex in K, got {disc_slopes}")
+    assert disc_slopes[-1] / disc_slopes[0] - 1 < 0.05, (
+        f"but only slightly -- {disc_slopes[-1]/disc_slopes[0]-1:.1%} is too much")
