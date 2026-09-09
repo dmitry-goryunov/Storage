@@ -4,3 +4,6 @@ __pycache__/
 .claude/
 .ipynb_checkpoints/
 ttf q.parquet
+
+# Excel lock files, created whenever a workbook here is open
+~$*
