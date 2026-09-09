@@ -7,12 +7,43 @@ changes — a status document that lags is worse than none.
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
-| Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
+| Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
 | Tests | `python -m pytest -q` → **85 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
 ---
+
+## The working copy lives on Google Drive
+
+Decided 2026-09-09, knowing the cost. `H:` is Google Drive File Stream, which presents as
+**FAT32** behind a sync daemon rather than as a disk — no real file locking, no symlinks,
+case-insensitive. Measured against a local clone of the same repository:
+
+| | Drive | local | |
+|---|---:|---:|---:|
+| `git status` | 0.181 s | 0.036 s | 5× |
+| write 200 small files | 4.071 s | 0.132 s | 31× |
+| read them back | 1.218 s | 0.034 s | 36× |
+
+**The failure you will actually hit** is a stale `.git/packed-refs.lock`: a zero-byte file
+left when the sync daemon touches `.git` mid-operation. It blocks `git checkout -b` and
+`git push` with *"Another git process seems to be running"* when none is. It happened twice
+on 2026-09-09. Check that no git process is really running, then:
+
+```bash
+rm -f .git/packed-refs.lock
+git fsck --no-progress --no-dangling      # clean every time so far
+```
+
+The operation that tripped it still succeeds — only ref-packing is blocked. `git config
+gc.auto 0` would stop git attempting it at all, at the cost of never auto-packing loose
+objects; not set today.
+
+Two incidents trace to this filesystem beyond the lock: the September stale-baseline
+divergence (18 commits against 6, no shared history), and a mid-session edit to
+`ttf q.xlsx` that silently changed every valuation reading it. GitHub, not Drive, is the
+backup — everything committed is on `origin`, and Drive only covers work that is not.
 
 ## What this is
 
