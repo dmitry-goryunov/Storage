@@ -2,6 +2,7 @@
 
 import json
 import itertools
+import math
 import os
 import subprocess
 import sys
@@ -1547,3 +1548,133 @@ def test_delta_over_volume_is_the_price_conditional_on_exercising():
     late = ratio[np.isin(np.arange(n)[live], win[-30:])].mean()
     assert early > 1.2, f"early exercise should be chosen at good prices: {early:.4f}"
     assert late < 1.0, f"a forced quota should transact below the forward: {late:.4f}"
+
+
+def _black76_call(fwd, strike, var, df=1.0):
+    """Black-76 call given TOTAL log-variance rather than a vol and a maturity."""
+    if var <= 0.0:
+        return df * max(fwd - strike, 0.0)
+    sd = math.sqrt(var)
+    d1 = (math.log(fwd / strike) + 0.5 * var) / sd
+    norm = lambda z: 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+    return df * (fwd * norm(d1) - strike * norm(d1 - sd))
+
+
+@pytest.mark.parametrize("months", [6, 18])
+@pytest.mark.parametrize("strike", [24.0, 32.0, 40.0, 48.0, 60.0])
+def test_a_one_day_swing_reproduces_black_76(strike, months):
+    """The only check here against an independent closed form.
+
+    Collapse a call swing to a single exercise day on a one-day window and waive
+    the quota with `zero_penalty`, and it is a European call. It must reproduce
+    Black-76 -- but at the *mean-reverting* terminal variance
+
+        var(T) = sVol^2 (1 - exp(-2 sMR T)) / (2 sMR)
+
+    not `sVol^2 T`. At sVol 0.5 and sMR 1.0 that is 0.2818 effective vol against
+    a 0.5 input at 18 months, so comparing at the raw `sVol` would suggest the
+    model is 44 % cheap when it is right.
+
+    Every other test in this file is internal consistency. This one would catch a
+    regression in the tree, the forward fitting or the terminal distribution that
+    the invariants would sail through.
+    """
+    level, vol, mr = 40.0, 0.5, 1.0
+    val_date = pd.Timestamp("2026-01-01")
+    expiry = val_date + pd.DateOffset(months=months)
+    curve = pd.Series(level, index=pd.date_range("2025-01-01", "2029-12-31", freq="D"))
+
+    model, _ = sm.run_valuation(None, dict(
+        product_type="call_swing", valDate=val_date, storageStart=expiry,
+        storageEnd=expiry, capacity_mwh=1_000, daily_max=1_000, clips_per_day=1,
+        vol=vol, sMR=mr, n_p_full=90, run_intrinsic=False, discount_rate=0.0,
+        strike=strike, zero_penalty=True, daily_curve=curve))
+    priced = float(model.v[0, model.n_p, model.initial_state]) / 1_000.0
+
+    years = (expiry - val_date).days / 365.25
+    var = vol ** 2 * (1.0 - math.exp(-2.0 * mr * years)) / (2.0 * mr)
+    closed = _black76_call(level, strike, var)
+
+    assert abs(priced - closed) < 0.02, (
+        f"K={strike} at {months}m: model {priced:.5f} vs Black-76 {closed:.5f}")
+    if closed > 0.1:
+        assert abs(priced - closed) / closed < 0.01, (
+            f"K={strike} at {months}m: {abs(priced-closed)/closed:.2%} relative")
+
+    # The tree's own realised log-variance should agree with the analytic value,
+    # which separates "the payoff is wrong" from "the distribution is wrong".
+    weights = model.prob[model.Dt].sum(axis=1)
+    weights = weights / weights.sum()
+    logs = np.asarray(model.x)[model.Dt]
+    mean = float(np.dot(weights, logs))
+    assert abs(float(np.dot(weights, (logs - mean) ** 2)) / var - 1.0) < 0.01
+
+
+def test_an_obligation_is_worth_less_than_the_same_right():
+    """`call_swing` defaults to a mandatory quota, and that is not a call.
+
+    Benchmarking the model's default against a broker's call quote compares two
+    different contracts. On a flat curve at the money the obligation is worth
+    about half the right, because it sells on the bad days too. The right also
+    leaves part of its quota unused, which the obligation cannot.
+    """
+    level = 40.0
+    curve = pd.Series(level, index=pd.date_range("2025-01-01", "2029-12-31", freq="D"))
+
+    def priced(days, right):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="call_swing", valDate="2026-01-01", storageStart="2027-01-01",
+            storageEnd="2027-12-31", capacity_mwh=days * 1_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=40, run_intrinsic=False,
+            discount_rate=0.0, strike=level, zero_penalty=right, daily_curve=curve))
+        value = float(model.v[0, model.n_p, model.initial_state]) / (days * 1_000)
+        used = float(np.abs(np.asarray(model.exp_ex[:model.n_t])).sum())
+        return value, used / (days * 1_000)
+
+    for days in (1, 10):
+        right_value, right_used = priced(days, True)
+        duty_value, duty_used = priced(days, False)
+        assert duty_value < right_value, (days, duty_value, right_value)
+        assert 0.35 < duty_value / right_value < 0.65, (
+            f"{days} days: obligation is {duty_value/right_value:.0%} of the right")
+        assert duty_used == pytest.approx(1.0, abs=1e-6), duty_used
+        assert 0.3 < right_used < 0.9, f"a right should leave quota unused: {right_used:.2%}"
+
+
+def test_swing_vs_option_notebook_executes_clean():
+    """SwingVsOption.ipynb runs every section in a fresh process, with no stale output."""
+    path = os.path.join(ROOT, "SwingVsOption.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            assert cell.get("execution_count") is None
+            assert not cell.get("outputs", [])
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("SwingVsOption.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    source = "".join(cell.get("source", []))
+    exec(compile(source, f"SwingVsOption.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+assert namespace["_worst"] < 0.02, namespace["_worst"]
+print("SWING_VS_OPTION_OK")
+'''
+    env = os.environ.copy()
+    env.update({"STORAGE_NOTEBOOK_SMOKE": "1", "MPLBACKEND": "Agg"})
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=180, check=False,
+    )
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
+    assert "SWING_VS_OPTION_OK" in completed.stdout
