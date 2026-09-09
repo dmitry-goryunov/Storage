@@ -528,3 +528,33 @@ def test_both_sides_book_a_timing_gain_on_a_flat_curve():
         _, disc, _ = _timed(product_type, 0.10, curve)
         assert abs(flat["intrinsic"]) < 1e-9, f"{product_type} at 0 %: {flat['intrinsic']}"
         assert disc["intrinsic"] > 0.5, f"{product_type} at 10 %: {disc['intrinsic']}"
+
+
+def test_delta_pv_is_the_tailed_hedge_and_reprices_directly():
+    """Two hedge ratios, because there are two hedge instruments.
+
+    `delta` is the physical forward volume: correct against an OTC forward that
+    settles with the deal, where the discount factor cancels. `delta_pv` is that
+    tailed by DF: correct against margined futures, whose variation margin moves
+    today while the gas settles later, and the right number for PV risk.
+
+    On the 10-day put swing 2027 at 10 %, tailing takes December from -2,481 to
+    -2,036 MWh, and the book from -9,213 to -7,819.
+    """
+    model = _direct_put(discount_rate=0.10)
+    n = model.n_t
+    delta = np.asarray(model.delta[:n])
+    delta_pv = np.asarray(model.delta_pv[:n])
+
+    np.testing.assert_allclose(delta_pv, delta * model.d_curve[:n], rtol=0, atol=1e-12)
+    assert abs(delta_pv).sum() < abs(delta).sum(), "tailing must shrink a forward-dated book"
+
+    # The tailed series reprices the contract without carrying the weights
+    # separately -- the identity in its simplest form.
+    value = float(model.v[0, model.n_p, model.initial_state])
+    assert abs(float(np.dot(delta_pv, model.fwd)) - value) / abs(value) < 1e-9
+
+    # With no rate the two series coincide.
+    plain = _direct_put(discount_rate=0.0)
+    np.testing.assert_allclose(np.asarray(plain.delta_pv[:n]),
+                               np.asarray(plain.delta[:n]), rtol=0, atol=1e-12)

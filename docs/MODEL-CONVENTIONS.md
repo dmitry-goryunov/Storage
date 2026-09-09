@@ -74,6 +74,27 @@ swing it runs from 0.45 in March (exercise chosen at cheap prices) to 1.71 in De
 (exercise forced at expensive ones). Both numbers are correct; they answer different
 questions. Use `exp_ex` for physical volume and `delta` for the hedge.
 
+**Two hedge ratios, because there are two hedge instruments.** `delta` assumes an OTC
+forward that settles with the deal: your exposure's PV sensitivity is `DF·E[S·Q]` and the
+forward's is `DF·h·F`, so the discount factor cancels and you trade the physical volume.
+Hedge instead with **exchange futures carrying daily variation margin** and it does not
+cancel — margin cash moves today while the gas settles at delivery — so the hedge must be
+*tailed* by the discount factor. `delta_pv = d_curve · delta` is that tailed series, and it
+is also the right number for PV risk reporting. The two coincide when the rate is zero.
+
+The difference is not small on a forward-dated book. The 10-day put swing over 2027 valued
+2026-01-01 at 10 %:
+
+| | delta | tailed | |
+|---|---:|---:|---:|
+| Jan-27 | −179 | −162 | −9.6 % |
+| Jun-27 | −2,410 | −2,086 | −13.5 % |
+| Dec-27 | −2,481 | −2,036 | −17.9 % |
+| book | −9,213 | −7,819 | −15.1 % |
+
+`delta_pv` also reprices the contract on its own — `sum(delta_pv · fwd) == V0` — which is
+the master invariant with the weights already inside the series.
+
 **It is a local derivative.** Validated against finite differences on the DP to ±0.4 % at a
 ±5 bp bump, every month. But it is strongly convex: at a 1 % bump, July is out by +8.6 %,
 November by +43.9 %, while quota-forced December holds at −1.3 %. Re-hedge rather than

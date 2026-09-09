@@ -19,7 +19,10 @@ Symbol glossary (used throughout this module and the kernels)
     strat      signed clip count moved per state (neg=withdraw, pos=inject, 0=idle)
     exp_ex     expected daily exercise volume (MWh), length n_t+1
     delta      undiscounted hedge volume: the forward MWh to trade for each day
-               (E[S*Q]/F), length n_t+1. Not a PV sensitivity -- see
+               (E[S*Q]/F), length n_t+1. Right against an OTC forward settling
+               with the deal, where the discount factor cancels
+    delta_pv   the same tailed by d_curve: right against margined futures, and
+               the PV risk number. Equals delta when the rate is zero. See
                docs/MODEL-CONVENTIONS.md
     t_p_curve  terminal inventory payoff/penalty by state (-1e9 forbids a state)
     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
@@ -267,10 +270,17 @@ class Storage:
 
         self._assert_terminal_inventory_reached()
 
+        # Two hedge ratios, because there are two hedge instruments. `delta` is the
+        # physical forward volume -- right against an OTC forward settling with the
+        # deal, where DF cancels. `delta_pv` is that tailed by the discount factor:
+        # right against margined futures, whose variation margin moves today while
+        # the gas settles later, and the right number for PV risk. They coincide
+        # when the rate is zero.
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
             self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd)
+        self.delta_pv = list(np.asarray(self.delta[:self.n_t]) * self.d_curve) + [0.0]
 
         return self
 
