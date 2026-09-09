@@ -1219,3 +1219,46 @@ def test_every_money_number_is_a_present_value_at_the_valuation_date():
                                np.asarray(late.delta[:n]) * late.d_curve[:n],
                                rtol=0, atol=1e-12)
     assert abs(np.asarray(late.delta_pv[:n])).sum() < abs(np.asarray(late.delta[:n])).sum()
+
+
+def test_delta_over_volume_is_the_price_conditional_on_exercising():
+    """`delta / exp_ex == E[S | exercise] / F` — recomputed from the raw DP arrays.
+
+    `delta[i]` is `E[S_i Q_i] / F_i` and `exp_ex[i]` is `E[Q_i]`, so their ratio
+    is the volume-weighted price the deal actually transacts at, over the
+    forward. That is the whole reason the two series differ, and section 6b now
+    reports it as its own column, so it is checked here against a probability
+    weighting built directly from `prob`, `strat` and the price tree rather than
+    from the reported series.
+
+    It runs above 1 where exercise is chosen at good prices and below where a
+    quota forces it: on the reference call swing, 1.49 in January against 0.76
+    in December.
+    """
+    curve = _flat_daily_curve(40.0)
+    model, _, _ = _timed("call_swing", 0.10, curve, n_p_full=20, strike=30.0)
+    n = model.n_t
+
+    # E[S*Q] and E[Q] straight from the DP's own arrays.
+    action = model.strat[:n] * model.v_step
+    weighted = model.prob[:n] * action
+    volume = -weighted.sum(axis=(1, 2))
+    traded = -(weighted * np.exp(model.x)[:, :, None]).sum(axis=(1, 2))
+
+    fwd = np.asarray(model.fwd)[:n]
+    np.testing.assert_allclose(np.asarray(model.exp_ex[:n]), volume, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(np.asarray(model.delta[:n]), traded / fwd, rtol=0, atol=1e-9)
+
+    live = np.abs(volume) > 1e-6
+    ratio = np.asarray(model.delta[:n])[live] / volume[live]
+    conditional = traded[live] / volume[live]
+    np.testing.assert_allclose(ratio, conditional / fwd[live], rtol=1e-12, atol=0)
+
+    # A seller is picky early and forced late, so the ratio must fall through the
+    # window and cross 1 before the end.
+    win = np.arange(n)[live]
+    win = win[(win >= model.Dt) & (win < model._active)]
+    early = ratio[np.isin(np.arange(n)[live], win[:30])].mean()
+    late = ratio[np.isin(np.arange(n)[live], win[-30:])].mean()
+    assert early > 1.2, f"early exercise should be chosen at good prices: {early:.4f}"
+    assert late < 1.0, f"a forced quota should transact below the forward: {late:.4f}"
