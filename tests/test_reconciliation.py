@@ -732,3 +732,79 @@ def test_the_intrinsic_split_refuses_a_two_sided_deal():
     model, _ = sm.run_valuation(None, params)
     with pytest.raises(ValueError, match="zero-net-volume"):
         sm.intrinsic_components(model)
+
+
+def test_the_intrinsic_split_is_net_of_the_strike():
+    """Both legs the split divides out are net of the strike, so it must be passed.
+
+    `profiled_metric` is the effective price after the strike leg and
+    `flat_metric` is the forward average net of it, so the discount factors
+    recovered from them are only right if `intrinsic_components` is given the
+    same strike the run used. Getting it wrong is silent -- the numbers still
+    look like prices -- so it is asserted both ways.
+    """
+    curve = _seasonal_daily_curve()
+    strike = 20.0
+
+    det = _deterministic(curve, 0.10, strike=strike)
+    _, res, _ = _timed("put_swing", 0.10, curve, n_p_full=20, strike=strike)
+
+    shape, financing = sm.intrinsic_components(det, strike=strike)
+    assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+        f"{shape:.6f} + {financing:.6f} != reported {res['intrinsic']:.6f}")
+    assert shape > 0.1, shape
+
+    # Forgetting the strike does not raise. It answers a different question, and
+    # the giveaway is that the two terms stop adding up to the reported intrinsic.
+    wrong = sm.intrinsic_components(det)
+    assert abs(sum(wrong) - res["intrinsic"]) > 0.5, (
+        f"dropping the strike should break the reconciliation: {sum(wrong):.6f} "
+        f"against {res['intrinsic']:.6f}")
+
+
+def test_a_strike_reorders_the_days_only_once_there_is_a_rate():
+    """A constant per-MWh amount is not neutral once cash flows are discounted.
+
+    Undiscounted, the cost is `sum (P_i - K) q_i` and the `K` leg is a constant
+    times a fixed volume, so it cannot reorder anything: schedule and split are
+    identical struck or not. Discounted it becomes `sum DF_i (P_i - K) q_i`, and
+    the `-K sum DF_i q_i` term rewards days with *large* discount factors -- it
+    pulls exercise earlier, against the deferral the rate otherwise buys.
+
+    The financing gain scales with the net cash actually moving, not the gross
+    index, so a deep strike all but removes it: on this curve a 20.00 strike
+    against a ~25 average takes financing from 0.481 to 0.002 and returns the
+    schedule to its undiscounted optimum.
+    """
+    curve = _seasonal_daily_curve()
+
+    flat_plain = sm.intrinsic_components(_deterministic(curve, 0.0))
+    flat_struck = sm.intrinsic_components(_deterministic(curve, 0.0, strike=20.0), strike=20.0)
+    np.testing.assert_allclose(flat_struck, flat_plain, rtol=0, atol=1e-9,
+                               err_msg="with no rate a strike must be neutral")
+
+    plain = _deterministic(curve, 0.10)
+    struck = _deterministic(curve, 0.10, strike=20.0)
+    _, fin_plain = sm.intrinsic_components(plain)
+    _, fin_struck = sm.intrinsic_components(struck, strike=20.0)
+    assert fin_plain > 0.4, fin_plain
+    assert fin_struck < 0.05, (
+        f"a deep strike leaves almost no cash to defer, got {fin_struck:.6f}")
+
+    assert _mean_exercise_day(struck) < _mean_exercise_day(plain) - 1.0, (
+        f"the strike must pull exercise earlier: {_mean_exercise_day(struck):.1f} "
+        f"vs {_mean_exercise_day(plain):.1f}")
+
+    # Extrinsic follows the same rule, and it is the cleaner statement of it:
+    # optionality is worth the same struck or not while nothing discounts, and
+    # stops being so the moment something does.
+    def extrinsic(rate, strike):
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=strike)
+        return res["extrinsic"]
+
+    assert abs(extrinsic(0.0, 20.0) - extrinsic(0.0, 0.0)) < 1e-9, (
+        f"with no rate a strike must not touch optionality: "
+        f"{extrinsic(0.0, 20.0):.6f} vs {extrinsic(0.0, 0.0):.6f}")
+    assert abs(extrinsic(0.10, 20.0) - extrinsic(0.10, 0.0)) > 1e-3, (
+        f"with a rate it must, through the -K*sum(DF*q) leg: "
+        f"{extrinsic(0.10, 20.0):.6f} vs {extrinsic(0.10, 0.0):.6f}")

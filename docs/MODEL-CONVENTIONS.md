@@ -201,8 +201,18 @@ The reported `flat_metric` is that average **net of any strike**, because the va
 benchmarks is. Selling every day at the average forward earns `mean(F) - K` per MWh, not
 `mean(F)`. Benchmarking a strike-net value against a raw average made `intrinsic` shift by
 `K` — downwards for a call, upwards for a put — while the spread it is meant to measure
-does not depend on the strike at all: a constant per-MWh amount cannot reorder the exercise
-days. Fixed 2026-09-08; `flat()` on the `Storage` object is unchanged and still raw.
+barely moves. Fixed 2026-09-08; `flat()` on the `Storage` object is unchanged and still raw.
+
+**A strike is neutral only at a zero rate.** Undiscounted, the cost is `sum (P_i - K) q_i`
+and the `K` leg is a constant times a fixed volume, so it cannot reorder the exercise days —
+schedule and split come out identical struck or not. Discounted it becomes
+`sum DF_i (P_i - K) q_i`, and the `-K sum DF_i q_i` term rewards days with *large* discount
+factors, pulling exercise earlier against the deferral the rate otherwise buys. Because the
+financing gain scales with the net cash actually moving rather than the gross index, a deep
+strike nearly removes it: on the seasonal test curve a 20.00 strike against a ~25 average
+takes financing from 0.481 to 0.002 and returns the schedule to its undiscounted optimum.
+Pass the run's strike to `intrinsic_components`, or the discount factors it divides out are
+recovered from the wrong legs.
 
 ## Kernel constants
 
