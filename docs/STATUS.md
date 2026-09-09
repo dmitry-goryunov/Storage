@@ -1,6 +1,6 @@
 # Project status
 
-**As of 2026-09-08.** Canonical `main` is `49d5411`, with every open PR merged: nothing is
+**As of 2026-09-09.** Canonical `main` is `064ac3f`, with every open PR merged: nothing is
 in flight. Update this file when that changes — a status document that lags is worse than
 none.
 
@@ -29,6 +29,14 @@ price — no calibration, no parameter provenance. Treat every number as explora
 
 ## How it got here
 
+The library now prices the time value of money. `discount_rate` discounts each day's
+cash flow, the benchmark is present-valued on the same footing, and the optimiser
+reschedules: a seller pulls exercise earlier to be paid sooner, a buyer pushes it later to
+hold the cash. `intrinsic` splits into **day selection** and **financing**, which is why a
+flat forward curve can still show intrinsic — the optimiser prices `DF·F`, and a flat curve
+beside a positive rate is internally inconsistent. See the discounting sections of
+[MODEL-CONVENTIONS.md](MODEL-CONVENTIONS.md).
+
 A model review in September 2026 found 10 defects plus 10 minor ones. It was developed
 against a stale copy of the repository that had diverged from `main` (18 commits versus 6,
 with no shared file history for the library), which an external process review caught before
@@ -42,6 +50,7 @@ the live ones ported.
 | [#3](https://github.com/dmitry-goryunov/Storage/pull/3) | Separate inventory grid size from initial state | merged |
 | [#4](https://github.com/dmitry-goryunov/Storage/pull/4) | `Products.ipynb` | merged |
 | [#5](https://github.com/dmitry-goryunov/Storage/pull/5) | Intrinsic split benchmarked net of the strike | merged |
+| [#6](https://github.com/dmitry-goryunov/Storage/pull/6) | Time value of money: `discount_rate`, the day-selection/financing split, `delta_pv`, borrow vs invest rates, `STRIKE`, and a total P&L bridge | merged |
 
 The full review, its evidence and the reconciliation record are archived under
 [`docs/reconciliation-history/2026-09-08/`](reconciliation-history/2026-09-08/) — 27 files,
