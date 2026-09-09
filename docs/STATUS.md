@@ -1,8 +1,8 @@
 # Project status
 
-**As of 2026-09-09.** Canonical `main` is `b07c78f`. Economic corrections to rate handling
-and intrinsic attribution are on `review/correct-rate-economics`; they are not part of
-`main` until that branch is merged. Update this file when that changes.
+**As of 2026-09-09.** Canonical `main` is `b5c084c`, with the economic corrections to rate
+handling and intrinsic attribution merged: nothing is in flight. Update this file when that
+changes — a status document that lags is worse than none.
 
 | | |
 |---|---|
@@ -57,6 +57,7 @@ the live ones ported.
 | [#4](https://github.com/dmitry-goryunov/Storage/pull/4) | `Products.ipynb` | merged |
 | [#5](https://github.com/dmitry-goryunov/Storage/pull/5) | Intrinsic split benchmarked net of the strike | merged |
 | [#6](https://github.com/dmitry-goryunov/Storage/pull/6) | Time value of money: `discount_rate`, the day-selection/financing split, `delta_pv`, borrow vs invest rates, `STRIKE`, and a total P&L bridge | merged |
+| `review/correct-rate-economics` | External economic review of #6: explicit funding direction, three-way intrinsic attribution, one rate-validation path, and the P0 verification gates | merged, no PR |
 
 A day's findings and corrections from the time-value work are in
 [FINDINGS-2026-09-09.md](FINDINGS-2026-09-09.md), including four claims this documentation
