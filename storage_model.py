@@ -386,6 +386,14 @@ def curve_df_for_storage(row, contract_columns, curve_start=None, include_da=Tru
 
     quote_date = pd.Timestamp(row["quote_date"])
     curve_start = pd.Timestamp(curve_start) if curve_start is not None else quote_date
+    if curve_start < quote_date:
+        raise ValueError(
+            f"curve_start {curve_start:%Y-%m-%d} is before the quote it is built from "
+            f"({quote_date:%Y-%m-%d}). That values a date using a curve observed after it, "
+            f"and the {(quote_date - curve_start).days}-day gap would be back-filled with "
+            f"this quote's day-ahead price. Move the valuation date to the quote date or "
+            f"later, or pick an earlier quote."
+        )
 
     if include_da and pd.notna(row.get("DA", np.nan)):
         front_month = front_month_start(quote_date)

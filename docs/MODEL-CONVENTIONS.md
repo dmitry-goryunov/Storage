@@ -186,9 +186,15 @@ validated (nothing here establishes the claims are right for a traded price).
 - `sVol` defaults to 0.9 with **no recorded provenance** — no estimation window, method or
   as-of date.
 - `sMR` defaults to 1.0, likewise.
-- Forward curves come from `curve.csv` or the `ttf q.xlsx` quote matrix; the quote row is
-  selected by date, but there is **no recorded as-of convention** tying a valuation to a
-  quote date in the outputs.
+- Forward curves come from `curve.csv` or the `ttf q.xlsx` quote matrix. The quote row is
+  selected by date — the last quote on or before the as-of date — and a curve built from a
+  quote may **no longer start before that quote**: valuing 2026-01-01 off a 2026-03-06
+  quote is look-ahead, and it used to back-fill the two intervening months with that
+  quote's day-ahead price. `curve_df_for_storage` now raises. `curve.csv` carries no quote
+  date at all, so nothing selects a row from it and an as-of date against it means nothing;
+  `Products.ipynb` raises rather than ignoring one. The quote date is now carried into the
+  notebook's curve label and results caption, but there is still **no such convention in
+  the library's own outputs** — `run_valuation` returns no as-of stamp.
 - There is no parameter-sensitivity standard, so no statement of how much a value moves
   per unit of vol or mean reversion.
 

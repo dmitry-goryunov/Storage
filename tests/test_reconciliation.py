@@ -558,3 +558,73 @@ def test_delta_pv_is_the_tailed_hedge_and_reprices_directly():
     plain = _direct_put(discount_rate=0.0)
     np.testing.assert_allclose(np.asarray(plain.delta_pv[:n]),
                                np.asarray(plain.delta[:n]), rtol=0, atol=1e-12)
+
+
+def _quote_row(quote_date="2026-03-06", da=52.0, n=12, level=50.0):
+    """A single synthetic quote row, shaped like a row of `ttf q.xlsx`."""
+    cols = [f"TTFc{i + 1}" for i in range(n)]
+    row = {"quote_date": pd.Timestamp(quote_date), "DA": da}
+    row.update({c: level - i for i, c in enumerate(cols)})
+    return pd.Series(row), cols
+
+
+def test_a_curve_cannot_start_before_the_quote_it_is_built_from():
+    """Valuing before the quote date is look-ahead, and it back-fills silently.
+
+    `curve_start` and the quote date were independent inputs, so moving the
+    as-of date forward while leaving the valuation date behind produced a curve
+    whose front stub was the *later* quote's day-ahead price stamped flat over
+    the months in between -- two months of 52.00 across Jan and Feb 2026 for a
+    2026-03-06 quote valued from 2026-01-01. It now raises.
+    """
+    row, cols = _quote_row("2026-03-06", da=52.0)
+
+    with pytest.raises(ValueError, match="before the quote"):
+        sm.curve_df_for_storage(row, cols, curve_start="2026-01-01", include_da=True)
+
+    # The same gap without a DA column is equally look-ahead, and equally rejected.
+    row_no_da = row.drop(labels=["DA"])
+    with pytest.raises(ValueError, match="before the quote"):
+        sm.curve_df_for_storage(row_no_da, cols, curve_start="2026-01-01", include_da=True)
+
+    # On or after the quote date is fine, and the stub starts where it is told.
+    same = sm.curve_df_for_storage(row, cols, curve_start="2026-03-06", include_da=True)
+    assert same["contractStart"].min() == pd.Timestamp("2026-03-06")
+    assert float(same.iloc[0]["value"]) == 52.0
+
+    # Valuing *after* the quote is allowed. The day-ahead stub still reaches back
+    # to the quote date -- harmless, because the model only maps the curve from
+    # the valuation date forward, so those days are never read.
+    later = sm.curve_df_for_storage(row, cols, curve_start="2026-03-20", include_da=True)
+    assert later["contractStart"].min() == pd.Timestamp("2026-03-06")
+
+    # Defaulting curve_start to the quote date must not trip its own guard.
+    default = sm.curve_df_for_storage(row, cols, curve_start=None, include_da=True)
+    assert default["contractStart"].min() == pd.Timestamp("2026-03-06")
+
+
+def test_the_as_of_date_moves_the_curve():
+    """The knob that started this: a different as-of must select a different quote.
+
+    `Products.ipynb` had `AS_OF` read only on the `quotes` branch while the
+    source stayed `csv`, so changing the date left the curve on curve.csv's
+    stored March 2026 contract of 28.00. The library half is asserted here; the
+    notebook half is the source/AS_OF guard in section 1.
+    """
+    quotes = pd.DataFrame([
+        {"quote_date": pd.Timestamp("2026-01-05"), "DA": 20.0, "TTFc1": 21.0, "TTFc2": 22.0},
+        {"quote_date": pd.Timestamp("2026-03-06"), "DA": 52.0, "TTFc1": 53.0, "TTFc2": 54.0},
+    ])
+    cols = ["TTFc1", "TTFc2"]
+
+    early = sm.quote_row_for_fd_date(quotes, cols, "2026-01-31")
+    late = sm.quote_row_for_fd_date(quotes, cols, "2026-03-06")
+    assert pd.Timestamp(early["quote_date"]) == pd.Timestamp("2026-01-05")
+    assert pd.Timestamp(late["quote_date"]) == pd.Timestamp("2026-03-06")
+
+    front_early = float(sm.curve_df_for_storage(early, cols, include_da=False)
+                        .sort_values("contractStart").iloc[0]["value"])
+    front_late = float(sm.curve_df_for_storage(late, cols, include_da=False)
+                       .sort_values("contractStart").iloc[0]["value"])
+    assert front_early == 21.0
+    assert front_late == 53.0
