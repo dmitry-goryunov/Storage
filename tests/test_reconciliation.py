@@ -1171,3 +1171,51 @@ def test_the_per_mwh_price_keeps_its_sign_when_the_strike_crosses_the_curve():
             gain = res["flat_metric"] - res["stochastic_metric"]
             assert abs(gain - (res["intrinsic"] + res["extrinsic"])) < 1e-9, (
                 f"r={rate}: {gain:.9f} != {res['intrinsic']:.9f} + {res['extrinsic']:.9f}")
+
+
+def test_every_money_number_is_a_present_value_at_the_valuation_date():
+    """`d_curve` is anchored at valDate, so moving valDate rescales the value exactly.
+
+    `d_curve[i] = exp(-r*i/365.25)` with `i` counted from `valDate`, and the value
+    is read at time index 0. Price the same window from two valuation dates and
+    the deterministic value must differ by exactly `exp(-r*dT)` -- nothing else
+    changed, only where "today" is. That is the sharpest statement that the
+    reported money is a PV to valDate rather than to the window or to delivery.
+
+    Deliberate exceptions, all of them labelled where they are reported: the
+    nominal `F - K` line of the P&L bridge (the next line is the discounting),
+    the nominal cash totals and peak balance in the financing view, and `delta`,
+    which is an undiscounted hedge volume with `delta_pv` as its tailed twin.
+    """
+    days = pd.date_range("2025-06-01", "2027-12-31", freq="D")
+    curve = pd.Series(40.0, index=days)
+    rate, strike = 0.10, 30.0
+
+    def value_from(valdate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="put_swing", valDate=valdate, storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+            discount_rate=rate, strike=strike, daily_curve=curve))
+        return model, float(model.v[0, model.n_p, model.initial_state])
+
+    late, v_late = value_from("2026-01-01")
+    early, v_early = value_from("2025-07-01")
+
+    assert late.d_curve[0] == 1.0 and early.d_curve[0] == 1.0
+    assert pd.Timestamp(late.date_span[0]) == late.valDate
+    np.testing.assert_allclose(
+        late.d_curve, np.exp(-rate * np.arange(late.n_t) / 365.25), rtol=0, atol=0)
+
+    gap = (pd.Timestamp("2026-01-01") - pd.Timestamp("2025-07-01")).days
+    expected = v_late * np.exp(-rate * gap / 365.25)
+    assert abs(v_early - expected) < 1e-9 * abs(expected), (
+        f"valuing {gap} days earlier gave {v_early:,.6f}, not {expected:,.6f} — "
+        "the value is not a PV to valDate")
+
+    # delta is the documented exception, and delta_pv is its discounted twin.
+    n = late.n_t
+    np.testing.assert_allclose(np.asarray(late.delta_pv[:n]),
+                               np.asarray(late.delta[:n]) * late.d_curve[:n],
+                               rtol=0, atol=1e-12)
+    assert abs(np.asarray(late.delta_pv[:n])).sum() < abs(np.asarray(late.delta[:n])).sum()

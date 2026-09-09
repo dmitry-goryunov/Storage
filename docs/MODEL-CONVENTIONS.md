@@ -112,6 +112,25 @@ trusting a monthly bucket across a large move.
 
 ## Discounting and settlement
 
+- **Everything money-denominated is a present value at `valDate`, with four labelled
+  exceptions.** `d_curve[i] = exp(-r·i/365.25)` counts `i` from `valDate`, `d_curve[0]` is
+  exactly 1, and the value is read at time index 0. Price the same window from two
+  valuation dates and the deterministic value differs by exactly `exp(-r·ΔT)` — checked to
+  3.6e-16 in `tests/`. So `flat_metric`, `profiled_metric`, `stochastic_metric`,
+  `intrinsic`, `extrinsic`, `shape`, `financing`, every `value EUR` and every line of the
+  P&L bridge are PVs to `valDate`.
+
+  The exceptions, each labelled where it is reported:
+
+  | | |
+  |---|---|
+  | The bridge's `Obligation at the forward (F - K)` | nominal on purpose — the next line is the effect of discounting it |
+  | §2's window mean | printed "gross of strike and undiscounted", against the PV'd `flat` beside it |
+  | §6b's nominal cash totals and peak balance | a cash balance *is* a balance on a date; the `PV of interest` line beside it is the PV |
+  | `delta` | an undiscounted hedge volume by decision D-O2; `delta_pv` is the discounted twin |
+
+  Volumes — `exp_ex`, MWh, mean exercise day — are not money and carry no discounting.
+
 - `d_curve[i]` is a **discount factor to the valuation date** for a cash flow on day `i`.
   Set it from `discount_rate` — an annual, continuously compounded rate, so
   `d_curve[i] = exp(-r·i/365.25)` — as a `Storage` argument or a `run_valuation` param.

@@ -8,7 +8,7 @@ none.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
-| Tests | `python -m pytest -q` → **60 passed** |
+| Tests | `python -m pytest -q` → **61 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
