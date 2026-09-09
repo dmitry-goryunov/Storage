@@ -1060,3 +1060,45 @@ def test_borrow_and_invest_rates_follow_the_deal_direction():
             clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
             daily_curve=curve, inj_cost=0.0, wdr_cost=0.0,
             borrow_rate=borrow, invest_rate=invest))
+
+
+def test_the_pnl_bridge_sums_to_the_model_value():
+    """Total P&L decomposes into moneyness, discounting, and the three gains.
+
+    With nothing paid for the structure the whole P&L is the deal. The lines are
+
+        obligation at the forward  (F - K over the volume, signed by side)
+      + effect of discounting it   (it settles during the window, not today)
+      + intrinsic                  (day selection)
+      + NPV cash                   (financing on cash not yet paid out)
+      + extrinsic                  (optionality)
+
+    and they must reproduce the DP's value. On the 10-day put swing, flat 40,
+    K = 30: -100,000 nominal, +12,350 discounting, 0 day selection, +4,192
+    financing and +35,345 optionality give -48,112 at 10 %; at 0 % the two
+    middle lines vanish and -100,000 + 41,809 gives -58,191.
+    """
+    curve = _flat_daily_curve(40.0)
+    strike = 30.0
+    for product, sign in (("put_swing", -1.0), ("call_swing", 1.0)):
+        for rate in (0.0, 0.10):
+            model, res, _ = _timed(product, rate, curve, n_p_full=20, strike=strike)
+            det = _deterministic(curve, rate, product_type=product, strike=strike)
+            shape, financing = sm.intrinsic_components(det, strike=strike)
+
+            volume = float(np.abs(np.asarray(model.exp_ex[:model.n_t])).sum())
+            win = slice(model.Dt, model._active)
+            nominal = sign * (float(np.mean(np.asarray(model.price_curve, dtype=float)[win]))
+                              - strike)
+            bridge = (nominal
+                      + (sign * res["flat_metric"] - nominal)
+                      + shape + financing + res["extrinsic"]) * volume
+
+            value = float(model.v[0, model.n_p, model.initial_state])
+            assert abs(bridge - value) < 1e-6 * max(abs(value), 1.0), (
+                f"{product} r={rate}: bridge {bridge:,.4f} != value {value:,.4f}")
+
+            if rate == 0.0:
+                assert abs(sign * res["flat_metric"] - nominal) < 1e-9, (
+                    "with no rate there is nothing to discount")
+                assert abs(financing) < 1e-9, financing
