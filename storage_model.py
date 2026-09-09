@@ -451,6 +451,56 @@ def daily_arithmetic_flat_metric(model, strike=0.0):
     return float(np.mean(model.d_curve[win] * (fwd - float(strike))))
 
 
+def intrinsic_components(model, strike=0.0):
+    r"""Split `intrinsic` into what the schedule saves on price and on timing.
+
+    `model` is the **deterministic** run -- the `n_p = 0` build whose schedule
+    produces `profiled_metric`. Returns `(day_selection, financing)`, which sum
+    to `intrinsic` exactly.
+
+    Intrinsic is the gain from choosing days rather than spreading evenly over
+    the window, and with a discount rate that is two different gains. A flat
+    forward curve is not flat once discounted: the curve the optimiser actually
+    sees is `DF * F`, and at 10 % a flat 40 slopes from 36.84 on 1 Jan to 33.34
+    on 31 Dec. There is then something to choose with no price shape at all.
+    Writing `flat = Fbar * df_bench` and `profiled = P * df_paid`, where `P` is
+    the undiscounted price the schedule pays:
+
+        intrinsic = df_bench * (P - Fbar)  +  P * (df_paid - df_bench)
+                    \___ day selection __/    \_____ financing _____/
+
+    The first term is what the schedule saves on price, held at the benchmark's
+    own discount factor. The second is what it saves by settling on different
+    days. **On a flat curve the first is exactly zero and every euro of
+    intrinsic is financing** -- a hurdle-rate gain on deferred cash, not a
+    commodity gain, and realised by actually deferring rather than by trading.
+
+    Raises for a two-sided strategy, where `profiled_metric` is undefined.
+    """
+    n = model.n_t
+    win = slice(model.Dt, model._active)
+    net = np.asarray(model.price_curve, dtype=float)[:n] - float(strike)
+    ex = np.asarray(model.exp_ex[:n], dtype=float)
+    volume = float(ex.sum())
+    if abs(volume) <= 1e-12 * max(float(np.abs(ex).sum()), 1.0):
+        raise ValueError(
+            "The intrinsic split is undefined for a zero-net-volume strategy."
+        )
+    net_bar = float(np.mean(net[win]))
+    paid = float(np.dot(ex, net) / volume)
+    if abs(net_bar) < 1e-12 or abs(paid) < 1e-12:
+        raise ValueError(
+            "The intrinsic split is undefined when the strike sits on the curve: "
+            f"mean forward net of strike is {net_bar:.3e} and the schedule pays "
+            f"{paid:.3e}, so the discount factors it divides out are not recoverable."
+        )
+    df_bench = float(np.mean(model.d_curve[win] * net[win])) / net_bar
+    df_paid = model.profiled() / paid
+    sign = 1.0 if volume > 0 else -1.0
+    return (sign * df_bench * (paid - net_bar),
+            sign * paid * (df_paid - df_bench))
+
+
 def resolve_grid(params, states_key):
     """Map physical inputs to the model's (clip size, #states, clips/day).
 

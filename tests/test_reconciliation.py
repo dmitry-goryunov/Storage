@@ -664,3 +664,71 @@ def test_with_no_volatility_every_euro_of_value_is_financing():
     _, res_none, _ = _timed("put_swing", 0.0, curve, vol=1e-6, n_p_full=20)
     assert abs(res_none["total"]) < 1e-4, (
         f"no shape, no vol, no rate must be worth nothing, got {res_none['total']:.3e}")
+
+
+def _deterministic(curve, discount_rate, **kw):
+    """The n_p = 0 run whose schedule produces `profiled_metric`."""
+    params = dict(product_type="put_swing", valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+                  discount_rate=discount_rate, daily_curve=curve)
+    params.update(kw)
+    return sm.run_valuation(None, params)[0]
+
+
+def test_on_a_flat_curve_every_euro_of_intrinsic_is_financing():
+    """Why a shapeless curve still shows intrinsic once a rate is on.
+
+    A flat *forward* curve is not flat once discounted. The optimiser sees
+    `DF * F`, which at 10 % slopes downwards across the window, so there is
+    something to choose even with no price shape at all -- and the day-selection
+    term is exactly zero while the financing term carries the whole of it.
+
+    The two terms must also reconstruct `intrinsic` on a curve that does have
+    shape, where both are non-zero.
+    """
+    flat = _flat_daily_curve(40.0)
+
+    shape, financing = sm.intrinsic_components(_deterministic(flat, 0.10))
+    assert abs(shape) < 1e-9, f"a flat curve has no day-selection gain, got {shape:.3e}"
+    assert financing > 0.1, f"the rate must carry all of it, got {financing:.4f}"
+
+    # It reconstructs what run_valuation reports.
+    _, res, _ = _timed("put_swing", 0.10, flat, n_p_full=20)
+    assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+        f"{shape:.6f} + {financing:.6f} != reported {res['intrinsic']:.6f}")
+
+    # With no rate there is nothing to choose at all, on either leg.
+    zero = sm.intrinsic_components(_deterministic(flat, 0.0))
+    assert max(abs(z) for z in zero) < 1e-9, zero
+
+    # On a sloped curve both terms are live and still add up.
+    sloped = _seasonal_daily_curve()
+    for rate in (0.0, 0.10):
+        det = _deterministic(sloped, rate, valDate="2026-01-01",
+                             storageStart="2026-02-01", storageEnd="2026-12-31")
+        shape, financing = sm.intrinsic_components(det)
+        _, res, _ = _timed("put_swing", rate, sloped, n_p_full=20)
+        assert shape > 0.1, f"a seasonal curve must offer day selection, got {shape:.4f}"
+        assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+            f"rate {rate}: {shape:.6f} + {financing:.6f} != {res['intrinsic']:.6f}")
+        if rate == 0.0:
+            assert abs(financing) < 1e-9, f"no rate, no financing gain: {financing:.3e}"
+        else:
+            assert financing > 0.0, f"a buyer gains by deferring: {financing:.4f}"
+
+
+def test_the_intrinsic_split_refuses_a_two_sided_deal():
+    """Storage buys and sells, so value per net MWh -- and the split -- is undefined."""
+    params = {
+        "product_type": "storage", "valDate": "2026-01-01",
+        "storageStart": "2026-02-01", "storageEnd": "2026-12-31",
+        "vol": 0.5, "sMR": 1.0, "n_p_full": 0, "run_intrinsic": False,
+        "discount_rate": 0.10, "daily_curve": _seasonal_daily_curve(),
+        "capacity_mwh": 30_000.0, "daily_max": 1_000.0, "clips_per_day": 1,
+        "inj_cost": 0.0, "wdr_cost": 0.0,
+    }
+    model, _ = sm.run_valuation(None, params)
+    with pytest.raises(ValueError, match="zero-net-volume"):
+        sm.intrinsic_components(model)
