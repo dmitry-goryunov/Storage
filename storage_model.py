@@ -111,7 +111,7 @@ class Storage:
 
     def __init__(self, valDate, storageStart, storageEnd,
                  curve=None, n_p=0, v_step=1000, sVol=0.9, sMR=1.0, clips_per_day=3,
-                 daily_curve=None):
+                 daily_curve=None, discount_rate=0.0):
         self.valDate      = pd.Timestamp(valDate)
         self.storageStart = pd.Timestamp(storageStart)
         self.storageEnd   = pd.Timestamp(storageEnd)
@@ -152,8 +152,13 @@ class Storage:
         self.sVol = [sVol] * self.n_t
         self.sMR  = [sMR]  * self.n_t
 
-        # Discount curve (flat 1)
-        self.d_curve = np.ones(self.n_t)
+        # Discount curve. Cash from an earlier withdrawal can be redeployed, so a
+        # euro on day i is worth exp(-r*i/365.25) today. The DP multiplies every
+        # day's cash flow by this, so a positive rate makes it prefer earlier
+        # exercise -- with rate 0 (the default) it is all ones and nothing changes.
+        # Assign self.d_curve directly for a real, non-flat discount curve.
+        self.discount_rate = float(discount_rate)
+        self.d_curve = discount_factors(self.n_t, self.discount_rate)
 
         # Exercise curves: no injection (swing = sell-only), withdraw during active
         # window. The withdraw rate per active day is clips_per_day clips.
@@ -408,9 +413,24 @@ def active_masks(model):
     return n, active
 
 
-def daily_arithmetic_flat_metric(model):
-    exercise_dates = model.date_span[model.Dt:model._active]
-    return float(pd.Series(model.price_curve, index=model.date_span).loc[exercise_dates].mean())
+def discount_factors(n_t, rate):
+    """Daily discount factors to the valuation date, continuously compounded."""
+    return np.exp(-float(rate) * np.arange(n_t) / 365.25)
+
+
+def daily_arithmetic_flat_metric(model, strike=0.0):
+    """The zero-optionality benchmark: one MWh spread evenly over the window.
+
+    Present-valued, and net of any strike, so it is on the same footing as the
+    `profiled_metric` it is subtracted from. Both legs must be PV'd or the
+    difference measures the discount factor instead of the day-selection spread --
+    the same mistake as benchmarking a strike-net value against a raw average.
+
+    With rate 0 and no strike this is exactly the old unweighted mean forward.
+    """
+    win = slice(model.Dt, model._active)
+    fwd = np.asarray(model.price_curve, dtype=float)[win]
+    return float(np.mean(model.d_curve[win] * (fwd - float(strike))))
 
 
 def resolve_grid(params, states_key):
@@ -527,7 +547,7 @@ def warm_numba_kernels():
 
 def value_put_swing(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "days")
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"))
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"), discount_rate=params.get("discount_rate", 0.0))
     n, active = active_masks(s)
     s.i_curve = cpd * active
     s.w_curve = np.zeros(n)
@@ -541,7 +561,7 @@ def value_put_swing(curve, params):
     # must be too. Buying on average days nets mean(F) - K per MWh. Without this the
     # put's intrinsic shifted by +K -- 0.157, 10.157 and 20.157 EUR/MWh for K = 0, 10
     # and 20 on one deal -- the mirror of the call's -K.
-    flat_metric = daily_arithmetic_flat_metric(s) - strike
+    flat_metric = daily_arithmetic_flat_metric(s, strike)
 
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else n_states
@@ -587,7 +607,7 @@ def value_put_swing(curve, params):
 
 def value_call_swing(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "days")
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"))
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"), discount_rate=params.get("discount_rate", 0.0))
     init_inv     = params["initial_inv_clips"]  if params.get("initial_inv_clips")  is not None else n_states
     term_inv     = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
     strike       = params.get("strike", 0.0)
@@ -599,7 +619,7 @@ def value_call_swing(curve, params):
     # K = 0, 10 and 28 gave 0.314, -9.686 and -27.686 EUR/MWh for what is the same
     # spread. A constant per-MWh strike cannot reorder the days, so the intrinsic
     # spread a mandatory swing captures does not depend on it.
-    flat_metric = daily_arithmetic_flat_metric(s) - strike
+    flat_metric = daily_arithmetic_flat_metric(s, strike)
     zero_penalty = params.get("zero_penalty", False)
 
     if strike:
@@ -679,7 +699,7 @@ def value_storage(curve, params):
     inj_rate = int(params["inj_rate"]) if params.get("inj_rate") is not None else cpd
     wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
     clips_per_day = max(inj_rate, wdr_rate)
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day)
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day, discount_rate=params.get("discount_rate", 0.0))
     n, active = active_masks(s)
     s.i_curve = inj_rate * active
     s.w_curve = wdr_rate * active
@@ -687,7 +707,9 @@ def value_storage(curve, params):
     s.w_cost[:] = params["wdr_cost"]
     init_inv = params["initial_inv_clips"] if params.get("initial_inv_clips") is not None else 0
     term_inv = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
-    s.set_volume_states(n_states)
+    # The forward pass must start where the reported value is read (init_inv), or
+    # exp_ex/delta describe a different deal from the one priced.
+    s.set_volume_states(n_states, initial_state=init_inv)
     apply_ratchets_from_params(s, params)
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0

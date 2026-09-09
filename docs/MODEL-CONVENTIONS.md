@@ -82,8 +82,25 @@ trusting a monthly bucket across a large move.
 ## Discounting and settlement
 
 - `d_curve[i]` is a **discount factor to the valuation date** for a cash flow on day `i`.
-  It defaults to `np.ones(n_t)`, and nothing in `run_valuation`, the apps or the workbook
-  loader currently overrides it.
+  Set it from `discount_rate` — an annual, continuously compounded rate, so
+  `d_curve[i] = exp(-r·i/365.25)` — as a `Storage` argument or a `run_valuation` param.
+  It defaults to `0.0`, which gives all ones and changes nothing. Assign `d_curve`
+  directly for a real, non-flat curve.
+- **This is what makes the model prefer early withdrawal.** The DP multiplies every day's
+  cash flow by `d_curve[i]`, so cash released sooner is worth more, and the optimiser
+  reschedules accordingly. Before the rate existed, the timing of a withdrawal carried no
+  value at all and the intrinsic leg could not see it.
+- **The benchmark is PV'd too.** `daily_arithmetic_flat_metric` returns the mean of
+  `DF·(F − K)` over the window, not the raw mean forward. Both legs of
+  `intrinsic = profiled − flat` must be present-valued or the difference measures the
+  discount factor rather than the day-selection spread — the same mistake as benchmarking
+  a strike-net value against a raw average.
+- **A hurdle rate and a funding rate answer different questions.** Discounting a hedgeable
+  commodity cash flow at, say, a 10 % internal project rate is a capital-budgeting view —
+  what the cash is worth to *this* business — not a mark-to-market. It will systematically
+  favour early exercise relative to what a hedged book would do, and the resulting number
+  is not comparable to a broker quote. Both are legitimate; choose deliberately and record
+  which one a given valuation used.
 - The DP discounts each day's cash flow once, by `d_curve[i]`; continuation values are not
   re-discounted.
 - **Settlement is assumed on the exercise day.** There is no separate settlement-lag

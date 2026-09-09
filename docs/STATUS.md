@@ -59,6 +59,7 @@ review that caught the stale baseline, and the migration log.
 | Coverage guard ran after `smoothen_curve` | Curve gaps surfaced as SciPy's `y must contain only finite values` |
 | `wdr_days` dropped by `run_valuation` | 30, 45, 90 and 365 all priced a storage deal identically |
 | Intrinsic benchmarked against a raw forward average | Shifted by the strike: −27.7 EUR/MWh on a K=28 call, +20.2 on a K=20 put |
+| `value_storage` lost its starting-inventory assignment in the P3.1 refactor | Reported a value for an empty store beside profiles for a full one — 6,041 MWh in against 66,041 out. Introduced 2026-09-08, found and fixed the next day |
 
 Notebook outputs were also materially stale — `Swing_new.ipynb` showed a swing worth 2.11
 EUR/MWh where the model now gives 3.22.
@@ -102,7 +103,7 @@ first — the work that did not is finished.
 |---|---|---|
 | P1.1 | Tunnel semantics — hard vs soft, before/after action | The tunnels cannot bind as built, and the `1000·v_step` penalty scale is arbitrary |
 | P1.2 | Curve-shape acceptance criteria | `main` already reprices its input contracts; the knot solve is now a refinement, worth doing only against stated criteria |
-| P1.3 | Production discount-curve source and settlement timing | The convention is settled; where a real `d_curve` comes from is not. Settlement is assumed on the exercise day |
+| P1.3 | Production discount-curve source and settlement timing | `discount_rate` now prices time value and the optimiser prefers early withdrawal; where a *real* curve comes from is still open, and settlement is assumed on the exercise day |
 | P1.4 | Withdrawal capacity, remaining half | Rates are whole clips per day, so anything slower than one clip/day is inexpressible. Also `inj_days` still means two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | P2.2 | Scale-aware exercise tie threshold | `1e-6` is absolute, on values that scale with deal size |

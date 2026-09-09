@@ -387,3 +387,95 @@ def test_struck_swing_intrinsic_is_benchmarked_net_of_the_strike(product_type):
         spread = (r["profiled_metric"] - r["flat_metric"]) if product_type == "call_swing"             else (r["flat_metric"] - r["profiled_metric"])
         assert abs(spread - r["intrinsic"]) < 1e-9
         assert abs((r["intrinsic"] + r["extrinsic"]) - r["total"]) < 1e-9
+
+
+# ── Time value of money ───────────────────────────────────────────────────────
+# Cash from an early withdrawal can be redeployed, so the model must prefer
+# earlier exercise when a discount rate is supplied. The machinery existed
+# (`d_curve` is applied to every cash flow in the DP) but nothing ever set it.
+
+def _flat_daily_curve(price=25.0):
+    days = pd.date_range("2026-01-01", "2027-06-30", freq="D")
+    return pd.Series(float(price), index=days)
+
+
+def _timed_call(discount_rate=0.0, **kw):
+    params = dict(product_type="call_swing", valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=True,
+                  discount_rate=discount_rate, daily_curve=_flat_daily_curve())
+    params.update(kw)
+    return sm.run_valuation(None, params)
+
+
+def _mean_exercise_day(model):
+    ex = np.abs(np.asarray(model.exp_ex[:model.n_t]))
+    return float(np.dot(np.arange(model.n_t), ex) / ex.sum())
+
+
+def test_discount_rate_pulls_exercise_earlier():
+    """On a flat curve, timing is indifferent at 0 % and worth something at 10 %."""
+    flat, _ = _timed_call(0.0)
+    disc, _ = _timed_call(0.10)
+    assert _mean_exercise_day(disc) < _mean_exercise_day(flat) - 1.0, (
+        f"mean exercise day {_mean_exercise_day(disc):.1f} at 10 % vs "
+        f"{_mean_exercise_day(flat):.1f} at 0 % — the rate did not move the schedule")
+
+
+def test_flat_curve_intrinsic_is_zero_without_a_rate_and_positive_with_one():
+    """With no price shape, the only thing left to optimise is WHEN you sell.
+
+    At 0 % that is worth nothing, so intrinsic must be 0. At 10 % selling early
+    beats selling evenly, and that timing gain is exactly what intrinsic should
+    now report -- it used to be invisible.
+    """
+    _, flat = _timed_call(0.0)
+    assert abs(flat["intrinsic"]) < 1e-9, f"flat curve, no rate: {flat['intrinsic']}"
+
+    _, disc = _timed_call(0.10)
+    assert disc["intrinsic"] > 0.05, f"10 % rate on a flat curve gave {disc['intrinsic']}"
+
+
+def test_discounted_benchmark_keeps_the_decomposition_comparable():
+    """`flat_metric` must be PV'd too, or intrinsic just measures the discount."""
+    s, r = _timed_call(0.10)
+    df = np.exp(-0.10 * np.arange(s.n_t) / 365.25)
+    win = slice(s.Dt, s._active)
+    expected = float(np.mean(df[win] * s.fwd[win]))
+    assert abs(r["flat_metric"] - expected) < 1e-9, (
+        f"flat_metric {r['flat_metric']:.4f} is not the PV-weighted average forward "
+        f"{expected:.4f}")
+    assert abs((r["profiled_metric"] - r["flat_metric"]) - r["intrinsic"]) < 1e-9
+    assert abs((r["intrinsic"] + r["extrinsic"]) - r["total"]) < 1e-9
+
+
+def test_discounting_lowers_the_value_of_a_positive_deal():
+    a, _ = _timed_call(0.0)
+    b, _ = _timed_call(0.10)
+    va = float(a.v[0, a.n_p, a.initial_state]); vb = float(b.v[0, b.n_p, b.initial_state])
+    assert 0 < vb < va, f"value {vb:,.0f} at 10 % should sit below {va:,.0f} at 0 %"
+
+
+def test_storage_starts_where_the_reported_value_says_it_does():
+    """`value_storage` reads v[0, ., init_inv] but must also START the forward pass there.
+
+    A refactor dropped the assignment, so the reported value was for a store
+    starting empty while exp_ex/delta/prob described one starting full: it
+    withdrew 66,041 MWh having injected 6,041, emptying a store it never filled.
+    An empty-to-empty deal must move the same volume in as out.
+    """
+    params = dict(product_type="storage", valDate="2026-01-01",
+                  storageStart="2026-04-01", storageEnd="2027-03-31",
+                  capacity_mwh=60_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=3, run_intrinsic=False,
+                  inj_cost=0.5, wdr_cost=0.5, daily_curve=_seasonal_daily_curve())
+    s, _ = sm.run_valuation(None, params)
+    assert s.initial_state == 0, (
+        f"initial_state={s.initial_state}, but the value is read at init_inv=0")
+
+    moved = s.prob[:s.n_t] * s.strat[:s.n_t] * s.v_step
+    injected = float(np.clip(moved, 0, None).sum())
+    withdrawn = float(-np.clip(moved, None, 0).sum())
+    assert abs(injected - withdrawn) < 1e-6, (
+        f"empty-to-empty storage injected {injected:,.0f} and withdrew {withdrawn:,.0f}")
