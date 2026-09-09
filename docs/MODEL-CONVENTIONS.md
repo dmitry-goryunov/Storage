@@ -68,8 +68,18 @@ Why: hedging day `i` with `h` forwards gives `PV = h·DF_i·F_i·ε` against
 discounted delta would move when the yield curve moved and the gas did not, and would
 under-hedge by `DF` — 4.6 % at 3 %, 7.7 % at 5 %, worse with tenor.
 
-**`delta` ≠ expected volume.** `|delta| / |exp_ex| = E[S | exercise] / F`, so it exceeds
-volume exactly when exercise is positively correlated with price. On the reference put
+**`delta` is not a procurement plan.** `|delta| / |exp_ex| = E[S | exercise] / F`, so it
+exceeds volume exactly when exercise is positively correlated with price — and for a
+mandatory swing that is systematically the back months, where paths still short of quota
+must buy whatever the price. On the 10-day put swing over 2027, December expects 1,657 MWh
+of gas but carries 2,481 MWh of delta, a ratio of 1.50 with `E[S|exercise]` at 39.86
+against a 26.62 forward; January runs the other way at 0.46. Hedge December at its delta
+and you buy 824 MWh you will not physically need; plan procurement off delta and the whole
+book is 8 % short (−9,213 against a −10,000 quota).
+
+Neither number is wrong. **`exp_ex` answers "how much gas", `delta` answers "how much price
+risk"**, and the swing's volumetric uncertainty is not hedgeable with a forward at all —
+that uncertainty *is* the optionality being valued. On the reference put
 swing it runs from 0.45 in March (exercise chosen at cheap prices) to 1.71 in December
 (exercise forced at expensive ones). Both numbers are correct; they answer different
 questions. Use `exp_ex` for physical volume and `delta` for the hedge.
