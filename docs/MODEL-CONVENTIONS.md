@@ -144,6 +144,41 @@ trusting a monthly bucket across a large move.
   convention. A real gas contract paying month-end + N days would need `d_curve` built
   accordingly.
 
+## Sense-checking on a flat curve
+
+A curve with no shape has no day-selection value, so the model's outputs collapse to
+answers you can state before running it. This is the configuration to check against when
+a number looks wrong. Use `CURVE_SOURCE = "flat"` in `Products.ipynb`, which builds a
+synthetic curve and touches no data file — **do not flatten a row of `ttf q.xlsx`**, which
+silently changes every other valuation reading it and cannot be undone from the
+spreadsheet.
+
+At level 40, put swing over calendar 2027, valued 2026-03-06, `sMR = 1.0`:
+
+| Setting | Must give | Measured |
+|---|---|---|
+| no vol, no rate | nothing to gain | I+E = 9e-06, pays 39.999991 |
+| vol 50 %, no rate | **intrinsic exactly 0** — no shape, no deterministic edge | 0.00e+00 at every size |
+| no vol, rate 10 % | **extrinsic exactly 0** — no optionality left, so all value is financing | −6e-15, intrinsic 1.677 |
+| forced to take all 365 days | pays the curve exactly | 40.000000, I+E = 0 |
+| deal size rising | price rises monotonically towards the level | 35.819 → 40.000, no reversal |
+
+Two readings worth keeping:
+
+- **On a flat curve, intrinsic *is* the discount rate.** It is 0 at 0 % and 1.677 at 10 %
+  for the 10-day deal. None of that is day selection; there is none to be had. If
+  intrinsic is not ~0 at 0 % on a flat curve, something other than the rate is moving.
+- **Vol is what pulls exercise forward.** With no vol at 10 % the buyer defers to the very
+  end — mean exercise day 359.5 of 365, because when you pay is the only thing left to
+  optimise. Switch vol back on and it sits at 195: the financing pull towards the end
+  against the option to wait for a dip.
+
+**Put and call are mirror images, but not in euros.** At vol 50 % the put buys 4.181 below
+the level and the call sells 4.395 above it. In log terms that is −0.1104 against +0.1043
+— the call's *log* move is the smaller one, which is what a lognormal does: the fat right
+tail turns a smaller log move into a larger euro move. The gap widens with vol (0.078 at
+30 %, 0.215 at 50 %). A symmetric result in euros would be the bug.
+
 ## The master invariant
 
     sum_i  d_curve[i] * delta[i] * fwd[i]  ==  v[0, n_p, n_op_start]

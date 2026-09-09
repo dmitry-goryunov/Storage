@@ -486,12 +486,13 @@ def _rising_daily_curve(lo=22.0, hi=30.0):
     return pd.Series(np.linspace(lo, hi, len(days)), index=days)
 
 
-def _timed(product_type, discount_rate, curve):
+def _timed(product_type, discount_rate, curve, **kw):
     params = dict(product_type=product_type, valDate="2026-01-01",
                   storageStart="2026-02-01", storageEnd="2026-12-31",
                   capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
                   vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=True,
                   discount_rate=discount_rate, daily_curve=curve)
+    params.update(kw)
     s, r = sm.run_valuation(None, params)
     ex = np.abs(np.asarray(s.exp_ex[:s.n_t]))
     return s, r, float(np.dot(np.arange(s.n_t), ex) / ex.sum())
@@ -628,3 +629,38 @@ def test_the_as_of_date_moves_the_curve():
                        .sort_values("contractStart").iloc[0]["value"])
     assert front_early == 21.0
     assert front_late == 53.0
+
+
+def test_with_no_volatility_every_euro_of_value_is_financing():
+    """The sharpest flat-curve sense check: kill the vol and only timing is left.
+
+    A flat curve removes day-selection, so intrinsic can only be the discount
+    rate. Removing the volatility as well removes optionality, so extrinsic must
+    vanish outright and the buyer must defer to the very end of the window --
+    with no dip left to wait for, when you pay is the only thing to optimise.
+    With vol switched back on the schedule sits in between, balancing the
+    financing pull against the option to catch a dip.
+    """
+    curve = _flat_daily_curve(40.0)
+    quiet, res_quiet, day_quiet = _timed("put_swing", 0.10, curve, n_p_full=20)
+
+    assert abs(res_quiet["extrinsic"]) > 1e-9, "sanity: vol 50 % must carry optionality"
+
+    still, res_still, day_still = _timed("put_swing", 0.10, curve, vol=1e-6, n_p_full=20)
+    assert abs(res_still["extrinsic"]) < 1e-9, (
+        f"no vol must leave no optionality, got {res_still['extrinsic']:.3e}")
+    assert res_still["intrinsic"] > 0.1, (
+        f"the rate alone must still be worth something, got {res_still['intrinsic']:.4f}")
+
+    # Deferred to the back of the window, and further than when vol competes.
+    assert day_still > still.Dt + 0.95 * (still._active - still.Dt), (
+        f"mean exercise day {day_still:.1f} is not at the end of "
+        f"[{still.Dt}, {still._active})")
+    assert day_still > day_quiet + 10.0, (
+        f"no-vol schedule {day_still:.1f} should sit later than the vol one "
+        f"{day_quiet:.1f} -- optionality is what pulls exercise forward")
+
+    # And with neither vol nor rate there is nothing to gain at all.
+    _, res_none, _ = _timed("put_swing", 0.0, curve, vol=1e-6, n_p_full=20)
+    assert abs(res_none["total"]) < 1e-4, (
+        f"no shape, no vol, no rate must be worth nothing, got {res_none['total']:.3e}")
