@@ -156,7 +156,7 @@ While `d_curve` is all ones it reduces to `sum(delta * fwd) == V0`.
 
 ## Per-MWh metrics
 
-`price_per_mwh()` (aliased `profiled()`) is `v[0, n_p, n_op_start] / sum(exp_ex)` — value
+`profiled()` is `v[0, n_p, initial_state] / sum(exp_ex)` — value
 divided by **MWh actually exercised**, not by `sum(delta)`. Dividing by delta was an 8.4 %
 error that moved the wrong way as optionality was added. `flat()` is a different quantity:
 the unweighted average forward over the exercise window, independent of `n_p` and of the
