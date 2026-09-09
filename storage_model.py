@@ -497,8 +497,11 @@ def intrinsic_components(model, strike=0.0):
     df_bench = float(np.mean(model.d_curve[win] * net[win])) / net_bar
     df_paid = model.profiled() / paid
     sign = 1.0 if volume > 0 else -1.0
-    return (sign * df_bench * (paid - net_bar),
-            sign * paid * (df_paid - df_bench))
+    # The trailing `+ 0.0` normalises a signed zero. On a flat curve the first
+    # term is -1.0 * 0.0 = -0.0, which renders as "-0.000" in a table and reads
+    # like a defect; adding zero is exact for every other value.
+    return (sign * df_bench * (paid - net_bar) + 0.0,
+            sign * paid * (df_paid - df_bench) + 0.0)
 
 
 def resolve_grid(params, states_key):

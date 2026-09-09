@@ -863,3 +863,21 @@ def test_financing_scales_with_the_net_cash_not_the_index():
         expected = (level - strike) / level * base
         assert abs(financing(strike) - expected) < 1e-12 * max(abs(expected), 1.0), (
             f"K={strike}: {financing(strike):.9f} != {expected:.9f}")
+
+
+def test_the_split_reports_an_unsigned_zero():
+    """`-0.0` in a results table reads like a defect. It is not one; nor is it wanted.
+
+    On a flat curve the day-selection term is `sign * df_bench * 0.0`, and for a
+    buyer `sign` is -1, so the raw product is negative zero and formats as
+    "-0.000". Both components are normalised.
+    """
+    shape, financing = sm.intrinsic_components(_deterministic(_flat_daily_curve(40.0), 0.10))
+    assert shape == 0.0
+    assert not np.signbit(shape), "day selection came back as -0.0"
+    assert f"{shape:.3f}" == "0.000", f"{shape:.3f}"
+    assert not np.signbit(financing) and financing > 0.0, financing
+
+    # And with no rate at all, where both terms are zero.
+    for term in sm.intrinsic_components(_deterministic(_flat_daily_curve(40.0), 0.0)):
+        assert term == 0.0 and not np.signbit(term), term
