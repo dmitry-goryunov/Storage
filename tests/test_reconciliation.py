@@ -1102,3 +1102,72 @@ def test_the_pnl_bridge_sums_to_the_model_value():
                 assert abs(sign * res["flat_metric"] - nominal) < 1e-9, (
                     "with no rate there is nothing to discount")
                 assert abs(financing) < 1e-9, financing
+
+
+def test_the_strike_decides_which_end_of_the_window_a_buyer_exercises():
+    """One product, opposite schedules, decided purely by the strike.
+
+    A put swing struck below the curve pays `P - K` and wants to pay late; the
+    same swing struck above receives and wants to receive early. Nothing but the
+    strike changes, and it flips the schedule end to end -- deterministic mean
+    exercise day 359.5 against 4.5 on a 365-day window at 10 %.
+
+    With no rate there is nothing to time and both are indifferent, so they land
+    on the same tie-broken schedule.
+
+    The financing gain is positive either way, because deferring a payment and
+    accelerating a receipt both help, and it is nearly equal because both sit
+    10.00 from the curve -- the gain scales with the net cash moving. Not exactly
+    equal: discount factors are convex, so moving the same distance towards the
+    valuation date is worth slightly more than moving away from it.
+    """
+    curve = _flat_daily_curve(40.0)
+    pays, receives = 30.0, 50.0
+
+    quiet_pay = _deterministic(curve, 0.0, strike=pays)
+    quiet_get = _deterministic(curve, 0.0, strike=receives)
+    assert abs(_mean_exercise_day(quiet_pay) - _mean_exercise_day(quiet_get)) < 1e-6, (
+        "with no rate the strike must not move the schedule")
+
+    late = _deterministic(curve, 0.10, strike=pays)
+    early = _deterministic(curve, 0.10, strike=receives)
+    span = late._active - late.Dt
+    assert _mean_exercise_day(late) > late.Dt + 0.9 * span, _mean_exercise_day(late)
+    assert _mean_exercise_day(early) < early.Dt + 0.1 * span, _mean_exercise_day(early)
+
+    _, fin_late = sm.intrinsic_components(late, strike=pays)
+    _, fin_early = sm.intrinsic_components(early, strike=receives)
+    assert fin_late > 0.1 and fin_early > 0.1, (fin_late, fin_early)
+    assert abs(fin_early - fin_late) / fin_late < 0.1, (
+        f"both are 10.00 from the curve, so the gains should be close: "
+        f"{fin_early:.4f} vs {fin_late:.4f}")
+    assert fin_early > fin_late, (
+        "discount factors are convex, so moving earlier beats moving later by "
+        f"the same distance: {fin_early:.4f} vs {fin_late:.4f}")
+
+
+def test_the_per_mwh_price_keeps_its_sign_when_the_strike_crosses_the_curve():
+    """A strike above the curve flips a put swing's value, and the sign must survive.
+
+    `stochastic_metric` is what the deal pays per MWh, positive when you pay.
+    Struck below a flat 40 you pay; struck above you receive, and the number must
+    go negative rather than being reported as a cost. Taking its absolute value --
+    which `Products.ipynb` did until this case turned up -- breaks the
+    reconciliation `flat = price + intrinsic + extrinsic` by twice the moneyness.
+    """
+    curve = _flat_daily_curve(40.0)
+    for rate in (0.0, 0.10):
+        _, pays, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=30.0)
+        _, gets, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=50.0)
+        assert pays["stochastic_metric"] > 0, (
+            f"struck below the curve a put swing pays: {pays['stochastic_metric']:.4f}")
+        assert gets["stochastic_metric"] < 0, (
+            f"struck above it receives: {gets['stochastic_metric']:.4f}")
+        assert pays["flat_metric"] > 0 > gets["flat_metric"], (
+            pays["flat_metric"], gets["flat_metric"])
+
+        # And the reconciliation holds on both sides of the money.
+        for res in (pays, gets):
+            gain = res["flat_metric"] - res["stochastic_metric"]
+            assert abs(gain - (res["intrinsic"] + res["extrinsic"])) < 1e-9, (
+                f"r={rate}: {gain:.9f} != {res['intrinsic']:.9f} + {res['extrinsic']:.9f}")
