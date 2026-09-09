@@ -920,3 +920,31 @@ def test_a_put_swing_is_an_obligation_not_an_option_on_the_strike():
         f"discounting should make the value convex in K, got {disc_slopes}")
     assert disc_slopes[-1] / disc_slopes[0] - 1 < 0.05, (
         f"but only slightly -- {disc_slopes[-1]/disc_slopes[0]-1:.1%} is too much")
+
+
+def test_the_reported_metrics_compose_into_the_price():
+    """The four reported numbers nest; they are not terms to add side by side.
+
+        flat  =  price  +/-  (intrinsic + extrinsic),   intrinsic = shape + financing
+
+    `flat` is the benchmark and `price` is what the deal actually pays, so the
+    gain between them must be exactly what the decomposition claims. The two are
+    computed by different routes -- one off the DP's value, one off the split --
+    so their agreeing ties the reported metrics to the prices.
+    """
+    curve = _flat_daily_curve(40.0)
+    for product, strike, rate in (("put_swing", 30.0, 0.10), ("put_swing", 0.0, 0.10),
+                                  ("call_swing", 30.0, 0.10), ("put_swing", 30.0, 0.0)):
+        _, res, _ = _timed(product, rate, curve, n_p_full=20, strike=strike)
+        flat, price = res["flat_metric"], res["stochastic_metric"]
+        gain = (flat - price) if product == "put_swing" else (price - flat)
+        assert abs(gain - (res["intrinsic"] + res["extrinsic"])) < 1e-9, (
+            f"{product} K={strike} r={rate}: gain {gain:.9f} != "
+            f"{res['intrinsic']:.9f} + {res['extrinsic']:.9f}")
+        assert abs(res["total"] - (res["intrinsic"] + res["extrinsic"])) < 1e-12
+
+        det = _deterministic(curve, rate, product_type=product, strike=strike)
+        shape, financing = sm.intrinsic_components(det, strike=strike)
+        assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+            f"{product} K={strike} r={rate}: {shape:.9f} + {financing:.9f} != "
+            f"{res['intrinsic']:.9f}")

@@ -144,6 +144,23 @@ trusting a monthly bucket across a large move.
   convention. A real gas contract paying month-end + N days would need `d_curve` built
   accordingly.
 
+## How the reported metrics compose
+
+They nest. They are not terms to add side by side:
+
+    flat                     the benchmark: F - K per MWh, with no choice of days
+      -  intrinsic           what choosing days is worth on today's forward curve
+           =  shape          ... from picking cheaper days
+           +  financing      ... from picking later ones; zero without a discount rate
+      -  extrinsic           what re-choosing as prices move adds
+      =  price               what the deal actually pays
+
+So `flat = price + intrinsic + extrinsic` for a buyer and `price = flat + intrinsic +
+extrinsic` for a seller, with `shape` and `financing` the two halves of `intrinsic`
+rather than two more terms beside it. `vs flat` in the notebook is measured off the
+prices and `total` off the decomposition, so those agreeing is a cross-check; both are
+asserted in `tests/` to 1e-9 on either side, struck and unstruck.
+
 ## `intrinsic` is not an option's intrinsic value
 
 The names collide, and the two mean different things.
