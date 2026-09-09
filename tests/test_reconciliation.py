@@ -808,3 +808,30 @@ def test_a_strike_reorders_the_days_only_once_there_is_a_rate():
     assert abs(extrinsic(0.10, 20.0) - extrinsic(0.10, 0.0)) > 1e-3, (
         f"with a rate it must, through the -K*sum(DF*q) leg: "
         f"{extrinsic(0.10, 20.0):.6f} vs {extrinsic(0.10, 0.0):.6f}")
+
+
+def test_a_strike_on_the_curve_zeroes_intrinsic_and_defeats_the_split():
+    """K on a flat curve: intrinsic is exactly 0 at any rate, and the split is lost.
+
+    With `F - K == 0` on every day the deterministic cash flow is zero whatever
+    the schedule, so `sum DF_i (P_i - K) q_i` is zero for all of them: the rate
+    has no lever and no financing gain can exist. `intrinsic` is well defined
+    and exactly 0.
+
+    The *split* is a different matter. It recovers discount factors by dividing
+    by the benchmark and by the price the schedule pays, both of which are zero
+    here, so `intrinsic_components` raises rather than returning 0/0. Callers
+    that want a table rather than an exception catch it -- `Products.ipynb`
+    reports n/a.
+    """
+    curve = _flat_daily_curve(40.0)
+    for rate in (0.0, 0.10):
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=40.0)
+        assert abs(res["flat_metric"]) < 1e-12, res["flat_metric"]
+        assert abs(res["intrinsic"]) < 1e-9, (
+            f"a strike on the curve leaves no intrinsic at {rate:.0%}: {res['intrinsic']:.3e}")
+        assert res["extrinsic"] > 0.5, res["extrinsic"]
+
+        det = _deterministic(curve, rate, strike=40.0)
+        with pytest.raises(ValueError, match="strike sits on the curve"):
+            sm.intrinsic_components(det, strike=40.0)
