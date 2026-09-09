@@ -9,6 +9,7 @@ import streamlit as st
 
 from storage_model import (
     curve_df_for_storage,
+    normalise_rate_parameters,
     quote_row_for_fd_date,
     run_valuation,
     warm_numba_kernels as model_warm_numba_kernels,
@@ -89,6 +90,7 @@ def cached_run_valuation(curve, params):
         "n_t": s.n_t,
         "price_curve": np.asarray(s.price_curve, dtype=float),
         "delta": np.asarray(s.delta, dtype=float),
+        "discount_rate": float(s.discount_rate),
     }
     return payload, result
 
@@ -139,6 +141,36 @@ with st.sidebar:
         n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=30, step=1,
                                    help="Price-tree half-width (tree has 2*n_p_full+1 price states). ~30 is converged; higher is slower with no gain.")
         run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
+
+        st.header("Rate management")
+        rate_mode = st.selectbox(
+            "Rate mode",
+            ["Market / valuation discount rate", "Treasury scenario"],
+            help="Use one market/valuation rate, or select one explicit treasury "
+                 "scenario for a one-directional swing. The treasury scenario is "
+                 "not a cash-balance-dependent asymmetric-funding valuation.",
+        )
+        if rate_mode == "Market / valuation discount rate":
+            discount_rate = st.number_input(
+                "discount_rate (annual, continuous)", value=0.0, step=0.01,
+                format="%.4f", help="0.05 means 5% per year.")
+            rate_inputs = {"discount_rate": float(discount_rate)}
+        else:
+            borrow_rate = st.number_input(
+                "borrow_rate (annual, continuous)", value=0.05, step=0.01,
+                format="%.4f")
+            invest_rate = st.number_input(
+                "invest_rate (annual, continuous)", value=0.03, step=0.01,
+                format="%.4f")
+            funding_direction = st.selectbox(
+                "funding_direction", ["borrow", "invest"],
+                help="Explicitly select the treasury scenario. It is not inferred "
+                     "from product type or average moneyness.")
+            rate_inputs = {
+                "borrow_rate": float(borrow_rate),
+                "invest_rate": float(invest_rate),
+                "funding_direction": funding_direction,
+            }
         clips_per_day = st.number_input("clips_per_day", min_value=1, max_value=1000, value=3, step=1,
                                         help="Daily granularity / max clips moved per active day. With daily_max set, clip size = daily_max / clips_per_day.")
         daily_max = st.number_input("daily_max (MWh/day, 0 = use v_step)", min_value=0, max_value=10_000_000, value=0, step=100,
@@ -186,6 +218,7 @@ params = {
     "inj_cost": float(inj_cost),
     "wdr_cost": float(wdr_cost),
 }
+params.update(normalise_rate_parameters(rate_inputs))
 
 if not run:
     st.info("Set inputs in the sidebar, then run valuation.")
@@ -217,6 +250,7 @@ with st.spinner("Running valuation. First run may compile Numba kernels..."):
     elapsed = time.perf_counter() - t0
 
 st.success(f"Valuation complete in {elapsed:.1f}s")
+st.caption(f"Applied annual continuously compounded rate: {payload['discount_rate']:.4%}.")
 
 if run_intrinsic:
     summary_metrics = ["Flat price (EUR/MWh)", "Profiled price (EUR/MWh)", "Intrinsic (EUR/MWh)", "Extrinsic (EUR/MWh)", "Total (EUR/MWh)"]

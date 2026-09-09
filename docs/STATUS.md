@@ -1,14 +1,14 @@
 # Project status
 
-**As of 2026-09-09.** Canonical `main` is `064ac3f`, with every open PR merged: nothing is
-in flight. Update this file when that changes — a status document that lags is worse than
-none.
+**As of 2026-09-09.** Canonical `main` is `b07c78f`. Economic corrections to rate handling
+and intrinsic attribution are on `review/correct-rate-economics`; they are not part of
+`main` until that branch is merged. Update this file when that changes.
 
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
-| Tests | `python -m pytest -q` → **62 passed** |
+| Tests | `python -m pytest -q` → **71 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -32,10 +32,16 @@ price — no calibration, no parameter provenance. Treat every number as explora
 The library now prices the time value of money. `discount_rate` discounts each day's
 cash flow, the benchmark is present-valued on the same footing, and the optimiser
 reschedules: a seller pulls exercise earlier to be paid sooner, a buyer pushes it later to
-hold the cash. `intrinsic` splits into **day selection** and **financing**, which is why a
-flat forward curve can still show intrinsic — the optimiser prices `DF·F`, and a flat curve
-beside a positive rate is internally inconsistent. See the discounting sections of
-[MODEL-CONVENTIONS.md](MODEL-CONVENTIONS.md).
+hold the cash. A flat forward curve can therefore show settlement-timing value because the
+optimiser prices `DF·F`. That is a result under the model's exercise-day settlement and rate
+conventions, not evidence that a flat observed gas curve is economically inconsistent. See
+the discounting sections of [MODEL-CONVENTIONS.md](MODEL-CONVENTIONS.md).
+
+Rate configuration is now validated through one path used by the library, product workbook,
+`Products.ipynb` and the single-deal app. An explicit `discount_rate=0.0` counts as a
+selected market/valuation rate and cannot silently coexist with treasury scenario fields.
+The app and notebook expose the two supported modes; the latter remains one selected
+treasury scenario for the whole deal, not asymmetric cash-balance funding.
 
 A model review in September 2026 found 10 defects plus 10 minor ones. It was developed
 against a stale copy of the repository that had diverged from `main` (18 commits versus 6,
@@ -76,7 +82,7 @@ review that caught the stale baseline, and the migration log.
 | A curve could start before the quote it was built from | Look-ahead, and the gap was back-filled with the quote's day-ahead price — two months of 52.00 stamped across Jan–Feb 2026 for a March quote. The Streamlit app shipped with exactly this default (valDate 2026-01-01 against FDDate 2026-01-05) |
 | `Products.ipynb` read `AS_OF` only on the `quotes` branch | With `CURVE_SOURCE = "csv"` the as-of date did nothing: 6 March 2026 still priced off curve.csv's stored 28.00. Same trap class as `wdr_days` |
 | `price_per_mwh` took an absolute value | A strike above the curve flips a put swing's value positive, so a deal that pays you was reported as a 12.905 EUR/MWh cost, and `vs flat` was out by twice the moneyness. Caught by the section 4 cross-check the day it was added |
-| Intrinsic on a flat curve looked like a bug | It is not: the optimiser prices `DF·F`, and at 10 % a flat 40 slopes 36.836 → 33.342 across 2027. `intrinsic_components` now splits it into day selection and financing, exactly |
+| Intrinsic on a flat curve looked like a bug | It is not under exercise-day settlement: the optimiser prices `DF·F`, and at 10 % a flat 40 slopes 36.836 → 33.342 across 2027. On a shaped curve the price/timing split also has an interaction |
 
 Notebook outputs were also materially stale — `Swing_new.ipynb` showed a swing worth 2.11
 EUR/MWh where the model now gives 3.22.
@@ -94,6 +100,11 @@ These are asserted in `tests/`, not claimed here:
 - **Delta as a derivative.** Every monthly bucket matches a finite-difference bump of the DP
   to ±0.4 % at 5 bp.
 - **The portfolio anchor.** Total MtM −56,901 EUR, end to end from the workbook.
+- **An independent deterministic oracle.** Exhaustive enumeration of every feasible
+  four-day schedule reproduces the DP for put swing, call swing and storage.
+- **Rate plumbing.** Workbook and app treasury inputs reach the model without an inferred
+  direction; `Products.ipynb` executes every section in a clean process under the invest
+  scenario and rejects committed stale outputs.
 
 ## What does not hold
 
@@ -120,7 +131,7 @@ first — the work that did not is finished.
 |---|---|---|
 | P1.1 | Tunnel semantics — hard vs soft, before/after action | The tunnels cannot bind as built, and the `1000·v_step` penalty scale is arbitrary |
 | P1.2 | Curve-shape acceptance criteria | `main` already reprices its input contracts; the knot solve is now a refinement, worth doing only against stated criteria |
-| P1.3 | Production discount-curve source and settlement timing | `discount_rate` now prices time value and the optimiser prefers early withdrawal; where a *real* curve comes from is still open, and settlement is assumed on the exercise day |
+| P1.3 | Production discount-curve source, purpose and settlement timing | `discount_rate` now prices time value; where a *real* market curve comes from, whether a rate is market/funding/hurdle, and the contractual settlement dates remain open |
 | P1.4 | Withdrawal capacity, remaining half | Rates are whole clips per day, so anything slower than one clip/day is inexpressible. Also `inj_days` still means two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | P2.2 | Scale-aware exercise tie threshold | `1e-6` is absolute, on values that scale with deal size |
@@ -133,7 +144,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 34 tests, ~14 s
+python -m pytest -q                  # 71 tests, ~20 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below
@@ -141,19 +152,23 @@ jupyter lab                          # notebooks below
 
 | Notebook | |
 |---|---|
-| `Products.ipynb` | One deal family at four sizes — put swing 2027 at 10/30/90/180 days, with hedge and convergence checks |
+| `Products.ipynb` | One put/call swing family at four sizes, 10/30/90/180 days, with rate mode, hedge and convergence checks |
 | `Swing_new.ipynb` | Swing valuation and the intrinsic/extrinsic decomposition |
 | `forward.ipynb` | Valuation off a chosen historical curve date |
 | `pricing.ipynb` | Single product through `run_valuation` |
 | `portfolio.ipynb` | Portfolio MtM |
 
-All four execute cleanly against the current library and their committed outputs are current.
+All notebook code cells compile. The test suite executes every `Products.ipynb` section in a
+fresh process under a reduced-width treasury-scenario smoke configuration and requires all
+stored outputs to be empty. Run it in Jupyter to regenerate the full displayed tables and
+charts. The other committed outputs are unchanged by this review.
 
 ## Where things live
 
 | | |
 |---|---|
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
+| [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |
 | [`docs/DELTA-CONVENTION.md`](DELTA-CONVENTION.md) | Why `delta` is an undiscounted hedge volume, with the measured cost of the alternative |
 | [`docs/RECONCILIATION-REPORT.md`](RECONCILIATION-REPORT.md) | What was ported onto `main` and what it moved |
