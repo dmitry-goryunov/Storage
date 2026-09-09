@@ -144,6 +144,39 @@ trusting a monthly bucket across a large move.
   convention. A real gas contract paying month-end + N days would need `d_curve` built
   accordingly.
 
+## Financing is a cash flow, and the curve can charge for it
+
+**It is interest, not an artefact.** The deterministic schedule and the flat benchmark move
+identical gas at identical prices, so their nominal totals match exactly and only the timing
+differs. The gap is money the deal has not paid out; the PV of the interest it earns at
+`discount_rate` *is* the financing number. On the 10-day put swing, flat 40, `K = 30` at
+10 %: 100,000.00 EUR nominal on both legs, a balance peaking at 97,260.27 EUR on
+2027-12-21, and 4,192.93 EUR of PV interest against 4,192.36 EUR reported — 0.01 %. You
+receive it only if that balance genuinely earns the rate. It is a hurdle-rate gain on your
+own cash, not something the gas market pays.
+
+**A curve in contango at the discount rate charges the gas for it, with no new input.** The
+optimiser never sees `F`; it sees `DF · F`. A flat forward curve beside a positive rate is
+internally inconsistent — gas costs the same in December as in January while money costs
+10 % — and the financing gain is the model reporting that inconsistency as free money. Put
+the curve in contango at the same rate and `DF · F` is flat to 1e-14: `intrinsic` is exactly
+zero, and its two halves come out large and equal-and-opposite, buying early being cheaper
+on the curve by precisely what paying early costs in funding. Extrinsic is untouched (2.67
+on the reference deal), because optionality comes from volatility, not slope.
+
+**`borrow_rate` / `invest_rate` replace the single rate when the two directions differ.**
+`discount_rate` assumes spare cash earns exactly what borrowed cash costs. Give the pair
+instead and the rate follows the deal's own direction — a net payer funds at the borrow
+rate, a net receiver places cash at the invest rate. Direction is taken from the sign of the
+mean forward net of strike, not the product type, because a strike flips it: a put swing
+struck above the curve receives rather than pays. Setting both forms raises, as does setting
+one of the pair alone, as does a storage deal, which pays on injection and receives on
+withdrawal and so has no single direction.
+
+It is **one rate for the whole deal, not one per day.** A rate chosen from the sign of each
+day's cash flow would make the value non-linear in the price level and break the master
+invariant below.
+
 ## How the reported metrics compose
 
 They nest. They are not terms to add side by side:

@@ -451,6 +451,49 @@ def daily_arithmetic_flat_metric(model, strike=0.0):
     return float(np.mean(model.d_curve[win] * (fwd - float(strike))))
 
 
+def apply_funding_rate(model, params, side, strike=0.0):
+    r"""Set the discount curve from a borrow/invest pair instead of one rate.
+
+    `discount_rate` is a single rate in both directions, which assumes spare cash
+    earns exactly what borrowed cash costs. Give `borrow_rate` and `invest_rate`
+    instead and the rate follows the deal's own direction: a net payer funds at
+    the borrow rate, a net receiver places cash at the invest rate.
+
+    Direction comes from the sign of the mean forward net of strike, not from the
+    product type, because a strike flips it -- a put swing struck above the curve
+    receives rather than pays. `side` says which way the product runs: "payer"
+    for a put swing (it pays `P - K`), "receiver" for a call swing (it receives
+    it), "both" for storage, which has no single direction and is refused.
+
+    One rate for the whole deal, not one per day: the DP's value must stay linear
+    in the price level or the repricing invariant breaks, and a rate chosen from
+    the sign of each day's cash flow is not linear. Returns the rate in force.
+    """
+    borrow, invest = params.get("borrow_rate"), params.get("invest_rate")
+    if borrow is None and invest is None:
+        return model.discount_rate
+    if params.get("discount_rate"):
+        raise ValueError(
+            "Set either `discount_rate` or the `borrow_rate`/`invest_rate` pair, not "
+            "both — otherwise which one prices the deal is silent.")
+    if borrow is None or invest is None:
+        raise ValueError(
+            "`borrow_rate` and `invest_rate` must be given together; one alone leaves "
+            "the other direction undefined.")
+    if side == "both":
+        raise ValueError(
+            "A storage deal pays on injection and receives on withdrawal, so it has no "
+            "single funding direction. Use `discount_rate`, or build `d_curve` yourself.")
+
+    win = slice(model.Dt, model._active)
+    net = float(np.mean(np.asarray(model.price_curve, dtype=float)[win])) - float(strike)
+    receives = (net < 0.0) if side == "payer" else (net > 0.0)
+    rate = float(invest if receives else borrow)
+    model.discount_rate = rate
+    model.d_curve = discount_factors(model.n_t, rate)
+    return rate
+
+
 def intrinsic_components(model, strike=0.0):
     r"""Split `intrinsic` into what the schedule saves on price and on timing.
 
@@ -619,6 +662,7 @@ def warm_numba_kernels():
 def value_put_swing(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "days")
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"), discount_rate=params.get("discount_rate", 0.0))
+    apply_funding_rate(s, params, "payer", params.get("strike", 0.0))
     n, active = active_masks(s)
     s.i_curve = cpd * active
     s.w_curve = np.zeros(n)
@@ -679,6 +723,7 @@ def value_put_swing(curve, params):
 def value_call_swing(curve, params):
     v_step, n_states, cpd = resolve_grid(params, "days")
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=cpd, daily_curve=params.get("daily_curve"), discount_rate=params.get("discount_rate", 0.0))
+    apply_funding_rate(s, params, "receiver", params.get("strike", 0.0))
     init_inv     = params["initial_inv_clips"]  if params.get("initial_inv_clips")  is not None else n_states
     term_inv     = params["terminal_inv_clips"] if params.get("terminal_inv_clips") is not None else 0
     strike       = params.get("strike", 0.0)
@@ -771,6 +816,7 @@ def value_storage(curve, params):
     wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
     clips_per_day = max(inj_rate, wdr_rate)
     s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day, discount_rate=params.get("discount_rate", 0.0))
+    apply_funding_rate(s, params, "both", 0.0)
     n, active = active_masks(s)
     s.i_curve = inj_rate * active
     s.w_curve = wdr_rate * active

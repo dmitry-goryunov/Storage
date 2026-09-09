@@ -948,3 +948,115 @@ def test_the_reported_metrics_compose_into_the_price():
         assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
             f"{product} K={strike} r={rate}: {shape:.9f} + {financing:.9f} != "
             f"{res['intrinsic']:.9f}")
+
+
+def test_financing_is_interest_on_cash_the_deal_has_not_paid_out():
+    """The financing gain is a real cash flow, not a discount-factor artefact.
+
+    The deterministic schedule and the flat benchmark move the same gas at the
+    same prices, so their nominal totals are identical and only the timing
+    differs. The balance between them is money still in hand; the present value
+    of the interest it earns at the discount rate is the financing number.
+    """
+    curve = _flat_daily_curve(40.0)
+    rate, strike = 0.10, 30.0
+    det = _deterministic(curve, rate, strike=strike)
+    _, financing = sm.intrinsic_components(det, strike=strike)
+
+    n = det.n_t
+    win = slice(det.Dt, det._active)
+    net = np.asarray(det.price_curve, dtype=float)[:n] - strike
+    volume = np.abs(np.asarray(det.exp_ex[:n]))
+    total = volume.sum()
+
+    cash_deal = volume * net
+    cash_bench = np.zeros(n)
+    cash_bench[win] = total / (det._active - det.Dt) * net[win]
+    assert abs(cash_deal.sum() - cash_bench.sum()) < 1e-6 * total, (
+        "the two schedules must move the same nominal cash, only at different times")
+
+    balance = np.cumsum(cash_bench - cash_deal)
+    assert balance.max() > 0, "the deal should be holding cash the benchmark has paid"
+    pv_interest = float(np.dot(det.d_curve[:n], rate * balance / 365.25))
+
+    assert abs(pv_interest - financing * total) < 0.001 * abs(financing * total), (
+        f"PV of interest {pv_interest:,.2f} != financing {financing * total:,.2f}")
+
+
+def test_a_curve_in_contango_at_the_discount_rate_leaves_no_timing_gain():
+    """Charging financing on the gas needs no new input -- the curve does it.
+
+    A flat forward curve beside a positive rate is internally inconsistent: it
+    says gas costs the same in December as in January while money costs 10 %.
+    The financing gain is the model reporting that inconsistency as free money.
+    Put the curve in contango at the same rate and `DF * F` -- the only curve the
+    optimiser ever sees -- is flat, so the timing gain vanishes exactly. Day
+    selection and financing are then equal and opposite: buying early is cheaper
+    on the curve by precisely what paying early costs in funding.
+
+    Optionality is untouched, because that comes from volatility, not slope.
+    """
+    rate, level = 0.10, 40.0
+    days = pd.date_range("2026-01-01", "2027-12-31", freq="D")
+    t = (days - pd.Timestamp("2026-01-01")).days.values / 365.25
+
+    def at(carry):
+        curve = pd.Series(level * np.exp(carry * t), index=days)
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20)
+        shape, financing = sm.intrinsic_components(_deterministic(curve, rate))
+        return res, shape, financing
+
+    flat_res, flat_shape, flat_fin = at(0.0)
+    assert abs(flat_shape) < 1e-9 and flat_fin > 0.5, (flat_shape, flat_fin)
+
+    res, shape, financing = at(rate)
+    assert abs(res["intrinsic"]) < 1e-9, (
+        f"contango at the discount rate must leave no intrinsic, got {res['intrinsic']:.3e}")
+    assert abs(shape + financing) < 1e-9, (shape, financing)
+    assert shape < -0.5 and financing > 0.5, (
+        f"and the two halves should be large and opposite, got {shape:.4f}, {financing:.4f}")
+    assert res["extrinsic"] > 0.5, (
+        f"optionality comes from vol, not slope, and must survive: {res['extrinsic']:.4f}")
+
+
+def test_borrow_and_invest_rates_follow_the_deal_direction():
+    """One rate assumes spare cash earns what borrowed cash costs. It need not.
+
+    Given the pair, the rate follows the sign of the deal's own cash: a net payer
+    funds at the borrow rate, a net receiver places cash at the invest rate. The
+    direction comes from the forward net of strike, not the product type, because
+    a strike flips it -- a put swing struck above the curve receives.
+    """
+    curve = _flat_daily_curve(40.0)
+    borrow, invest = 0.12, 0.03
+
+    def run(product, strike, **rates):
+        params = dict(product_type=product, valDate="2026-01-01",
+                      storageStart="2026-02-01", storageEnd="2026-12-31",
+                      capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                      vol=0.5, sMR=1.0, n_p_full=20, run_intrinsic=False,
+                      strike=strike, daily_curve=curve)
+        params.update(rates)
+        model, _ = sm.run_valuation(None, params)
+        return float(model.v[0, model.n_p, model.initial_state]), model.discount_rate
+
+    for product, strike, expected in (("put_swing", 30.0, borrow),    # pays: K below
+                                      ("put_swing", 50.0, invest),    # receives: K above
+                                      ("call_swing", 30.0, invest),   # receives
+                                      ("call_swing", 50.0, borrow)):  # pays
+        value, used = run(product, strike, borrow_rate=borrow, invest_rate=invest)
+        assert used == expected, f"{product} K={strike}: used {used}, expected {expected}"
+        single, _ = run(product, strike, discount_rate=expected)
+        assert abs(value - single) < 1e-9, (value, single)
+
+    with pytest.raises(ValueError, match="not.*both"):
+        run("put_swing", 30.0, discount_rate=0.10, borrow_rate=borrow, invest_rate=invest)
+    with pytest.raises(ValueError, match="together"):
+        run("put_swing", 30.0, borrow_rate=borrow)
+    with pytest.raises(ValueError, match="no single funding direction"):
+        sm.run_valuation(None, dict(
+            product_type="storage", valDate="2026-01-01", storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+            daily_curve=curve, inj_cost=0.0, wdr_cost=0.0,
+            borrow_rate=borrow, invest_rate=invest))
