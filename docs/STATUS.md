@@ -8,7 +8,7 @@ changes — a status document that lags is worse than none.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
-| Tests | `python -m pytest -q` → **83 passed** |
+| Tests | `python -m pytest -q` → **84 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -101,7 +101,7 @@ These are asserted in `tests/`, not claimed here:
 - **Delta as a derivative.** Every monthly bucket matches a finite-difference bump of the DP
   to ±0.4 % at 5 bp.
 - **The portfolio anchor.** Total MtM −56,901 EUR, end to end from the workbook.
-- **An independent closed form.** A call swing collapsed to one exercise day with the quota waived is a European call, and reproduces Black-76 to under 1 % across five strikes and two maturities — at the mean-reverting terminal variance `sVol²(1−e^(−2·sMR·T))/(2·sMR)`, not `sVol²T`. This is the only check here against something outside the model; everything above it is internal consistency.
+- **An independent closed form.** A call swing collapsed to one exercise day with the quota waived is a European call, and reproduces Black-76 to under 1 % across five strikes and two maturities — at the Clewlow & Strickland (1999a) variance for the one-factor Schwartz model, `sVol²(1−e^(−2·sMR·T))/(2·sMR)`, not `sVol²T`. The tree carries that variance across the term structure to within 0.25 % from three months to five years. This is the only check here against something outside the model; everything above it is internal consistency.
 - **An independent deterministic oracle.** Exhaustive enumeration of every feasible
   four-day schedule reproduces the DP for put swing, call swing and storage.
 - **Rate plumbing.** Workbook and app treasury inputs reach the model without an inferred
@@ -146,7 +146,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 83 tests, ~50 s
+python -m pytest -q                  # 84 tests, ~45 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below

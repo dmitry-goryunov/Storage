@@ -1678,3 +1678,75 @@ print("SWING_VS_OPTION_OK")
     assert completed.returncode == 0, (
         f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
     assert "SWING_VS_OPTION_OK" in completed.stdout
+
+
+def test_the_tree_carries_the_clewlow_strickland_variance_term_structure():
+    """Forward variance depends on spot vol *and* mean reversion, per C&S (6.13).
+
+    Clewlow & Strickland (1999a) integrate forward return variance over the life
+    of the option in the one-factor Schwartz model:
+
+        w^2 = int_t^T sigma^2 exp(-2a(s-u)) du
+            = sigma^2/(2a) * (exp(-2a(s-T)) - exp(-2a(s-t)))          (6.13)
+
+    Two consequences are checked here.
+
+    At `s = T` this is an option on the spot, and (6.13) collapses to
+    `sigma^2/(2a) * (1 - exp(-2a(T-t)))` -- their (6.14). That is the case this
+    project compares against, because a swing exercises against the daily index
+    rather than against a futures contract. The tree must carry that variance at
+    every horizon, not merely at one: variance saturates at `sigma^2/(2a)` while
+    T grows, so the comparable Black-76 vol falls from 0.44 at three months to
+    0.16 at five years against a 0.5 input.
+
+    For `s > T` the damping factor is `exp(-a(s-T))` on the volatility -- the
+    Samuelson effect. This model has no tradable futures with their own
+    dynamics, so it cannot price that option; the relation is asserted on the
+    closed form only, to keep the two cases distinguishable.
+    """
+    vol, mr = 0.5, 1.0
+    val_date = pd.Timestamp("2026-01-01")
+    curve = pd.Series(40.0, index=pd.date_range("2025-01-01", "2033-12-31", freq="D"))
+
+    def futures_var(t_to_expiry, t_to_delivery):
+        return vol ** 2 / (2 * mr) * (math.exp(-2 * mr * (t_to_delivery - t_to_expiry))
+                                      - math.exp(-2 * mr * t_to_delivery))
+
+    def spot_var(years):
+        return vol ** 2 * (1.0 - math.exp(-2.0 * mr * years)) / (2.0 * mr)
+
+    # (6.13) must collapse onto (6.14) when the future delivers at expiry.
+    for years in (0.25, 1.0, 3.0):
+        assert abs(futures_var(years, years) - spot_var(years)) < 1e-15
+
+    # The Samuelson damping is exactly exp(-a(s-T)) on the volatility.
+    for gap in (0.25, 0.5, 1.0, 2.0):
+        ratio = math.sqrt(futures_var(1.0, 1.0 + gap) / futures_var(1.0, 1.0))
+        assert abs(ratio - math.exp(-mr * gap)) < 1e-12, (gap, ratio)
+
+    # And the tree reproduces the spot variance across the whole term structure.
+    previous_vol = None
+    for months in (3, 12, 36, 60):
+        expiry = val_date + pd.DateOffset(months=months)
+        model, _ = sm.run_valuation(None, dict(
+            product_type="call_swing", valDate=val_date, storageStart=expiry,
+            storageEnd=expiry, capacity_mwh=1_000, daily_max=1_000, clips_per_day=1,
+            vol=vol, sMR=mr, n_p_full=120, run_intrinsic=False, discount_rate=0.0,
+            strike=40.0, zero_penalty=True, daily_curve=curve))
+        weights = model.prob[model.Dt].sum(axis=1)
+        weights = weights / weights.sum()
+        logs = np.asarray(model.x)[model.Dt]
+        mean = float(np.dot(weights, logs))
+        measured = float(np.dot(weights, (logs - mean) ** 2))
+
+        years = (expiry - val_date).days / 365.25
+        expected = spot_var(years)
+        assert abs(measured / expected - 1.0) < 0.01, (
+            f"{months}m: tree variance {measured:.6f} vs C&S {expected:.6f}")
+        assert expected < vol ** 2 / (2 * mr), "variance must stay below its stationary value"
+
+        effective = math.sqrt(expected / years)
+        assert effective < vol, f"{months}m: effective vol {effective:.4f} is not below sVol"
+        if previous_vol is not None:
+            assert effective < previous_vol, "the comparable vol must fall with maturity"
+        previous_vol = effective
