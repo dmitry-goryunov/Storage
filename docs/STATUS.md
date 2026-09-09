@@ -52,6 +52,10 @@ the live ones ported.
 | [#5](https://github.com/dmitry-goryunov/Storage/pull/5) | Intrinsic split benchmarked net of the strike | merged |
 | [#6](https://github.com/dmitry-goryunov/Storage/pull/6) | Time value of money: `discount_rate`, the day-selection/financing split, `delta_pv`, borrow vs invest rates, `STRIKE`, and a total P&L bridge | merged |
 
+A day's findings and corrections from the time-value work are in
+[FINDINGS-2026-09-09.md](FINDINGS-2026-09-09.md), including four claims this documentation
+had wrong.
+
 The full review, its evidence and the reconciliation record are archived under
 [`docs/reconciliation-history/2026-09-08/`](reconciliation-history/2026-09-08/) — 27 files,
 including the original code review, the peer-reviewed put-delta investigation, the process
@@ -149,6 +153,7 @@ All four execute cleanly against the current library and their committed outputs
 
 | | |
 |---|---|
+| [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |
 | [`docs/DELTA-CONVENTION.md`](DELTA-CONVENTION.md) | Why `delta` is an undiscounted hedge volume, with the measured cost of the alternative |
 | [`docs/RECONCILIATION-REPORT.md`](RECONCILIATION-REPORT.md) | What was ported onto `main` and what it moved |
