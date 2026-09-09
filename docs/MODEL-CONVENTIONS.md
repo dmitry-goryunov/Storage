@@ -95,6 +95,12 @@ trusting a monthly bucket across a large move.
   `intrinsic = profiled − flat` must be present-valued or the difference measures the
   discount factor rather than the day-selection spread — the same mistake as benchmarking
   a strike-net value against a raw average.
+- **The two sides move in opposite directions.** A seller receives cash, so a positive rate
+  pulls exercise *earlier*; a buyer pays cash, so it pushes exercise *later*. On a flat
+  curve at 10 % both book about 1.0 EUR/MWh of pure timing gain (call 0.998, put 0.974).
+  On a sloped curve the rate competes with the slope and each side flips once it wins: on a
+  +18 %/yr curve the put buys on day 45 up to 20 % and on day 350 at 40 %, while the call
+  does the reverse.
 - **A hurdle rate and a funding rate answer different questions.** Discounting a hedgeable
   commodity cash flow at, say, a 10 % internal project rate is a capital-budgeting view —
   what the cash is worth to *this* business — not a mark-to-market. It will systematically

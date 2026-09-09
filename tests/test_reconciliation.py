@@ -479,3 +479,52 @@ def test_storage_starts_where_the_reported_value_says_it_does():
     withdrawn = float(-np.clip(moved, None, 0).sum())
     assert abs(injected - withdrawn) < 1e-6, (
         f"empty-to-empty storage injected {injected:,.0f} and withdrew {withdrawn:,.0f}")
+
+
+def _rising_daily_curve(lo=22.0, hi=30.0):
+    days = pd.date_range("2026-01-01", "2027-06-30", freq="D")
+    return pd.Series(np.linspace(lo, hi, len(days)), index=days)
+
+
+def _timed(product_type, discount_rate, curve):
+    params = dict(product_type=product_type, valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=True,
+                  discount_rate=discount_rate, daily_curve=curve)
+    s, r = sm.run_valuation(None, params)
+    ex = np.abs(np.asarray(s.exp_ex[:s.n_t]))
+    return s, r, float(np.dot(np.arange(s.n_t), ex) / ex.sum())
+
+
+def test_a_put_swing_defers_where_a_call_swing_accelerates():
+    """The buy side is the mirror: paying later is the gain, not receiving sooner.
+
+    On a rising curve a buyer wants the cheap early days and a seller the dear
+    late ones, so price and time value pull against each other. Raise the rate
+    far enough and each flips to the other end of the window -- in opposite
+    directions.
+    """
+    curve = _rising_daily_curve()
+    _, _, put_cheap = _timed("put_swing", 0.0, curve)
+    _, _, put_dear = _timed("put_swing", 0.40, curve)
+    _, _, call_cheap = _timed("call_swing", 0.0, curve)
+    _, _, call_dear = _timed("call_swing", 0.40, curve)
+
+    assert put_cheap < 100 and put_dear > 300, (
+        f"put should buy early at 0 % ({put_cheap:.0f}) and defer at 40 % ({put_dear:.0f})")
+    assert call_cheap > 300 and call_dear < 100, (
+        f"call should sell late at 0 % ({call_cheap:.0f}) and accelerate at 40 % "
+        f"({call_dear:.0f})")
+    assert (put_dear - put_cheap) * (call_dear - call_cheap) < 0, (
+        "the two sides must move in opposite directions")
+
+
+def test_both_sides_book_a_timing_gain_on_a_flat_curve():
+    """With no price shape, timing is the only edge, and both sides have one."""
+    curve = _flat_daily_curve()
+    for product_type in ("put_swing", "call_swing"):
+        _, flat, _ = _timed(product_type, 0.0, curve)
+        _, disc, _ = _timed(product_type, 0.10, curve)
+        assert abs(flat["intrinsic"]) < 1e-9, f"{product_type} at 0 %: {flat['intrinsic']}"
+        assert disc["intrinsic"] > 0.5, f"{product_type} at 10 %: {disc['intrinsic']}"
