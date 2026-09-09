@@ -123,8 +123,10 @@ with st.sidebar:
 
         FDDate = pd.Timestamp(st.date_input("FDDate (forward-curve date)", pd.Timestamp("2026-01-05"),
                                             help="Quote date whose forward curve is used; the nearest quote on or before it is selected."))
-        valDate = pd.Timestamp(st.date_input("valDate (valuation / 'today')", pd.Timestamp("2026-01-01"),
-                                             help="'Today' for the valuation — the price tree and discounting start here."))
+        valDate = pd.Timestamp(st.date_input("valDate (valuation / 'today')", pd.Timestamp("2026-01-05"),
+                                             help="'Today' for the valuation — the price tree and discounting start here. "
+                                                  "Must be on or after FDDate: valuing before the quote date uses a curve "
+                                                  "that did not exist yet."))
         storageStart = pd.Timestamp(st.date_input("storageStart (first active day)", pd.Timestamp("2026-04-01")))
         storageEnd = pd.Timestamp(st.date_input("storageEnd (last active day)", pd.Timestamp("2027-03-30")))
 

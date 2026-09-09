@@ -8,7 +8,10 @@ This replaces planning derived from the stale Drive working tree.
    before action, after action, or at both points. Then implement and test finding 13.
 2. Define curve-shape acceptance criteria for continuity, overshoot, positivity and
    valuation stability before reconsidering the exact knot solve.
-3. Agree the production discount-curve source. The hedge reporting convention is
+3. PARTLY ADDRESSED: `discount_rate` now builds `d_curve` (annual, continuously
+   compounded) on `Storage` and through `run_valuation`, so time value is priced and
+   the optimiser prefers early withdrawal; the flat benchmark is PV'd to match. What
+   remains is the same question in its production form. Agree the discount-curve source. The hedge reporting convention is
    SETTLED: `delta` is an undiscounted physical hedge volume (decision D-O2), the
    invariant carries the discount weights, and both are documented in
    docs/MODEL-CONVENTIONS.md. What remains is where a real `d_curve` comes from,

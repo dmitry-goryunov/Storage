@@ -8,7 +8,7 @@ none.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main` |
-| Tests | `python -m pytest -q` → **34 passed** on `main` |
+| Tests | `python -m pytest -q` → **62 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -59,6 +59,11 @@ review that caught the stale baseline, and the migration log.
 | Coverage guard ran after `smoothen_curve` | Curve gaps surfaced as SciPy's `y must contain only finite values` |
 | `wdr_days` dropped by `run_valuation` | 30, 45, 90 and 365 all priced a storage deal identically |
 | Intrinsic benchmarked against a raw forward average | Shifted by the strike: −27.7 EUR/MWh on a K=28 call, +20.2 on a K=20 put |
+| `value_storage` lost its starting-inventory assignment in the P3.1 refactor | Reported a value for an empty store beside profiles for a full one — 6,041 MWh in against 66,041 out. Introduced 2026-09-08, found and fixed the next day |
+| A curve could start before the quote it was built from | Look-ahead, and the gap was back-filled with the quote's day-ahead price — two months of 52.00 stamped across Jan–Feb 2026 for a March quote. The Streamlit app shipped with exactly this default (valDate 2026-01-01 against FDDate 2026-01-05) |
+| `Products.ipynb` read `AS_OF` only on the `quotes` branch | With `CURVE_SOURCE = "csv"` the as-of date did nothing: 6 March 2026 still priced off curve.csv's stored 28.00. Same trap class as `wdr_days` |
+| `price_per_mwh` took an absolute value | A strike above the curve flips a put swing's value positive, so a deal that pays you was reported as a 12.905 EUR/MWh cost, and `vs flat` was out by twice the moneyness. Caught by the section 4 cross-check the day it was added |
+| Intrinsic on a flat curve looked like a bug | It is not: the optimiser prices `DF·F`, and at 10 % a flat 40 slopes 36.836 → 33.342 across 2027. `intrinsic_components` now splits it into day selection and financing, exactly |
 
 Notebook outputs were also materially stale — `Swing_new.ipynb` showed a swing worth 2.11
 EUR/MWh where the model now gives 3.22.
@@ -102,7 +107,7 @@ first — the work that did not is finished.
 |---|---|---|
 | P1.1 | Tunnel semantics — hard vs soft, before/after action | The tunnels cannot bind as built, and the `1000·v_step` penalty scale is arbitrary |
 | P1.2 | Curve-shape acceptance criteria | `main` already reprices its input contracts; the knot solve is now a refinement, worth doing only against stated criteria |
-| P1.3 | Production discount-curve source and settlement timing | The convention is settled; where a real `d_curve` comes from is not. Settlement is assumed on the exercise day |
+| P1.3 | Production discount-curve source and settlement timing | `discount_rate` now prices time value and the optimiser prefers early withdrawal; where a *real* curve comes from is still open, and settlement is assumed on the exercise day |
 | P1.4 | Withdrawal capacity, remaining half | Rates are whole clips per day, so anything slower than one clip/day is inexpressible. Also `inj_days` still means two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | P2.2 | Scale-aware exercise tie threshold | `1e-6` is absolute, on values that scale with deal size |

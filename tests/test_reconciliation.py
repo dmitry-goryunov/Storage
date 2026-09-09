@@ -387,3 +387,878 @@ def test_struck_swing_intrinsic_is_benchmarked_net_of_the_strike(product_type):
         spread = (r["profiled_metric"] - r["flat_metric"]) if product_type == "call_swing"             else (r["flat_metric"] - r["profiled_metric"])
         assert abs(spread - r["intrinsic"]) < 1e-9
         assert abs((r["intrinsic"] + r["extrinsic"]) - r["total"]) < 1e-9
+
+
+# ── Time value of money ───────────────────────────────────────────────────────
+# Cash from an early withdrawal can be redeployed, so the model must prefer
+# earlier exercise when a discount rate is supplied. The machinery existed
+# (`d_curve` is applied to every cash flow in the DP) but nothing ever set it.
+
+def _flat_daily_curve(price=25.0):
+    days = pd.date_range("2026-01-01", "2027-06-30", freq="D")
+    return pd.Series(float(price), index=days)
+
+
+def _timed_call(discount_rate=0.0, **kw):
+    params = dict(product_type="call_swing", valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=True,
+                  discount_rate=discount_rate, daily_curve=_flat_daily_curve())
+    params.update(kw)
+    return sm.run_valuation(None, params)
+
+
+def _mean_exercise_day(model):
+    ex = np.abs(np.asarray(model.exp_ex[:model.n_t]))
+    return float(np.dot(np.arange(model.n_t), ex) / ex.sum())
+
+
+def test_discount_rate_pulls_exercise_earlier():
+    """On a flat curve, timing is indifferent at 0 % and worth something at 10 %."""
+    flat, _ = _timed_call(0.0)
+    disc, _ = _timed_call(0.10)
+    assert _mean_exercise_day(disc) < _mean_exercise_day(flat) - 1.0, (
+        f"mean exercise day {_mean_exercise_day(disc):.1f} at 10 % vs "
+        f"{_mean_exercise_day(flat):.1f} at 0 % — the rate did not move the schedule")
+
+
+def test_flat_curve_intrinsic_is_zero_without_a_rate_and_positive_with_one():
+    """With no price shape, the only thing left to optimise is WHEN you sell.
+
+    At 0 % that is worth nothing, so intrinsic must be 0. At 10 % selling early
+    beats selling evenly, and that timing gain is exactly what intrinsic should
+    now report -- it used to be invisible.
+    """
+    _, flat = _timed_call(0.0)
+    assert abs(flat["intrinsic"]) < 1e-9, f"flat curve, no rate: {flat['intrinsic']}"
+
+    _, disc = _timed_call(0.10)
+    assert disc["intrinsic"] > 0.05, f"10 % rate on a flat curve gave {disc['intrinsic']}"
+
+
+def test_discounted_benchmark_keeps_the_decomposition_comparable():
+    """`flat_metric` must be PV'd too, or intrinsic just measures the discount."""
+    s, r = _timed_call(0.10)
+    df = np.exp(-0.10 * np.arange(s.n_t) / 365.25)
+    win = slice(s.Dt, s._active)
+    expected = float(np.mean(df[win] * s.fwd[win]))
+    assert abs(r["flat_metric"] - expected) < 1e-9, (
+        f"flat_metric {r['flat_metric']:.4f} is not the PV-weighted average forward "
+        f"{expected:.4f}")
+    assert abs((r["profiled_metric"] - r["flat_metric"]) - r["intrinsic"]) < 1e-9
+    assert abs((r["intrinsic"] + r["extrinsic"]) - r["total"]) < 1e-9
+
+
+def test_discounting_lowers_the_value_of_a_positive_deal():
+    a, _ = _timed_call(0.0)
+    b, _ = _timed_call(0.10)
+    va = float(a.v[0, a.n_p, a.initial_state]); vb = float(b.v[0, b.n_p, b.initial_state])
+    assert 0 < vb < va, f"value {vb:,.0f} at 10 % should sit below {va:,.0f} at 0 %"
+
+
+def test_storage_starts_where_the_reported_value_says_it_does():
+    """`value_storage` reads v[0, ., init_inv] but must also START the forward pass there.
+
+    A refactor dropped the assignment, so the reported value was for a store
+    starting empty while exp_ex/delta/prob described one starting full: it
+    withdrew 66,041 MWh having injected 6,041, emptying a store it never filled.
+    An empty-to-empty deal must move the same volume in as out.
+    """
+    params = dict(product_type="storage", valDate="2026-01-01",
+                  storageStart="2026-04-01", storageEnd="2027-03-31",
+                  capacity_mwh=60_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=3, run_intrinsic=False,
+                  inj_cost=0.5, wdr_cost=0.5, daily_curve=_seasonal_daily_curve())
+    s, _ = sm.run_valuation(None, params)
+    assert s.initial_state == 0, (
+        f"initial_state={s.initial_state}, but the value is read at init_inv=0")
+
+    moved = s.prob[:s.n_t] * s.strat[:s.n_t] * s.v_step
+    injected = float(np.clip(moved, 0, None).sum())
+    withdrawn = float(-np.clip(moved, None, 0).sum())
+    assert abs(injected - withdrawn) < 1e-6, (
+        f"empty-to-empty storage injected {injected:,.0f} and withdrew {withdrawn:,.0f}")
+
+
+def _rising_daily_curve(lo=22.0, hi=30.0):
+    days = pd.date_range("2026-01-01", "2027-06-30", freq="D")
+    return pd.Series(np.linspace(lo, hi, len(days)), index=days)
+
+
+def _timed(product_type, discount_rate, curve, **kw):
+    params = dict(product_type=product_type, valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=True,
+                  discount_rate=discount_rate, daily_curve=curve)
+    params.update(kw)
+    s, r = sm.run_valuation(None, params)
+    ex = np.abs(np.asarray(s.exp_ex[:s.n_t]))
+    return s, r, float(np.dot(np.arange(s.n_t), ex) / ex.sum())
+
+
+def test_a_put_swing_defers_where_a_call_swing_accelerates():
+    """The buy side is the mirror: paying later is the gain, not receiving sooner.
+
+    On a rising curve a buyer wants the cheap early days and a seller the dear
+    late ones, so price and time value pull against each other. Raise the rate
+    far enough and each flips to the other end of the window -- in opposite
+    directions.
+    """
+    curve = _rising_daily_curve()
+    _, _, put_cheap = _timed("put_swing", 0.0, curve)
+    _, _, put_dear = _timed("put_swing", 0.40, curve)
+    _, _, call_cheap = _timed("call_swing", 0.0, curve)
+    _, _, call_dear = _timed("call_swing", 0.40, curve)
+
+    assert put_cheap < 100 and put_dear > 300, (
+        f"put should buy early at 0 % ({put_cheap:.0f}) and defer at 40 % ({put_dear:.0f})")
+    assert call_cheap > 300 and call_dear < 100, (
+        f"call should sell late at 0 % ({call_cheap:.0f}) and accelerate at 40 % "
+        f"({call_dear:.0f})")
+    assert (put_dear - put_cheap) * (call_dear - call_cheap) < 0, (
+        "the two sides must move in opposite directions")
+
+
+def test_both_sides_book_a_timing_gain_on_a_flat_curve():
+    """With no price shape, timing is the only edge, and both sides have one."""
+    curve = _flat_daily_curve()
+    for product_type in ("put_swing", "call_swing"):
+        _, flat, _ = _timed(product_type, 0.0, curve)
+        _, disc, _ = _timed(product_type, 0.10, curve)
+        assert abs(flat["intrinsic"]) < 1e-9, f"{product_type} at 0 %: {flat['intrinsic']}"
+        assert disc["intrinsic"] > 0.5, f"{product_type} at 10 %: {disc['intrinsic']}"
+
+
+def test_delta_pv_is_the_tailed_hedge_and_reprices_directly():
+    """Two hedge ratios, because there are two hedge instruments.
+
+    `delta` is the physical forward volume: correct against an OTC forward that
+    settles with the deal, where the discount factor cancels. `delta_pv` is that
+    tailed by DF: correct against margined futures, whose variation margin moves
+    today while the gas settles later, and the right number for PV risk.
+
+    On the 10-day put swing 2027 at 10 %, tailing takes December from -2,481 to
+    -2,036 MWh, and the book from -9,213 to -7,819.
+    """
+    model = _direct_put(discount_rate=0.10)
+    n = model.n_t
+    delta = np.asarray(model.delta[:n])
+    delta_pv = np.asarray(model.delta_pv[:n])
+
+    np.testing.assert_allclose(delta_pv, delta * model.d_curve[:n], rtol=0, atol=1e-12)
+    assert abs(delta_pv).sum() < abs(delta).sum(), "tailing must shrink a forward-dated book"
+
+    # The tailed series reprices the contract without carrying the weights
+    # separately -- the identity in its simplest form.
+    value = float(model.v[0, model.n_p, model.initial_state])
+    assert abs(float(np.dot(delta_pv, model.fwd)) - value) / abs(value) < 1e-9
+
+    # With no rate the two series coincide.
+    plain = _direct_put(discount_rate=0.0)
+    np.testing.assert_allclose(np.asarray(plain.delta_pv[:n]),
+                               np.asarray(plain.delta[:n]), rtol=0, atol=1e-12)
+
+
+def _quote_row(quote_date="2026-03-06", da=52.0, n=12, level=50.0):
+    """A single synthetic quote row, shaped like a row of `ttf q.xlsx`."""
+    cols = [f"TTFc{i + 1}" for i in range(n)]
+    row = {"quote_date": pd.Timestamp(quote_date), "DA": da}
+    row.update({c: level - i for i, c in enumerate(cols)})
+    return pd.Series(row), cols
+
+
+def test_a_curve_cannot_start_before_the_quote_it_is_built_from():
+    """Valuing before the quote date is look-ahead, and it back-fills silently.
+
+    `curve_start` and the quote date were independent inputs, so moving the
+    as-of date forward while leaving the valuation date behind produced a curve
+    whose front stub was the *later* quote's day-ahead price stamped flat over
+    the months in between -- two months of 52.00 across Jan and Feb 2026 for a
+    2026-03-06 quote valued from 2026-01-01. It now raises.
+    """
+    row, cols = _quote_row("2026-03-06", da=52.0)
+
+    with pytest.raises(ValueError, match="before the quote"):
+        sm.curve_df_for_storage(row, cols, curve_start="2026-01-01", include_da=True)
+
+    # The same gap without a DA column is equally look-ahead, and equally rejected.
+    row_no_da = row.drop(labels=["DA"])
+    with pytest.raises(ValueError, match="before the quote"):
+        sm.curve_df_for_storage(row_no_da, cols, curve_start="2026-01-01", include_da=True)
+
+    # On or after the quote date is fine, and the stub starts where it is told.
+    same = sm.curve_df_for_storage(row, cols, curve_start="2026-03-06", include_da=True)
+    assert same["contractStart"].min() == pd.Timestamp("2026-03-06")
+    assert float(same.iloc[0]["value"]) == 52.0
+
+    # Valuing *after* the quote is allowed. The day-ahead stub still reaches back
+    # to the quote date -- harmless, because the model only maps the curve from
+    # the valuation date forward, so those days are never read.
+    later = sm.curve_df_for_storage(row, cols, curve_start="2026-03-20", include_da=True)
+    assert later["contractStart"].min() == pd.Timestamp("2026-03-06")
+
+    # Defaulting curve_start to the quote date must not trip its own guard.
+    default = sm.curve_df_for_storage(row, cols, curve_start=None, include_da=True)
+    assert default["contractStart"].min() == pd.Timestamp("2026-03-06")
+
+
+def test_the_as_of_date_moves_the_curve():
+    """The knob that started this: a different as-of must select a different quote.
+
+    `Products.ipynb` had `AS_OF` read only on the `quotes` branch while the
+    source stayed `csv`, so changing the date left the curve on curve.csv's
+    stored March 2026 contract of 28.00. The library half is asserted here; the
+    notebook half is the source/AS_OF guard in section 1.
+    """
+    quotes = pd.DataFrame([
+        {"quote_date": pd.Timestamp("2026-01-05"), "DA": 20.0, "TTFc1": 21.0, "TTFc2": 22.0},
+        {"quote_date": pd.Timestamp("2026-03-06"), "DA": 52.0, "TTFc1": 53.0, "TTFc2": 54.0},
+    ])
+    cols = ["TTFc1", "TTFc2"]
+
+    early = sm.quote_row_for_fd_date(quotes, cols, "2026-01-31")
+    late = sm.quote_row_for_fd_date(quotes, cols, "2026-03-06")
+    assert pd.Timestamp(early["quote_date"]) == pd.Timestamp("2026-01-05")
+    assert pd.Timestamp(late["quote_date"]) == pd.Timestamp("2026-03-06")
+
+    front_early = float(sm.curve_df_for_storage(early, cols, include_da=False)
+                        .sort_values("contractStart").iloc[0]["value"])
+    front_late = float(sm.curve_df_for_storage(late, cols, include_da=False)
+                       .sort_values("contractStart").iloc[0]["value"])
+    assert front_early == 21.0
+    assert front_late == 53.0
+
+
+def test_with_no_volatility_every_euro_of_value_is_financing():
+    """The sharpest flat-curve sense check: kill the vol and only timing is left.
+
+    A flat curve removes day-selection, so intrinsic can only be the discount
+    rate. Removing the volatility as well removes optionality, so extrinsic must
+    vanish outright and the buyer must defer to the very end of the window --
+    with no dip left to wait for, when you pay is the only thing to optimise.
+    With vol switched back on the schedule sits in between, balancing the
+    financing pull against the option to catch a dip.
+    """
+    curve = _flat_daily_curve(40.0)
+    quiet, res_quiet, day_quiet = _timed("put_swing", 0.10, curve, n_p_full=20)
+
+    assert abs(res_quiet["extrinsic"]) > 1e-9, "sanity: vol 50 % must carry optionality"
+
+    still, res_still, day_still = _timed("put_swing", 0.10, curve, vol=1e-6, n_p_full=20)
+    assert abs(res_still["extrinsic"]) < 1e-9, (
+        f"no vol must leave no optionality, got {res_still['extrinsic']:.3e}")
+    assert res_still["intrinsic"] > 0.1, (
+        f"the rate alone must still be worth something, got {res_still['intrinsic']:.4f}")
+
+    # Deferred to the back of the window, and further than when vol competes.
+    assert day_still > still.Dt + 0.95 * (still._active - still.Dt), (
+        f"mean exercise day {day_still:.1f} is not at the end of "
+        f"[{still.Dt}, {still._active})")
+    assert day_still > day_quiet + 10.0, (
+        f"no-vol schedule {day_still:.1f} should sit later than the vol one "
+        f"{day_quiet:.1f} -- optionality is what pulls exercise forward")
+
+    # And with neither vol nor rate there is nothing to gain at all.
+    _, res_none, _ = _timed("put_swing", 0.0, curve, vol=1e-6, n_p_full=20)
+    assert abs(res_none["total"]) < 1e-4, (
+        f"no shape, no vol, no rate must be worth nothing, got {res_none['total']:.3e}")
+
+
+def _deterministic(curve, discount_rate, **kw):
+    """The n_p = 0 run whose schedule produces `profiled_metric`."""
+    params = dict(product_type="put_swing", valDate="2026-01-01",
+                  storageStart="2026-02-01", storageEnd="2026-12-31",
+                  capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                  vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+                  discount_rate=discount_rate, daily_curve=curve)
+    params.update(kw)
+    return sm.run_valuation(None, params)[0]
+
+
+def test_on_a_flat_curve_every_euro_of_intrinsic_is_financing():
+    """Why a shapeless curve still shows intrinsic once a rate is on.
+
+    A flat *forward* curve is not flat once discounted. The optimiser sees
+    `DF * F`, which at 10 % slopes downwards across the window, so there is
+    something to choose even with no price shape at all -- and the day-selection
+    term is exactly zero while the financing term carries the whole of it.
+
+    The two terms must also reconstruct `intrinsic` on a curve that does have
+    shape, where both are non-zero.
+    """
+    flat = _flat_daily_curve(40.0)
+
+    shape, financing = sm.intrinsic_components(_deterministic(flat, 0.10))
+    assert abs(shape) < 1e-9, f"a flat curve has no day-selection gain, got {shape:.3e}"
+    assert financing > 0.1, f"the rate must carry all of it, got {financing:.4f}"
+
+    # It reconstructs what run_valuation reports.
+    _, res, _ = _timed("put_swing", 0.10, flat, n_p_full=20)
+    assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+        f"{shape:.6f} + {financing:.6f} != reported {res['intrinsic']:.6f}")
+
+    # With no rate there is nothing to choose at all, on either leg.
+    zero = sm.intrinsic_components(_deterministic(flat, 0.0))
+    assert max(abs(z) for z in zero) < 1e-9, zero
+
+    # On a sloped curve both terms are live and still add up.
+    sloped = _seasonal_daily_curve()
+    for rate in (0.0, 0.10):
+        det = _deterministic(sloped, rate, valDate="2026-01-01",
+                             storageStart="2026-02-01", storageEnd="2026-12-31")
+        shape, financing = sm.intrinsic_components(det)
+        _, res, _ = _timed("put_swing", rate, sloped, n_p_full=20)
+        assert shape > 0.1, f"a seasonal curve must offer day selection, got {shape:.4f}"
+        assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+            f"rate {rate}: {shape:.6f} + {financing:.6f} != {res['intrinsic']:.6f}")
+        if rate == 0.0:
+            assert abs(financing) < 1e-9, f"no rate, no financing gain: {financing:.3e}"
+        else:
+            assert financing > 0.0, f"a buyer gains by deferring: {financing:.4f}"
+
+
+def test_the_intrinsic_split_refuses_a_two_sided_deal():
+    """Storage buys and sells, so value per net MWh -- and the split -- is undefined."""
+    params = {
+        "product_type": "storage", "valDate": "2026-01-01",
+        "storageStart": "2026-02-01", "storageEnd": "2026-12-31",
+        "vol": 0.5, "sMR": 1.0, "n_p_full": 0, "run_intrinsic": False,
+        "discount_rate": 0.10, "daily_curve": _seasonal_daily_curve(),
+        "capacity_mwh": 30_000.0, "daily_max": 1_000.0, "clips_per_day": 1,
+        "inj_cost": 0.0, "wdr_cost": 0.0,
+    }
+    model, _ = sm.run_valuation(None, params)
+    with pytest.raises(ValueError, match="zero-net-volume"):
+        sm.intrinsic_components(model)
+
+
+def test_the_intrinsic_split_is_net_of_the_strike():
+    """Both legs the split divides out are net of the strike, so it must be passed.
+
+    `profiled_metric` is the effective price after the strike leg and
+    `flat_metric` is the forward average net of it, so the discount factors
+    recovered from them are only right if `intrinsic_components` is given the
+    same strike the run used. Getting it wrong is silent -- the numbers still
+    look like prices -- so it is asserted both ways.
+    """
+    curve = _seasonal_daily_curve()
+    strike = 20.0
+
+    det = _deterministic(curve, 0.10, strike=strike)
+    _, res, _ = _timed("put_swing", 0.10, curve, n_p_full=20, strike=strike)
+
+    shape, financing = sm.intrinsic_components(det, strike=strike)
+    assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+        f"{shape:.6f} + {financing:.6f} != reported {res['intrinsic']:.6f}")
+    assert shape > 0.1, shape
+
+    # Forgetting the strike does not raise. It answers a different question, and
+    # the giveaway is that the two terms stop adding up to the reported intrinsic.
+    wrong = sm.intrinsic_components(det)
+    assert abs(sum(wrong) - res["intrinsic"]) > 0.5, (
+        f"dropping the strike should break the reconciliation: {sum(wrong):.6f} "
+        f"against {res['intrinsic']:.6f}")
+
+
+def test_a_strike_reorders_the_days_only_once_there_is_a_rate():
+    """A constant per-MWh amount is not neutral once cash flows are discounted.
+
+    Undiscounted, the cost is `sum (P_i - K) q_i` and the `K` leg is a constant
+    times a fixed volume, so it cannot reorder anything: schedule and split are
+    identical struck or not. Discounted it becomes `sum DF_i (P_i - K) q_i`, and
+    the `-K sum DF_i q_i` term rewards days with *large* discount factors -- it
+    pulls exercise earlier, against the deferral the rate otherwise buys.
+
+    The financing gain scales with the net cash actually moving, not the gross
+    index, so a deep strike all but removes it: on this curve a 20.00 strike
+    against a ~25 average takes financing from 0.481 to 0.002 and returns the
+    schedule to its undiscounted optimum.
+    """
+    curve = _seasonal_daily_curve()
+
+    flat_plain = sm.intrinsic_components(_deterministic(curve, 0.0))
+    flat_struck = sm.intrinsic_components(_deterministic(curve, 0.0, strike=20.0), strike=20.0)
+    np.testing.assert_allclose(flat_struck, flat_plain, rtol=0, atol=1e-9,
+                               err_msg="with no rate a strike must be neutral")
+
+    plain = _deterministic(curve, 0.10)
+    struck = _deterministic(curve, 0.10, strike=20.0)
+    _, fin_plain = sm.intrinsic_components(plain)
+    _, fin_struck = sm.intrinsic_components(struck, strike=20.0)
+    assert fin_plain > 0.4, fin_plain
+    assert fin_struck < 0.05, (
+        f"a deep strike leaves almost no cash to defer, got {fin_struck:.6f}")
+
+    assert _mean_exercise_day(struck) < _mean_exercise_day(plain) - 1.0, (
+        f"the strike must pull exercise earlier: {_mean_exercise_day(struck):.1f} "
+        f"vs {_mean_exercise_day(plain):.1f}")
+
+    # Extrinsic follows the same rule, and it is the cleaner statement of it:
+    # optionality is worth the same struck or not while nothing discounts, and
+    # stops being so the moment something does.
+    def extrinsic(rate, strike):
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=strike)
+        return res["extrinsic"]
+
+    assert abs(extrinsic(0.0, 20.0) - extrinsic(0.0, 0.0)) < 1e-9, (
+        f"with no rate a strike must not touch optionality: "
+        f"{extrinsic(0.0, 20.0):.6f} vs {extrinsic(0.0, 0.0):.6f}")
+    assert abs(extrinsic(0.10, 20.0) - extrinsic(0.10, 0.0)) > 1e-3, (
+        f"with a rate it must, through the -K*sum(DF*q) leg: "
+        f"{extrinsic(0.10, 20.0):.6f} vs {extrinsic(0.10, 0.0):.6f}")
+
+
+def test_a_strike_on_the_curve_zeroes_intrinsic_and_defeats_the_split():
+    """K on a flat curve: intrinsic is exactly 0 at any rate, and the split is lost.
+
+    With `F - K == 0` on every day the deterministic cash flow is zero whatever
+    the schedule, so `sum DF_i (P_i - K) q_i` is zero for all of them: the rate
+    has no lever and no financing gain can exist. `intrinsic` is well defined
+    and exactly 0.
+
+    The *split* is a different matter. It recovers discount factors by dividing
+    by the benchmark and by the price the schedule pays, both of which are zero
+    here, so `intrinsic_components` raises rather than returning 0/0. Callers
+    that want a table rather than an exception catch it -- `Products.ipynb`
+    reports n/a.
+    """
+    curve = _flat_daily_curve(40.0)
+    for rate in (0.0, 0.10):
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=40.0)
+        assert abs(res["flat_metric"]) < 1e-12, res["flat_metric"]
+        assert abs(res["intrinsic"]) < 1e-9, (
+            f"a strike on the curve leaves no intrinsic at {rate:.0%}: {res['intrinsic']:.3e}")
+        assert res["extrinsic"] > 0.5, res["extrinsic"]
+
+        det = _deterministic(curve, rate, strike=40.0)
+        with pytest.raises(ValueError, match="strike sits on the curve"):
+            sm.intrinsic_components(det, strike=40.0)
+
+
+def test_financing_scales_with_the_net_cash_not_the_index():
+    """The financing gain is linear in `(level - K) / level` on a flat curve.
+
+    Deferring is worth a fraction of what actually moves. On a flat curve at
+    `level` the schedule pays `level - K` per MWh whatever days it picks, so
+    the whole of intrinsic -- which is financing there, day selection being
+    zero -- must scale exactly with the net. It does, to machine precision:
+    at 40.00 a K of 30.00 gives a quarter of the unstruck gain, and a K of
+    39.00 gives a fortieth. This is why a deep strike all but removes the
+    rate's effect, and why the schedule reverts to its undiscounted optimum.
+    """
+    level = 40.0
+    curve = _flat_daily_curve(level)
+
+    def financing(strike):
+        det = _deterministic(curve, 0.10, strike=strike)
+        shape, fin = sm.intrinsic_components(det, strike=strike)
+        assert abs(shape) < 1e-9, f"K={strike}: a flat curve has no day selection, {shape:.3e}"
+        return fin
+
+    base = financing(0.0)
+    assert base > 0.1, base
+    for strike in (10.0, 20.0, 30.0, 35.0, 39.0):
+        expected = (level - strike) / level * base
+        assert abs(financing(strike) - expected) < 1e-12 * max(abs(expected), 1.0), (
+            f"K={strike}: {financing(strike):.9f} != {expected:.9f}")
+
+
+def test_the_split_reports_an_unsigned_zero():
+    """`-0.0` in a results table reads like a defect. It is not one; nor is it wanted.
+
+    On a flat curve the day-selection term is `sign * df_bench * 0.0`, and for a
+    buyer `sign` is -1, so the raw product is negative zero and formats as
+    "-0.000". Both components are normalised.
+    """
+    shape, financing = sm.intrinsic_components(_deterministic(_flat_daily_curve(40.0), 0.10))
+    assert shape == 0.0
+    assert not np.signbit(shape), "day selection came back as -0.0"
+    assert f"{shape:.3f}" == "0.000", f"{shape:.3f}"
+    assert not np.signbit(financing) and financing > 0.0, financing
+
+    # And with no rate at all, where both terms are zero.
+    for term in sm.intrinsic_components(_deterministic(_flat_daily_curve(40.0), 0.0)):
+        assert term == 0.0 and not np.signbit(term), term
+
+
+def test_a_put_swing_is_an_obligation_not_an_option_on_the_strike():
+    """Value is linear in K with no kink, so `intrinsic` cannot mean moneyness.
+
+    An option's value is convex in the strike with a kink at the money, and its
+    intrinsic value is `max(.,0)` of the moneyness. A `put_swing` here is the
+    obligation to buy: total volume is fixed, so at a zero rate the value is
+    `K * volume - sum P_i q_i` and `dV/dK` is exactly the volume at every strike,
+    in or out of the money.
+
+    Discounting adds a little real convexity -- the slope becomes `sum DF_i q_i`,
+    which the schedule can raise by exercising earlier as K grows. It is the
+    schedule responding, not an option payoff.
+    """
+    curve = _flat_daily_curve(40.0)
+    strikes = [0.0, 15.0, 30.0, 45.0, 60.0]
+
+    def value(strike, rate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="put_swing", valDate="2026-01-01", storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=20, run_intrinsic=False,
+            discount_rate=rate, strike=strike, daily_curve=curve))
+        return float(model.v[0, model.n_p, model.initial_state])
+
+    flat_slopes = [(value(b, 0.0) - value(a, 0.0)) / (b - a)
+                   for a, b in zip(strikes, strikes[1:])]
+    for s in flat_slopes:
+        assert abs(s - 30_000.0) < 1e-3, (
+            f"dV/dK must be the fixed volume at every strike, got {s:,.3f}")
+
+    disc_slopes = [(value(b, 0.10) - value(a, 0.10)) / (b - a)
+                   for a, b in zip(strikes, strikes[1:])]
+    assert all(s < 30_000.0 for s in disc_slopes), disc_slopes
+    assert all(b > a for a, b in zip(disc_slopes, disc_slopes[1:])), (
+        f"discounting should make the value convex in K, got {disc_slopes}")
+    assert disc_slopes[-1] / disc_slopes[0] - 1 < 0.05, (
+        f"but only slightly -- {disc_slopes[-1]/disc_slopes[0]-1:.1%} is too much")
+
+
+def test_the_reported_metrics_compose_into_the_price():
+    """The four reported numbers nest; they are not terms to add side by side.
+
+        flat  =  price  +/-  (intrinsic + extrinsic),   intrinsic = shape + financing
+
+    `flat` is the benchmark and `price` is what the deal actually pays, so the
+    gain between them must be exactly what the decomposition claims. The two are
+    computed by different routes -- one off the DP's value, one off the split --
+    so their agreeing ties the reported metrics to the prices.
+    """
+    curve = _flat_daily_curve(40.0)
+    for product, strike, rate in (("put_swing", 30.0, 0.10), ("put_swing", 0.0, 0.10),
+                                  ("call_swing", 30.0, 0.10), ("put_swing", 30.0, 0.0)):
+        _, res, _ = _timed(product, rate, curve, n_p_full=20, strike=strike)
+        flat, price = res["flat_metric"], res["stochastic_metric"]
+        gain = (flat - price) if product == "put_swing" else (price - flat)
+        assert abs(gain - (res["intrinsic"] + res["extrinsic"])) < 1e-9, (
+            f"{product} K={strike} r={rate}: gain {gain:.9f} != "
+            f"{res['intrinsic']:.9f} + {res['extrinsic']:.9f}")
+        assert abs(res["total"] - (res["intrinsic"] + res["extrinsic"])) < 1e-12
+
+        det = _deterministic(curve, rate, product_type=product, strike=strike)
+        shape, financing = sm.intrinsic_components(det, strike=strike)
+        assert abs(shape + financing - res["intrinsic"]) < 1e-9, (
+            f"{product} K={strike} r={rate}: {shape:.9f} + {financing:.9f} != "
+            f"{res['intrinsic']:.9f}")
+
+
+def test_financing_is_interest_on_cash_the_deal_has_not_paid_out():
+    """The financing gain is a real cash flow, not a discount-factor artefact.
+
+    The deterministic schedule and the flat benchmark move the same gas at the
+    same prices, so their nominal totals are identical and only the timing
+    differs. The balance between them is money still in hand; the present value
+    of the interest it earns at the discount rate is the financing number.
+    """
+    curve = _flat_daily_curve(40.0)
+    rate, strike = 0.10, 30.0
+    det = _deterministic(curve, rate, strike=strike)
+    _, financing = sm.intrinsic_components(det, strike=strike)
+
+    n = det.n_t
+    win = slice(det.Dt, det._active)
+    net = np.asarray(det.price_curve, dtype=float)[:n] - strike
+    volume = np.abs(np.asarray(det.exp_ex[:n]))
+    total = volume.sum()
+
+    cash_deal = volume * net
+    cash_bench = np.zeros(n)
+    cash_bench[win] = total / (det._active - det.Dt) * net[win]
+    assert abs(cash_deal.sum() - cash_bench.sum()) < 1e-6 * total, (
+        "the two schedules must move the same nominal cash, only at different times")
+
+    balance = np.cumsum(cash_bench - cash_deal)
+    assert balance.max() > 0, "the deal should be holding cash the benchmark has paid"
+    pv_interest = float(np.dot(det.d_curve[:n], rate * balance / 365.25))
+
+    assert abs(pv_interest - financing * total) < 0.001 * abs(financing * total), (
+        f"PV of interest {pv_interest:,.2f} != financing {financing * total:,.2f}")
+
+
+def test_a_curve_in_contango_at_the_discount_rate_leaves_no_timing_gain():
+    """Charging financing on the gas needs no new input -- the curve does it.
+
+    A flat forward curve beside a positive rate is internally inconsistent: it
+    says gas costs the same in December as in January while money costs 10 %.
+    The financing gain is the model reporting that inconsistency as free money.
+    Put the curve in contango at the same rate and `DF * F` -- the only curve the
+    optimiser ever sees -- is flat, so the timing gain vanishes exactly. Day
+    selection and financing are then equal and opposite: buying early is cheaper
+    on the curve by precisely what paying early costs in funding.
+
+    Optionality is untouched, because that comes from volatility, not slope.
+    """
+    rate, level = 0.10, 40.0
+    days = pd.date_range("2026-01-01", "2027-12-31", freq="D")
+    t = (days - pd.Timestamp("2026-01-01")).days.values / 365.25
+
+    def at(carry):
+        curve = pd.Series(level * np.exp(carry * t), index=days)
+        _, res, _ = _timed("put_swing", rate, curve, n_p_full=20)
+        shape, financing = sm.intrinsic_components(_deterministic(curve, rate))
+        return res, shape, financing
+
+    flat_res, flat_shape, flat_fin = at(0.0)
+    assert abs(flat_shape) < 1e-9 and flat_fin > 0.5, (flat_shape, flat_fin)
+
+    res, shape, financing = at(rate)
+    assert abs(res["intrinsic"]) < 1e-9, (
+        f"contango at the discount rate must leave no intrinsic, got {res['intrinsic']:.3e}")
+    assert abs(shape + financing) < 1e-9, (shape, financing)
+    assert shape < -0.5 and financing > 0.5, (
+        f"and the two halves should be large and opposite, got {shape:.4f}, {financing:.4f}")
+    assert res["extrinsic"] > 0.5, (
+        f"optionality comes from vol, not slope, and must survive: {res['extrinsic']:.4f}")
+
+
+def test_borrow_and_invest_rates_follow_the_deal_direction():
+    """One rate assumes spare cash earns what borrowed cash costs. It need not.
+
+    Given the pair, the rate follows the sign of the deal's own cash: a net payer
+    funds at the borrow rate, a net receiver places cash at the invest rate. The
+    direction comes from the forward net of strike, not the product type, because
+    a strike flips it -- a put swing struck above the curve receives.
+    """
+    curve = _flat_daily_curve(40.0)
+    borrow, invest = 0.12, 0.03
+
+    def run(product, strike, **rates):
+        params = dict(product_type=product, valDate="2026-01-01",
+                      storageStart="2026-02-01", storageEnd="2026-12-31",
+                      capacity_mwh=30_000, daily_max=1_000, clips_per_day=1,
+                      vol=0.5, sMR=1.0, n_p_full=20, run_intrinsic=False,
+                      strike=strike, daily_curve=curve)
+        params.update(rates)
+        model, _ = sm.run_valuation(None, params)
+        return float(model.v[0, model.n_p, model.initial_state]), model.discount_rate
+
+    for product, strike, expected in (("put_swing", 30.0, borrow),    # pays: K below
+                                      ("put_swing", 50.0, invest),    # receives: K above
+                                      ("call_swing", 30.0, invest),   # receives
+                                      ("call_swing", 50.0, borrow)):  # pays
+        value, used = run(product, strike, borrow_rate=borrow, invest_rate=invest)
+        assert used == expected, f"{product} K={strike}: used {used}, expected {expected}"
+        single, _ = run(product, strike, discount_rate=expected)
+        assert abs(value - single) < 1e-9, (value, single)
+
+    with pytest.raises(ValueError, match="not.*both"):
+        run("put_swing", 30.0, discount_rate=0.10, borrow_rate=borrow, invest_rate=invest)
+    with pytest.raises(ValueError, match="together"):
+        run("put_swing", 30.0, borrow_rate=borrow)
+    with pytest.raises(ValueError, match="no single funding direction"):
+        sm.run_valuation(None, dict(
+            product_type="storage", valDate="2026-01-01", storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+            daily_curve=curve, inj_cost=0.0, wdr_cost=0.0,
+            borrow_rate=borrow, invest_rate=invest))
+
+
+def test_the_pnl_bridge_sums_to_the_model_value():
+    """Total P&L decomposes into moneyness, discounting, and the three gains.
+
+    With nothing paid for the structure the whole P&L is the deal. The lines are
+
+        obligation at the forward  (F - K over the volume, signed by side)
+      + effect of discounting it   (it settles during the window, not today)
+      + intrinsic                  (day selection)
+      + NPV cash                   (financing on cash not yet paid out)
+      + extrinsic                  (optionality)
+
+    and they must reproduce the DP's value. On the 10-day put swing, flat 40,
+    K = 30: -100,000 nominal, +12,350 discounting, 0 day selection, +4,192
+    financing and +35,345 optionality give -48,112 at 10 %; at 0 % the two
+    middle lines vanish and -100,000 + 41,809 gives -58,191.
+    """
+    curve = _flat_daily_curve(40.0)
+    strike = 30.0
+    for product, sign in (("put_swing", -1.0), ("call_swing", 1.0)):
+        for rate in (0.0, 0.10):
+            model, res, _ = _timed(product, rate, curve, n_p_full=20, strike=strike)
+            det = _deterministic(curve, rate, product_type=product, strike=strike)
+            shape, financing = sm.intrinsic_components(det, strike=strike)
+
+            volume = float(np.abs(np.asarray(model.exp_ex[:model.n_t])).sum())
+            win = slice(model.Dt, model._active)
+            nominal = sign * (float(np.mean(np.asarray(model.price_curve, dtype=float)[win]))
+                              - strike)
+            bridge = (nominal
+                      + (sign * res["flat_metric"] - nominal)
+                      + shape + financing + res["extrinsic"]) * volume
+
+            value = float(model.v[0, model.n_p, model.initial_state])
+            assert abs(bridge - value) < 1e-6 * max(abs(value), 1.0), (
+                f"{product} r={rate}: bridge {bridge:,.4f} != value {value:,.4f}")
+
+            if rate == 0.0:
+                assert abs(sign * res["flat_metric"] - nominal) < 1e-9, (
+                    "with no rate there is nothing to discount")
+                assert abs(financing) < 1e-9, financing
+
+
+def test_the_strike_decides_which_end_of_the_window_a_buyer_exercises():
+    """One product, opposite schedules, decided purely by the strike.
+
+    A put swing struck below the curve pays `P - K` and wants to pay late; the
+    same swing struck above receives and wants to receive early. Nothing but the
+    strike changes, and it flips the schedule end to end -- deterministic mean
+    exercise day 359.5 against 4.5 on a 365-day window at 10 %.
+
+    With no rate there is nothing to time and both are indifferent, so they land
+    on the same tie-broken schedule.
+
+    The financing gain is positive either way, because deferring a payment and
+    accelerating a receipt both help, and it is nearly equal because both sit
+    10.00 from the curve -- the gain scales with the net cash moving. Not exactly
+    equal: discount factors are convex, so moving the same distance towards the
+    valuation date is worth slightly more than moving away from it.
+    """
+    curve = _flat_daily_curve(40.0)
+    pays, receives = 30.0, 50.0
+
+    quiet_pay = _deterministic(curve, 0.0, strike=pays)
+    quiet_get = _deterministic(curve, 0.0, strike=receives)
+    assert abs(_mean_exercise_day(quiet_pay) - _mean_exercise_day(quiet_get)) < 1e-6, (
+        "with no rate the strike must not move the schedule")
+
+    late = _deterministic(curve, 0.10, strike=pays)
+    early = _deterministic(curve, 0.10, strike=receives)
+    span = late._active - late.Dt
+    assert _mean_exercise_day(late) > late.Dt + 0.9 * span, _mean_exercise_day(late)
+    assert _mean_exercise_day(early) < early.Dt + 0.1 * span, _mean_exercise_day(early)
+
+    _, fin_late = sm.intrinsic_components(late, strike=pays)
+    _, fin_early = sm.intrinsic_components(early, strike=receives)
+    assert fin_late > 0.1 and fin_early > 0.1, (fin_late, fin_early)
+    assert abs(fin_early - fin_late) / fin_late < 0.1, (
+        f"both are 10.00 from the curve, so the gains should be close: "
+        f"{fin_early:.4f} vs {fin_late:.4f}")
+    assert fin_early > fin_late, (
+        "discount factors are convex, so moving earlier beats moving later by "
+        f"the same distance: {fin_early:.4f} vs {fin_late:.4f}")
+
+
+def test_the_per_mwh_price_keeps_its_sign_when_the_strike_crosses_the_curve():
+    """A strike above the curve flips a put swing's value, and the sign must survive.
+
+    `stochastic_metric` is what the deal pays per MWh, positive when you pay.
+    Struck below a flat 40 you pay; struck above you receive, and the number must
+    go negative rather than being reported as a cost. Taking its absolute value --
+    which `Products.ipynb` did until this case turned up -- breaks the
+    reconciliation `flat = price + intrinsic + extrinsic` by twice the moneyness.
+    """
+    curve = _flat_daily_curve(40.0)
+    for rate in (0.0, 0.10):
+        _, pays, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=30.0)
+        _, gets, _ = _timed("put_swing", rate, curve, n_p_full=20, strike=50.0)
+        assert pays["stochastic_metric"] > 0, (
+            f"struck below the curve a put swing pays: {pays['stochastic_metric']:.4f}")
+        assert gets["stochastic_metric"] < 0, (
+            f"struck above it receives: {gets['stochastic_metric']:.4f}")
+        assert pays["flat_metric"] > 0 > gets["flat_metric"], (
+            pays["flat_metric"], gets["flat_metric"])
+
+        # And the reconciliation holds on both sides of the money.
+        for res in (pays, gets):
+            gain = res["flat_metric"] - res["stochastic_metric"]
+            assert abs(gain - (res["intrinsic"] + res["extrinsic"])) < 1e-9, (
+                f"r={rate}: {gain:.9f} != {res['intrinsic']:.9f} + {res['extrinsic']:.9f}")
+
+
+def test_every_money_number_is_a_present_value_at_the_valuation_date():
+    """`d_curve` is anchored at valDate, so moving valDate rescales the value exactly.
+
+    `d_curve[i] = exp(-r*i/365.25)` with `i` counted from `valDate`, and the value
+    is read at time index 0. Price the same window from two valuation dates and
+    the deterministic value must differ by exactly `exp(-r*dT)` -- nothing else
+    changed, only where "today" is. That is the sharpest statement that the
+    reported money is a PV to valDate rather than to the window or to delivery.
+
+    Deliberate exceptions, all of them labelled where they are reported: the
+    nominal `F - K` line of the P&L bridge (the next line is the discounting),
+    the nominal cash totals and peak balance in the financing view, and `delta`,
+    which is an undiscounted hedge volume with `delta_pv` as its tailed twin.
+    """
+    days = pd.date_range("2025-06-01", "2027-12-31", freq="D")
+    curve = pd.Series(40.0, index=days)
+    rate, strike = 0.10, 30.0
+
+    def value_from(valdate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="put_swing", valDate=valdate, storageStart="2026-02-01",
+            storageEnd="2026-12-31", capacity_mwh=30_000, daily_max=1_000,
+            clips_per_day=1, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+            discount_rate=rate, strike=strike, daily_curve=curve))
+        return model, float(model.v[0, model.n_p, model.initial_state])
+
+    late, v_late = value_from("2026-01-01")
+    early, v_early = value_from("2025-07-01")
+
+    assert late.d_curve[0] == 1.0 and early.d_curve[0] == 1.0
+    assert pd.Timestamp(late.date_span[0]) == late.valDate
+    np.testing.assert_allclose(
+        late.d_curve, np.exp(-rate * np.arange(late.n_t) / 365.25), rtol=0, atol=0)
+
+    gap = (pd.Timestamp("2026-01-01") - pd.Timestamp("2025-07-01")).days
+    expected = v_late * np.exp(-rate * gap / 365.25)
+    assert abs(v_early - expected) < 1e-9 * abs(expected), (
+        f"valuing {gap} days earlier gave {v_early:,.6f}, not {expected:,.6f} — "
+        "the value is not a PV to valDate")
+
+    # delta is the documented exception, and delta_pv is its discounted twin.
+    n = late.n_t
+    np.testing.assert_allclose(np.asarray(late.delta_pv[:n]),
+                               np.asarray(late.delta[:n]) * late.d_curve[:n],
+                               rtol=0, atol=1e-12)
+    assert abs(np.asarray(late.delta_pv[:n])).sum() < abs(np.asarray(late.delta[:n])).sum()
+
+
+def test_delta_over_volume_is_the_price_conditional_on_exercising():
+    """`delta / exp_ex == E[S | exercise] / F` — recomputed from the raw DP arrays.
+
+    `delta[i]` is `E[S_i Q_i] / F_i` and `exp_ex[i]` is `E[Q_i]`, so their ratio
+    is the volume-weighted price the deal actually transacts at, over the
+    forward. That is the whole reason the two series differ, and section 6b now
+    reports it as its own column, so it is checked here against a probability
+    weighting built directly from `prob`, `strat` and the price tree rather than
+    from the reported series.
+
+    It runs above 1 where exercise is chosen at good prices and below where a
+    quota forces it: on the reference call swing, 1.49 in January against 0.76
+    in December.
+    """
+    curve = _flat_daily_curve(40.0)
+    model, _, _ = _timed("call_swing", 0.10, curve, n_p_full=20, strike=30.0)
+    n = model.n_t
+
+    # E[S*Q] and E[Q] straight from the DP's own arrays.
+    action = model.strat[:n] * model.v_step
+    weighted = model.prob[:n] * action
+    volume = -weighted.sum(axis=(1, 2))
+    traded = -(weighted * np.exp(model.x)[:, :, None]).sum(axis=(1, 2))
+
+    fwd = np.asarray(model.fwd)[:n]
+    np.testing.assert_allclose(np.asarray(model.exp_ex[:n]), volume, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(np.asarray(model.delta[:n]), traded / fwd, rtol=0, atol=1e-9)
+
+    live = np.abs(volume) > 1e-6
+    ratio = np.asarray(model.delta[:n])[live] / volume[live]
+    conditional = traded[live] / volume[live]
+    np.testing.assert_allclose(ratio, conditional / fwd[live], rtol=1e-12, atol=0)
+
+    # A seller is picky early and forced late, so the ratio must fall through the
+    # window and cross 1 before the end.
+    win = np.arange(n)[live]
+    win = win[(win >= model.Dt) & (win < model._active)]
+    early = ratio[np.isin(np.arange(n)[live], win[:30])].mean()
+    late = ratio[np.isin(np.arange(n)[live], win[-30:])].mean()
+    assert early > 1.2, f"early exercise should be chosen at good prices: {early:.4f}"
+    assert late < 1.0, f"a forced quota should transact below the forward: {late:.4f}"
