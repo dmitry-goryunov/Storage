@@ -835,3 +835,31 @@ def test_a_strike_on_the_curve_zeroes_intrinsic_and_defeats_the_split():
         det = _deterministic(curve, rate, strike=40.0)
         with pytest.raises(ValueError, match="strike sits on the curve"):
             sm.intrinsic_components(det, strike=40.0)
+
+
+def test_financing_scales_with_the_net_cash_not_the_index():
+    """The financing gain is linear in `(level - K) / level` on a flat curve.
+
+    Deferring is worth a fraction of what actually moves. On a flat curve at
+    `level` the schedule pays `level - K` per MWh whatever days it picks, so
+    the whole of intrinsic -- which is financing there, day selection being
+    zero -- must scale exactly with the net. It does, to machine precision:
+    at 40.00 a K of 30.00 gives a quarter of the unstruck gain, and a K of
+    39.00 gives a fortieth. This is why a deep strike all but removes the
+    rate's effect, and why the schedule reverts to its undiscounted optimum.
+    """
+    level = 40.0
+    curve = _flat_daily_curve(level)
+
+    def financing(strike):
+        det = _deterministic(curve, 0.10, strike=strike)
+        shape, fin = sm.intrinsic_components(det, strike=strike)
+        assert abs(shape) < 1e-9, f"K={strike}: a flat curve has no day selection, {shape:.3e}"
+        return fin
+
+    base = financing(0.0)
+    assert base > 0.1, base
+    for strike in (10.0, 20.0, 30.0, 35.0, 39.0):
+        expected = (level - strike) / level * base
+        assert abs(financing(strike) - expected) < 1e-12 * max(abs(expected), 1.0), (
+            f"K={strike}: {financing(strike):.9f} != {expected:.9f}")
