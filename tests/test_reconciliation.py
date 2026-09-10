@@ -1887,3 +1887,86 @@ print("STORAGE_NOTEBOOK_OK")
     assert completed.returncode == 0, (
         f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
     assert "STORAGE_NOTEBOOK_OK" in completed.stdout
+
+
+def test_simple_storage_notebook_executes_clean():
+    """Storage_30_60.ipynb runs every section in a fresh process, with no stale output."""
+    path = os.path.join(ROOT, "Storage_30_60.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            assert cell.get("execution_count") is None
+            assert not cell.get("outputs", [])
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("Storage_30_60.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    exec(compile("".join(cell.get("source", [])),
+                 f"Storage_30_60.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+assert (namespace["N_STATES"], namespace["INJ_RATE"], namespace["WDR_RATE"]) == (60, 2, 1)
+free, funded = namespace["RUNS"][0.0][2], namespace["RUNS"][0.10][2]
+assert funded["value"] < free["value"], (funded["value"], free["value"])
+assert max(free["invariant"], funded["invariant"]) < 1e-9
+print("SIMPLE_STORAGE_OK")
+'''
+    env = os.environ.copy()
+    env.update({"STORAGE_NOTEBOOK_SMOKE": "1", "MPLBACKEND": "Agg"})
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=300, check=False)
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
+    assert "SIMPLE_STORAGE_OK" in completed.stdout
+
+
+def test_a_stores_physical_volume_nets_to_zero_but_its_hedge_does_not():
+    """The point of the 30/60 notebook, as an assertion.
+
+    Everything injected is withdrawn, so `exp_ex` sums to zero over the deal.
+    `delta` does not, because the summer forwards bought and the winter forwards
+    sold are different contracts at different prices — the residual is the
+    seasonal spread the store is long. A hedge sized off physical volume would
+    be no hedge at all.
+    """
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series(
+        25.0 + 6.0 * np.cos(2 * np.pi * (span.dayofyear.values - 1) / 365.25), index=span)
+
+    model, _ = sm.run_valuation(None, dict(
+        product_type="storage", valDate="2026-06-01", storageStart="2027-01-01",
+        storageEnd="2027-12-31", capacity_mwh=600_000.0, daily_max=20_000.0,
+        clips_per_day=2, inj_rate=2, wdr_rate=1, initial_inv_clips=0,
+        terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0,
+        n_p_full=20, run_intrinsic=False, discount_rate=0.10, daily_curve=curve))
+
+    n = model.n_t
+    physical = np.asarray(model.exp_ex[:n])
+    delta = np.asarray(model.delta[:n])
+    gross = float(np.abs(physical).sum())
+
+    assert abs(physical.sum()) < 1e-6 * gross, physical.sum()
+    assert abs(delta.sum()) > 1e-3 * gross, (
+        f"the hedge should not net out: {delta.sum():,.0f} against {gross:,.0f} gross")
+
+    # Summer is bought and winter is sold, in both series.
+    dates = pd.DatetimeIndex(model.date_span)[:n]
+    frame = pd.DataFrame({"physical": physical, "delta": delta}, index=dates)
+    monthly = frame.loc["2027-01-01":"2027-12-31"].resample("MS").sum()
+    assert monthly.loc["2027-07-01", "delta"] < 0, "July should buy"
+    assert monthly.loc["2027-12-01", "delta"] > 0, "December should sell"
+
+    # And it still reprices: no cost leg here, both costs being zero.
+    value = float(model.v[0, model.n_p, model.initial_state])
+    reprice = float(np.dot(model.d_curve[:n] * delta, np.asarray(model.fwd)[:n]))
+    assert abs(reprice - value) / abs(value) < 1e-9

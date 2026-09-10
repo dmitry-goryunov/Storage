@@ -8,7 +8,7 @@ changes — a status document that lags is worse than none.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **88 passed** |
+| Tests | `python -m pytest -q` → **90 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -177,7 +177,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 88 tests, ~40 s
+python -m pytest -q                  # 90 tests, ~35 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below
@@ -186,6 +186,7 @@ jupyter lab                          # notebooks below
 | Notebook | |
 |---|---|
 | `Products.ipynb` | One put/call swing family at four sizes, 10/30/90/180 days, with rate mode, hedge and convergence checks |
+| `Storage_30_60.ipynb` | The simple store: 30 days to fill, 60 to empty, valued and hedged at 0 % and at 10 % funding |
 | `Storage_30_65.ipynb` | Asymmetric-rate storage — 30 days to fill, 65 to empty. Sizes the inventory grid from the rates and refuses to price a deal it cannot express |
 | `SwingVsOption.ipynb` | A swing priced beside a vanilla call — the vol convention, the Black-76 anchor, and the ladder from a call to a mandatory swing |
 | `Swing_new.ipynb` | Swing valuation and the intrinsic/extrinsic decomposition |
