@@ -11,7 +11,7 @@ together. Update this file when that changes — a status document that lags is 
 
 | | |
 |---|---|
-| Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
+| Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
 | Tests | `python -m pytest -q` → **115 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
@@ -31,13 +31,16 @@ case-insensitive. Measured against a local clone of the same repository:
 | write 200 small files | 4.071 s | 0.132 s | 31× |
 | read them back | 1.218 s | 0.034 s | 36× |
 
-**The failure you will actually hit** is a stale `.git/packed-refs.lock`: a zero-byte file
-left when the sync daemon touches `.git` mid-operation. It blocks `git checkout -b` and
-`git push` with *"Another git process seems to be running"* when none is. It happened twice
-on 2026-09-09. Check that no git process is really running, then:
+**The failure you will actually hit** is a stale lock file in `.git`: a zero-byte file left
+when the sync daemon touches `.git` mid-operation. It blocks the operation with *"Another
+git process seems to be running"* when none is. Twice as `packed-refs.lock` on 2026-09-09
+(blocking `git checkout -b` and `git push`), once as **`AUTO_MERGE.lock`** on 2026-09-10
+during a fast-forward merge. In every case so far **the operation itself succeeded** and
+only the lock was left behind, so check the result before assuming it failed. Then, having
+confirmed no git process is really running:
 
 ```bash
-rm -f .git/packed-refs.lock
+rm -f .git/*.lock
 git fsck --no-progress --no-dangling      # clean every time so far
 ```
 

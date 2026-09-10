@@ -117,6 +117,15 @@ Three of my own, made while responding to it:
 - **`benchmarks.py` reproduced the review's figures on different package versions** —
   NumPy 2.4.3 / pandas 2.3.3 / Numba 0.65.1 against its 2.5.3 / 3.0.5 / 0.67.0. A stronger
   reproduction than intended.
+- **`origin` was still on the pre-rename URL**, a day after
+  [yesterday's note](FINDINGS-2026-09-09.md) diagnosed exactly that. Consolidating the two
+  remotes kept the wrong one, so every push since had been reaching
+  `dmitry-goryunov/Storage` through a GitHub redirect and saying so in a line that reads
+  like noise. Fixed. A redirect is a courtesy, not a guarantee.
+- **A third Drive lock variant**: `AUTO_MERGE.lock` during a fast-forward merge, after two
+  `packed-refs.lock` incidents yesterday. As before the operation succeeded and only the
+  lock was left behind — which is the part worth knowing, because the error message says
+  the opposite.
 
 ## What to do next
 
