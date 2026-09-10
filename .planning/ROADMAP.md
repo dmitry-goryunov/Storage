@@ -98,7 +98,33 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 
 1. Shorten the terminal backstop only after proving that the final exercise day and
    terminal payoff indices remain unchanged. Benchmark finding 14 before and after.
-2. Replace the absolute `1e-6` exercise tie threshold with a documented scale-aware
+2. CONSIDERED AND DECLINED 2026-09-10. Measured before deciding, and the case for
+   changing it is weaker than the original note implied.
+
+   The threshold snaps an action to idle when it beats idling by under 1e-6 EUR. That
+   is an absolute number of euros on values that scale with the deal, so in principle
+   it is the wrong shape. In practice, at any realistic rate it does not bite: the
+   same deal priced across seven orders of magnitude of size, at 10 % funding, gives
+   a per-MWh value identical to eight decimals, 5.35370023 at every scale.
+
+   It is reachable. At r = 1e-9 a 600 MWh deal cycles once while a 60,000 MWh deal
+   cycles twice, because a one-day deferral of a clip is worth 6.8e-8 EUR on the
+   first and 6.8e-5 on the second, and only the second clears the bar.
+
+   What that costs is worth being exact about. It does NOT move the value: nominal
+   cash is identical to nine decimals, 5.100000000 per MWh, whether the store turns
+   once or twice, because the extra turn is worth nothing -- which is why it sits at
+   the threshold. It DOES move the reported hedge, which doubles, 1.000000 against
+   2.000000 MWh per MWh of capacity. So it cannot misprice a contract; it can
+   misreport what to trade against one.
+
+   Decision: leave it. Reaching the failure needs a rate near 1e-9 and a hundredfold
+   size contrast, and the fix -- scaling the bar by v_step * price -- buys tidiness
+   rather than a correction. Revisit if a real deal is ever priced at a near-zero
+   rate, or if the hedge is ever taken from a deal orders of magnitude from the one
+   the threshold was tuned against.
+
+   Original item: replace the absolute `1e-6` exercise tie threshold with a documented scale-aware
    rule, then run policy-stability and portfolio regressions for finding 17.
 
 ## Priority 3: API and maintenance

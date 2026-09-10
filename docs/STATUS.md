@@ -167,7 +167,7 @@ first — the work that did not is finished.
 | P1.3 | Production discount-curve source, purpose and settlement timing | `discount_rate` now prices time value; where a *real* market curve comes from, whether a rate is market/funding/hurdle, and the contractual settlement dates remain open |
 | P1.4 | Withdrawal capacity, remaining half | Rates are whole clips per day, so anything slower than one clip/day is inexpressible. Also `inj_days` still means two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
-| P2.2 | Scale-aware exercise tie threshold | `1e-6` is absolute, on values that scale with deal size |
+| ~~P2.2~~ | ~~Scale-aware exercise tie threshold~~ | **Considered and declined 2026-09-10.** It cannot misprice a deal — nominal cash is identical to nine decimals whether the store turns once or twice — but it can double the reported hedge, and only at a rate near 1e-9 with a hundredfold size contrast. Left as is |
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |
 | **P4.1** | **A second factor, so the seasonal spread can move** | One factor means any two forwards correlate **exactly 1.000**, so the summer/winter spread carries about 1.03 EUR/MWh of uncertainty against a 12.00 EUR/MWh spread. Storage extrinsic comes out at 4.2 % of value and *rises* with mean reversion — it is measuring short-term cycling, not spread optionality |
 | ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
