@@ -1,29 +1,34 @@
-"""Does a common long factor ever add value? An independent DP that answers it.
+"""What is a second price factor actually worth? An independent DP that asks it.
 
-The P4.1 design note argued for a second price factor on the grounds that one
-factor forces every pair of forwards to correlate exactly 1.000, so the model
-cannot price the seasonal spread a store exists to monetise. An independent
-review disproved the *storage* half of that: for a zero-fee store a common
-multiplicative long factor integrates out exactly, adding nothing.
+The P4.1 design note argued for a second factor because one factor forces every
+pair of forwards to correlate exactly 1.000, so the model cannot price the
+seasonal spread a store exists to monetise. An independent review disproved the
+*storage* half of that: for a zero-fee store a common multiplicative long factor
+integrates out exactly.
 
-The reduction has conditions, and the reply to that review was right that they
-matter. This probe tests them one at a time on the same machinery:
+That exact result stands (section 1). But it is stated at a FIXED short factor,
+and on its own it answers the wrong question. Bolting an independent factor on
+top of an unchanged `sigma_chi` strictly increases total volatility, and more
+volatility is worth more to any option -- so a struck contract looks like it
+needs a second factor when all it was given was a bigger number. **A jointly
+calibrated two-factor model fits the same observed volatility with both factors,
+so `sigma_chi` comes down.** Section 2 does that instead.
 
-    zero-fee store        homogeneous  -> expect EXACTLY no gain
-    store with cash fees  not homogeneous
-    struck swing          not homogeneous
+It changes the answer, including its sign, and it changes the answer for STORAGE
+too -- which section 1 alone would tell you is unaffected. The reply to the
+review put it exactly right: a joint calibration can move the short-factor
+estimate even where valuation later reduces to one state, so market-model
+selection and valuation-state reduction are separate decisions.
 
-Homogeneity is the whole mechanism. Writing `L_t = exp(xi_t - 0.5 Var xi_t)`,
-which is a martingale, the price is `S_t = F_0(t) * L_t * M_t` with `M` the
-one-factor part. If every cashflow is homogeneous of degree one in price and the
-admissible set does not depend on price, then the optimal policy is
-scale-invariant, `V_t = L_t * W_t`, and `L_0 = 1`. Add a fixed EUR/MWh fee or a
-strike and the cashflow is `S - K` rather than `S`: scale invariance breaks, the
-policy starts depending on the level, and the long factor has something to say.
+    contract               homogeneous   value depends only on chi
+    zero-fee store         yes           yes -- exactly
+    unstruck swing         yes           yes -- exactly
+    store with cash fees   no            no
+    struck swing           no            no
 
 This is a deliberately small, independently written oracle, not a production
 Schwartz-Smith engine. Its long factor is independent of the short one, which is
-enough to test the design's universal claims. Run it:
+enough for the questions above. Run it:
 
     python two_factor_probe.py
 """
@@ -32,14 +37,15 @@ import numpy as np
 DT = 1.0 / 12.0
 N_T = 24                      # decision dates, two years of months
 CAP = 3                       # inventory levels 0..3
-SIG_CHI = 0.6
-SIG_XI = 0.8
+SIG_CHI = 0.6                 # the one-factor model's short-factor volatility
 RATE = 0.05
 
 # A seasonal forward curve, so there is a spread to trade rather than only noise.
 F0 = 20.0 + 5.0 * np.cos(2 * np.pi * np.arange(N_T) / 12.0)
 DF = np.exp(-RATE * DT * np.arange(N_T))
 
+
+# -- Lattices -----------------------------------------------------------------
 
 def _ou_lattice(kappa, sigma, half=40):
     """Recombining trinomial for dchi = -kappa*chi*dt + sigma*dW, chi_0 = 0."""
@@ -66,8 +72,8 @@ def _walk_lattice(sigma, half=None):
 
     `half` defaults past anything reachable in N_T steps. It matters: with an
     absorbing edge, exp(xi) stops being a martingale and this probe reports a
-    spurious gain of about 1e-5 -- which is the size of a real effect worth
-    looking for, so the boundary has to be beyond reach rather than merely wide.
+    spurious gain of about 1e-5 -- the size of a real effect worth looking for,
+    so the boundary has to be beyond reach rather than merely wide.
     """
     half = N_T + 2 if half is None else half
     dx = sigma * np.sqrt(DT)
@@ -114,14 +120,14 @@ NEG = -1e18
 def _step(t_chi, t_xi, v):
     """Roll the value function back one date over both factors.
 
-    The two transitions are independent, so the joint operator is separable and
-    two contractions beat one: 81 x 81 x 53 x 4 plus 53 x 53 x 81 x 4 against
-    81 x 81 x 53 x 53 x 4 for the combined form. Worth doing -- it is the whole
-    cost of this probe, and it turned a three-minute test suite back into a
-    ninety-second one.
+    The transitions are independent, so the joint operator is separable and two
+    contractions beat one: 81 x 81 x 53 x 4 plus 53 x 53 x 81 x 4 against
+    81 x 81 x 53 x 53 x 4 combined. It is the whole cost of this probe.
     """
     return np.einsum("kl,ilm->ikm", t_xi, np.einsum("ij,jlm->ilm", t_chi, v))
 
+
+# -- Contracts ----------------------------------------------------------------
 
 def value_store(kappa, sig_xi, fee=0.0, sig_chi=SIG_CHI):
     """A cycling store: inject or withdraw one unit a month, end empty."""
@@ -156,148 +162,168 @@ def value_swing(kappa, sig_xi, strike=0.0, quota=6, sig_chi=SIG_CHI):
         payoff = DF[t] * (price[t] - strike)            # NOT homogeneous unless strike = 0
         for left in range(quota + 1):
             idle = cont[:, :, left]
-            if left == 0:
-                nxt[:, :, left] = idle
-            else:
-                nxt[:, :, left] = np.maximum(idle, payoff + cont[:, :, left - 1])
+            nxt[:, :, left] = (idle if left == 0
+                               else np.maximum(idle, payoff + cont[:, :, left - 1]))
         v = nxt
     return float(v[n_c // 2, n_x // 2, quota])
 
 
-def matched_sig_chi(kappa, sig_xi, horizon=None):
-    """Short-factor vol that keeps TOTAL terminal log variance fixed.
+CONTRACTS = (
+    ("zero-fee store", value_store, {}, True),
+    ("unstruck swing", value_swing, dict(strike=0.0), True),
+    ("store, EUR 2/MWh legs", value_store, dict(fee=2.0), False),
+    ("call swing, strike 20", value_swing, dict(strike=20.0), False),
+)
 
-    Without this the comparison is confounded. Bolting an independent factor on
-    top of an unchanged short factor strictly increases total price variance, and
-    more variance is worth more to any option -- so a struck contract would look
-    like it needed a second factor when all it needed was a bigger number.
 
-    Var(chi_T) = sig_chi^2 (1 - exp(-2 kappa T)) / (2 kappa) for the OU factor and
-    sig_xi^2 T for the driftless walk. Solve the first for the residual after the
-    second is taken out. Returns nan when sig_xi alone already exceeds the budget.
+# -- Calibration anchors ------------------------------------------------------
+
+def matched_sig_chi(sig_xi, anchor="spot", kappa=None, horizon=None):
+    """The short-factor volatility a two-factor FIT would use, given the anchor.
+
+    A second factor is not free volatility. Which observable the two models are
+    made to agree on is a CHOICE, and the choice changes the answer -- including
+    its sign, which is why more than one is reported.
+
+    * ``"none"``     -- leave `sigma_chi` alone. Adds variance as well as a
+      factor, so it answers a question nobody asked. Kept because it is what the
+      first version of this probe did, and the mistake is worth naming.
+    * ``"spot"``     -- hold the instantaneous variance of `d log S` fixed:
+      `sigma_chi^2 + sigma_xi^2` for independent factors. Horizon-free and
+      kappa-free, and what fitting both factors to one observed spot volatility
+      would give.
+    * ``"terminal"`` -- hold `Var(log S_T)` fixed at `horizon`. Depends on both
+      kappa and the horizon, because the OU factor's variance saturates at
+      `sigma^2 / (2 kappa)` while the walk's grows linearly.
+
+    Returns nan when the long factor alone already exceeds the budget.
     """
-    horizon = N_T * DT if horizon is None else horizon
-    ou_unit = (1.0 - np.exp(-2.0 * kappa * horizon)) / (2.0 * kappa)
-    residual = SIG_CHI ** 2 - (sig_xi ** 2 * horizon) / ou_unit
+    if anchor == "none":
+        return SIG_CHI
+    if anchor == "spot":
+        residual = SIG_CHI ** 2 - sig_xi ** 2
+    elif anchor == "terminal":
+        horizon = N_T * DT if horizon is None else horizon
+        ou_unit = (1.0 - np.exp(-2.0 * kappa * horizon)) / (2.0 * kappa)
+        residual = SIG_CHI ** 2 - (sig_xi ** 2 * horizon) / ou_unit
+    else:
+        raise ValueError(f"unknown anchor {anchor!r}")
     return float(np.sqrt(residual)) if residual > 0.0 else float("nan")
 
 
-def compare_matched(label, fn, sig_xi, kappas=(0.2, 1.0, 4.0), **kwargs):
-    """One factor against two at EQUAL total terminal variance."""
-    print(f"\n{label}")
-    print(f"{'kappa':>6} {'sig_chi (2f)':>13} {'one factor':>15} {'two factors':>15} "
-          f"{'gain':>12} {'relative':>10}")
-    print("-" * 78)
-    rows = []
-    for kappa in kappas:
-        matched = matched_sig_chi(kappa, sig_xi)
-        if not np.isfinite(matched):
-            print(f"{kappa:>6.1f}   sig_xi alone exceeds the variance budget")
-            continue
-        one = fn(kappa, 0.0, **kwargs)
-        two = fn(kappa, sig_xi, sig_chi=matched, **kwargs)
-        rel = (two - one) / abs(one) if one else np.nan
-        rows.append((kappa, matched, one, two, two - one, rel))
-        print(f"{kappa:>6.1f} {matched:>13.4f} {one:>15.10f} {two:>15.10f} "
-              f"{two - one:>12.2e} {rel:>9.4%}")
-    return rows
-
-def compare(label, fn, kappas=(0.2, 1.0, 4.0), **kwargs):
-    rows = []
-    for kappa in kappas:
-        one = fn(kappa, 0.0, **kwargs)
-        two = fn(kappa, SIG_XI, **kwargs)
-        rows.append((kappa, one, two, two - one, (two - one) / abs(one) if one else np.nan))
-    print(f"\n{label}")
-    print(f"{'kappa':>6} {'one factor':>16} {'two factors':>16} {'gain':>14} {'relative':>10}")
-    print("-" * 68)
-    for kappa, one, two, gain, rel in rows:
-        print(f"{kappa:>6.1f} {one:>16.10f} {two:>16.10f} {gain:>14.2e} {rel:>9.4%}")
-    return rows
-
+# -- Reports ------------------------------------------------------------------
 
 def invariance(fn, sig_xis=(0.0, 0.1, 0.8), kappas=(0.2, 1.0, 4.0), **kwargs):
-    """Vary the long factor with the SHORT factor held fixed.
-
-    This is the clean experiment. Adding a long factor on top of an unchanged
-    short one raises total variance, so a struck contract gains partly for that
-    reason -- but a homogeneous contract gains NOTHING, at any sig_xi, and that
-    contrast is the whole result.
-    """
-    header = "  ".join(f"sig_xi {s:<8.1f}" for s in sig_xis)
-    print(f"{'kappa':>6}  {header}      spread")
-    print("-" * (8 + 17 * len(sig_xis) + 12))
+    """Vary the long factor with the short factor held fixed (anchor "none")."""
     rows = []
     for kappa in kappas:
         values = [fn(kappa, s, **kwargs) for s in sig_xis]
-        spread = (max(values) - min(values)) / abs(values[0])
-        rows.append((kappa, values, spread))
-        cells = "  ".join(f"{v:>15.10f}" for v in values)
-        print(f"{kappa:>6.1f}  {cells}  {spread:>10.4%}")
+        rows.append((kappa, values, (max(values) - min(values)) / abs(values[0])))
     return rows
+
+
+def anchored(fn, anchor, sig_xis=(0.0, 0.1, 0.3, 0.5), kappas=(0.2, 1.0, 4.0), **kwargs):
+    """Vary the long factor with `sigma_chi` cut to hold the anchor fixed."""
+    rows = []
+    for kappa in kappas:
+        values, chis = [], []
+        for sig_xi in sig_xis:
+            chi = matched_sig_chi(sig_xi, anchor, kappa=kappa)
+            chis.append(chi)
+            values.append(float("nan") if not np.isfinite(chi)
+                          else fn(kappa, sig_xi, sig_chi=chi, **kwargs))
+        rows.append((kappa, chis, values, (values[-1] - values[0]) / abs(values[0])))
+    return rows
+
+
+def _print_anchored(title, anchor, sig_xis=(0.0, 0.1, 0.3, 0.5)):
+    print(f"\n{title}")
+    header = " ".join(f"{'xi ' + format(s, '.2f'):>14}" for s in sig_xis)
+    print(f"{'contract':>23} {'kappa':>6} {header} {'0 -> ' + format(sig_xis[-1], '.1f'):>11}")
+    print("-" * (32 + 15 * len(sig_xis) + 10))
+    out = {}
+    for label, fn, kwargs, _ in CONTRACTS:
+        rows = anchored(fn, anchor, sig_xis=sig_xis, **kwargs)
+        out[label] = rows
+        for index, (kappa, _chis, values, rel) in enumerate(rows):
+            name = label if index == 0 else ""
+            cells = " ".join(f"{v:>14.8f}" for v in values)
+            print(f"{name:>23} {kappa:>6.1f} {cells} {rel:>10.2%}")
+    return out
 
 
 def main():
     print(__doc__.split("Run it:")[0].strip().split("\n\n")[0])
     print(f"\n{N_T} monthly dates, seasonal curve {F0.min():.1f}-{F0.max():.1f}, "
-          f"sigma_chi {SIG_CHI}, discount {RATE:.0%}")
+          f"one-factor sigma_chi {SIG_CHI}, discount {RATE:.0%}")
 
-    print("\n" + "=" * 78)
-    print("1. The long factor, with the short factor held fixed")
-    print("=" * 78)
-    print("\nZero-fee store -- homogeneous")
-    store = invariance(value_store)
-    print("\nCall swing, strike 0 -- homogeneous")
-    unstruck = invariance(value_swing, strike=0.0)
-    print("\nStore, EUR 2/MWh on each leg -- a fixed fee breaks homogeneity")
-    fees = invariance(value_store, fee=2.0)
-    print("\nCall swing, strike 20 -- a strike breaks it too")
-    struck = invariance(value_swing, strike=20.0)
+    print("\n" + "=" * 92)
+    print("1. The exact result: at a FIXED short factor, a homogeneous contract does")
+    print("   not depend on the long factor at all")
+    print("=" * 92)
+    print(f"{'contract':>23} {'homogeneous':>12}  {'spread over sigma_xi 0 .. 0.8':>31}")
+    print("-" * 70)
+    for label, fn, kwargs, homogeneous in CONTRACTS:
+        rows = invariance(fn, **kwargs)
+        print(f"{label:>23} {str(homogeneous):>12}  {max(r[2] for r in rows):>30.2e}")
+    print("\n  Zero to machine precision for the homogeneous pair, at ANY long-factor")
+    print("  volatility. That is a theorem rather than a measurement: with L a")
+    print("  martingale and cashflows homogeneous of degree one, V_t = L_t * W_t and")
+    print("  L_0 = 1.")
+    print("\n  It is stated at a fixed sigma_chi, and on its own it misleads.")
 
-    print("\n" + "=" * 78)
-    print("2. Where the variance sits, with TOTAL terminal variance held fixed")
-    print("=" * 78)
-    print("A different question, and not the one above: move variance out of the")
-    print("mean-reverting factor into the permanent one and both contracts lose value,")
-    print("because both care about short-horizon variance rather than the total. For")
-    print("the store that movement is ENTIRELY the reduced sigma_chi -- section 1 has")
-    print("already shown its value does not depend on sigma_xi at all.")
-    small = 0.10
-    matched_store = compare_matched(
-        f"\nStore, no fees, sigma_xi {small} at matched total variance",
-        value_store, small)
-    matched_struck = compare_matched(
-        f"\nCall swing, strike 20, sigma_xi {small} at matched total variance",
-        value_swing, small, strike=20.0)
+    print("\n" + "=" * 92)
+    print("2. The fair comparison: a CALIBRATED second factor takes volatility out of")
+    print("   the short factor rather than adding it on top")
+    print("=" * 92)
+    _print_anchored(
+        f"Anchor: instantaneous spot variance, sigma_chi^2 + sigma_xi^2 held at "
+        f"{SIG_CHI ** 2:.2f}", "spot")
+    # The terminal anchor runs out of budget far sooner: at kappa 4 the OU
+    # factor's variance has already saturated, so the walk eats it quickly.
+    _print_anchored(
+        f"Anchor: Var(log S_T) held fixed at T = {N_T * DT:.0f}y   "
+        f"(a tighter budget -- see sigma_chi below)", "terminal",
+        sig_xis=(0.0, 0.05, 0.10, 0.14))
 
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 92)
     print("Reading")
-    print("=" * 78)
-    print(f"  zero-fee store, sigma_xi 0 -> 0.8 : {max(r[2] for r in store):.2e} of value")
-    print(f"  unstruck swing, same              : {max(r[2] for r in unstruck):.2e} of value")
-    print(f"  store with cash fees              : {max(r[2] for r in fees):.2%}")
-    print(f"  struck swing                      : {max(r[2] for r in struck):.2%}")
+    print("=" * 92)
+    # Same contract, same long-factor volatility, two defensible anchors.
+    common = (0.0, 0.10)
+    print(f"  At sigma_xi {common[1]:.2f} and kappa 4 -- one long factor, two anchors:")
+    print(f"  {'':<23}{'spot anchor':>14}{'terminal anchor':>18}")
+    for label, fn, kwargs, _ in CONTRACTS:
+        by_spot = anchored(fn, "spot", sig_xis=common, kappas=(4.0,), **kwargs)[0][3]
+        by_term = anchored(fn, "terminal", sig_xis=common, kappas=(4.0,), **kwargs)[0][3]
+        print(f"  {label:<23}{by_spot:>+13.2%}{by_term:>+17.2%}")
     print()
-    print("  Both homogeneous contracts are invariant to the long factor to ten")
-    print("  decimals, at any volatility. Both non-homogeneous ones move. The")
-    print("  reduction is a statement about homogeneity, not about storage.")
+    print("  A calibrated second factor COSTS a store value, under BOTH anchors and at")
+    print("  every kappa above 0.2: -8.0 % at sigma_xi 0.5 on the spot anchor, -9.3 % at")
+    print("  sigma_xi 0.14 on the terminal one. A store monetises short-horizon variance")
+    print("  and the long factor is where that variance went. Section 1 on its own would")
+    print("  tell you storage is unaffected. It is not -- the channel is the short-factor")
+    print("  estimate, which is exactly why market-model selection and valuation-state")
+    print("  reduction are separate decisions.")
     print()
-    print("  Quote the modest column, not the extreme one. At sigma_xi 0.1 -- against a")
-    print("  short factor of 0.6 -- the struck swing still gains about 1.3 % to 1.4 %,")
-    print("  roughly flat in kappa, while the store gains exactly nothing.")
+    print("  The effect grows with kappa and vanishes as kappa -> 0, which is the sense")
+    print("  of it: at slow mean reversion the two factors are nearly the same process,")
+    print("  so it hardly matters which one holds the variance. At fast mean reversion")
+    print("  they are very different, and moving variance into the permanent factor")
+    print("  destroys the cycling the store lives on.")
     print()
-    print(f"  Reallocating variance instead (section 2) costs the store up to "
-          f"{max(abs(r[5]) for r in matched_store):.2%} and the")
-    print(f"  struck swing up to {max(abs(r[5]) for r in matched_struck):.2%}. That is the "
-          f"short factor being cut, not the long")
-    print("  factor being added, and it is why a variance-matched comparison cannot")
-    print("  isolate a factor on its own: the two have different variance term")
-    print("  structures, so no single matching horizon holds both fixed.")
+    print("  The struck swing's answer DEPENDS ON THE ANCHOR, and so does its SIGN:")
+    print("  +0.58 % against -10.23 % at one and the same sigma_xi. Holding spot variance")
+    print("  fixed it gains, because the walk's variance keeps accumulating where the OU")
+    print("  factor's saturates, so a longer-dated option sees more terminal variance.")
+    print("  Holding terminal variance fixed removes precisely that, and it loses.")
     print()
-    print("  For P4.1: the storage rationale is gone and does not come back. The case")
-    print("  for a second factor has to be made on struck or fee-bearing contracts,")
-    print("  and it is a real case -- but a 1.3 % one at plausible parameters, not the")
-    print("  order-of-magnitude effect the original note implied for storage.")
+    print("  So this probe cannot say what a second factor is worth, and nor can any")
+    print("  single-number anchor: the two factors differ in their variance TERM")
+    print("  STRUCTURE, which is the thing a real calibration fits and no scalar")
+    print("  captures. What it does establish is that the question is a CALIBRATION")
+    print("  question rather than a valuation-architecture one -- the order the reply")
+    print("  to the review set, and the reason to fit the forward panel first.")
 
 
 if __name__ == "__main__":

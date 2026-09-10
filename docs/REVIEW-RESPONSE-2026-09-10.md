@@ -260,29 +260,43 @@ The homogeneity reduction removes the storage rationale entirely. What survives:
 - A second factor may still be needed for **struck swings**, where homogeneity fails. That
   is one experiment, and it should precede any lattice work.
 
-> **Done, later the same evening** — [`two_factor_probe.py`](../two_factor_probe.py). Four
-> contracts, the long factor varied with the short factor held fixed:
+> **Done, later the same evening** — [`two_factor_probe.py`](../two_factor_probe.py), and
+> the first answer it gave was wrong in a way worth recording.
 >
-> | contract | homogeneous | gain from the long factor |
-> |---|---|---:|
-> | zero-fee store | yes | **0.0000 %** at any `sigma_xi`, to ten decimals |
-> | unstruck swing | yes | **0.0000 %** |
-> | store, EUR 2/MWh each leg | no | 13.72 % at `sigma_xi` 0.8 |
-> | call swing, strike 20 | no | 74.91 % at `sigma_xi` 0.8, **1.3 %** at 0.1 |
+> **The exact result.** At a *fixed* short factor, a homogeneous contract does not depend
+> on the long factor at all — a zero-fee store and an unstruck swing are invariant to ten
+> decimals at any `sigma_xi`, while a fee-bearing store and a struck swing both move. That
+> is a theorem, and it stands.
 >
-> The reduction is exactly a statement about homogeneity, not about storage, and the storage
-> rationale does not come back. The case for a second factor is real on struck and
-> fee-bearing contracts — but at a plausible `sigma_xi` of 0.1 against a short factor of 0.6
-> it is worth about **1.3 %**, roughly flat in kappa. An order of magnitude less than the
-> design note implied, and it belongs to swings rather than to storage.
+> **But it is the wrong comparison.** Bolting an independent factor on top of an unchanged
+> `sigma_chi` strictly increases total volatility, and more volatility is worth more to any
+> option. A jointly calibrated two-factor model fits the same observed volatility with
+> *both* factors, so **`sigma_chi` must come down**. The "1.3 % for a struck swing" figure
+> first reported here was measured at fixed `sigma_chi` and is withdrawn.
 >
-> One methodological note, because the first version of this got it wrong. A
-> **variance-matched** comparison does *not* isolate the factor: cutting `sigma_chi` to hold
-> total terminal variance fixed moves the store too, by up to 5.09 %, and that is entirely
-> the reduced short factor rather than the added long one — section 1 of the probe shows the
-> store does not depend on `sigma_xi` at all. The two factors have different variance term
-> structures, so no single matching horizon holds both fixed. Hold the short factor fixed
-> instead, and the contrast is clean.
+> Redone with the short factor cut to hold a stated anchor, at `sigma_xi` 0.10 and kappa 4:
+>
+> | contract | spot-variance anchor | terminal-variance anchor |
+> |---|---:|---:|
+> | zero-fee store | −0.34 % | −5.09 % |
+> | unstruck swing | −0.14 % | −2.35 % |
+> | store, EUR 2/MWh legs | −0.55 % | −11.19 % |
+> | call swing, strike 20 | **+0.58 %** | **−10.23 %** |
+>
+> Two things follow. **A calibrated second factor costs a store value** — up to 8 % across
+> the range tested — because a store monetises short-horizon variance and the long factor
+> is where that variance went. So storage is *not* indifferent to the second factor after
+> all; the channel is the short-factor estimate rather than the extra state, exactly as the
+> reply said. The effect grows with kappa and vanishes as kappa → 0, where the two factors
+> are nearly the same process.
+>
+> And **the struck swing's sign depends on the anchor**: it gains holding spot variance
+> fixed, because the walk's variance accumulates where the OU factor's saturates, and loses
+> holding terminal variance fixed, because that is precisely what the anchor removes. Same
+> contract, same `sigma_xi`, opposite conclusions. No single-number anchor settles this —
+> the two factors differ in their variance *term structure*, which is what a real
+> calibration fits. Which makes P4.1 a calibration question rather than a
+> valuation-architecture one, and the panel fit comes first.
 - If a two-factor engine is built anyway, the review's §8 acceptance gates replace the
   design's — analytic moments, joint transition validity, hard feasibility, controlled
   one-factor and zero-volatility limits, convergence in both factor and inventory grids.

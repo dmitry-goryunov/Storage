@@ -2719,25 +2719,60 @@ def test_a_common_long_factor_is_worth_nothing_to_a_homogeneous_contract():
                 assert value_of(sig_xi) == pytest.approx(base, rel=1e-12), (kappa, sig_xi)
 
 
-def test_a_strike_or_a_cash_fee_restores_the_case_for_a_long_factor():
-    """And it is a real case, but a small one at plausible parameters.
+def test_a_calibrated_second_factor_takes_volatility_out_of_the_short_one():
+    """Which is the comparison that matters, and it reverses the storage answer.
 
-    `S - K` is not homogeneous, so scale invariance breaks, the policy starts
-    depending on the price level, and the long factor has something to say. At a
-    modest sigma_xi of 0.1 against a short factor of 0.6 a struck swing gains
-    about 1.3 %, roughly flat in mean reversion -- not the order-of-magnitude
-    effect the September design note implied for storage.
+    Adding a long factor on top of an unchanged `sigma_chi` is not a second
+    factor, it is more volatility -- and more volatility is worth more to any
+    option. A jointly calibrated model fits the same observed variance with both
+    factors, so `sigma_chi` comes down. Then a store LOSES value, because it
+    monetises short-horizon variance and that is precisely what moved. The test
+    above would tell you storage is unaffected; the channel is the short-factor
+    estimate, not the extra state.
     """
     import two_factor_probe as probe
 
-    for kappa in (0.2, 1.0, 4.0):
-        struck = probe.value_swing(kappa, 0.1, strike=20.0)
-        plain = probe.value_swing(kappa, 0.0, strike=20.0)
-        assert 0.005 < (struck - plain) / plain < 0.05, (kappa, plain, struck)
+    for kappa, floor in ((1.0, 0.004), (4.0, 0.02)):   # 0.63 % and 2.88 % measured
+        chi = probe.matched_sig_chi(0.3, "spot")
+        one = probe.value_store(kappa, 0.0)
+        two = probe.value_store(kappa, 0.3, sig_chi=chi)
+        assert (one - two) / one > floor, (kappa, one, two)
 
-        fee_two = probe.value_store(kappa, 0.1, fee=2.0)
-        fee_one = probe.value_store(kappa, 0.0, fee=2.0)
-        assert fee_two > fee_one * 1.001, (kappa, fee_one, fee_two)
+    # And it fades as mean reversion does: at slow reversion the two factors are
+    # nearly the same process, so which one holds the variance barely matters.
+    slow = probe.value_store(0.2, 0.3, sig_chi=probe.matched_sig_chi(0.3, "spot"))
+    assert abs(slow - probe.value_store(0.2, 0.0)) / slow < 1e-4, slow
+
+
+def test_what_a_second_factor_is_worth_depends_on_the_calibration_anchor():
+    """Down to its sign, which is why no scalar anchor settles this.
+
+    `S - K` is not homogeneous, so a struck swing does depend on the long factor.
+    But hold instantaneous spot variance fixed and it GAINS, because the walk's
+    variance accumulates where the OU factor's saturates; hold terminal variance
+    fixed and it LOSES, because that is exactly what the anchor removes. Same
+    contract, same sigma_xi, opposite conclusions -- so the two factors differ in
+    their variance term structure, which a real calibration fits and no single
+    number captures.
+    """
+    import two_factor_probe as probe
+
+    kappa, sig_xi = 4.0, 0.10
+    base = probe.value_swing(kappa, 0.0, strike=20.0)
+    by_spot = probe.value_swing(
+        kappa, sig_xi, strike=20.0, sig_chi=probe.matched_sig_chi(sig_xi, "spot"))
+    by_terminal = probe.value_swing(
+        kappa, sig_xi, strike=20.0,
+        sig_chi=probe.matched_sig_chi(sig_xi, "terminal", kappa=kappa))
+
+    assert by_spot > base, (base, by_spot)
+    assert by_terminal < base, (base, by_terminal)
+    assert probe.matched_sig_chi(sig_xi, "terminal", kappa=kappa) <         probe.matched_sig_chi(sig_xi, "spot") < probe.SIG_CHI
+
+    # The spot anchor is horizon- and kappa-free; the terminal one is neither.
+    assert probe.matched_sig_chi(0.3, "spot") == pytest.approx(np.sqrt(0.36 - 0.09))
+    tight = probe.matched_sig_chi(0.3, "terminal", kappa=4.0)
+    assert not np.isfinite(tight), tight        # the budget is already spent
 
 
 def test_the_probe_would_catch_its_own_lattice_going_wrong():

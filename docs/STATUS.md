@@ -13,7 +13,7 @@ together. Update this file when that changes — a status document that lags is 
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **114 passed** |
+| Tests | `python -m pytest -q` → **115 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -176,7 +176,7 @@ the document to argue with.
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | ~~P2.2~~ | ~~Scale-aware exercise tie threshold~~ | **Considered and declined 2026-09-10.** It cannot misprice a deal — nominal cash is identical to nine decimals whether the store turns once or twice — but it can double the reported hedge, and only at a rate near 1e-9 with a hundredfold size contrast. Left as is |
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |
-| P4.1 | A second factor — **rescoped onto struck contracts** | The correlations stand (c1/c6 **0.801**, c6/c12 **0.771**, c1/c24 **0.633**) but the shortfall is **3.1×**, not nine. A common long factor is worth **exactly nothing** to a *homogeneous* contract — a zero-fee store or an unstruck swing, invariant to ten decimals at any `sigma_xi`. A strike or a cash fee restores the case: a struck swing gains about **1.3 %** at a plausible `sigma_xi` of 0.1. Real, and an order of magnitude smaller than the note claimed for storage. [`two_factor_probe.py`](../two_factor_probe.py) is the experiment |
+| P4.1 | A second factor — **it is a calibration question, not an architecture one** | The correlations stand (c1/c6 **0.801**, c6/c12 **0.771**, c1/c24 **0.633**) but the shortfall is **3.1×**, not nine. At a *fixed* short factor a common long factor is worth exactly nothing to a homogeneous contract — true, and misleading on its own. A **calibrated** second factor takes volatility out of `sigma_chi`, and then a store **loses** up to **8 %**, because a store monetises short-horizon variance and that is what moved. For a struck swing even the SIGN depends on the calibration anchor (**+0.58 %** holding spot variance fixed, **−10.23 %** holding terminal variance fixed, same contract and same `sigma_xi`). No scalar anchor settles it. [`two_factor_probe.py`](../two_factor_probe.py) is the experiment; the panel fit comes first |
 | ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
 | ~~P4.4~~ | ~~Report hedge stability~~ | **Done 2026-09-10.** A 1 % bump per month, measured against the book's largest position. Oct–Dec move 0.1 %; Apr–Aug move 44–51 %, because months priced alike leave the optimiser flipping between them |
 | **P4.3** | **Calibrate at the sensitivity that matters** | A spot-fitted vol is the wrong target for a spread product; the answer swings tenfold across plausible `sMR` |
