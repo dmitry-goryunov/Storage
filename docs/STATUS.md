@@ -188,7 +188,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 101 tests, ~38 s
+python -m pytest -q                  # 115 tests, ~90 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below
@@ -214,7 +214,9 @@ charts. The other committed outputs are unchanged by this review.
 
 | | |
 |---|---|
-| [`docs/REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md) | **Read alongside the two below.** What survived an independent review of them, what did not, and the outstanding work ranked |
+| [`docs/FINDINGS-2026-09-10-evening.md`](FINDINGS-2026-09-10-evening.md) | **Start here for the evening.** What was done, what was discovered doing it, and what is left — including three claims of mine that were wrong |
+| [`docs/REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md`](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md) | The reply to the response: three qualifications, and the delivery order the repairs followed |
+| [`docs/REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md) | What survived the independent review, what did not, and the outstanding work ranked |
 | [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
 | [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |

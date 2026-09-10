@@ -43,6 +43,8 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 |---|---|
 | `storage_model.py` | Core library — curve utilities, `Storage` class, valuation wrappers, and metric computation |
 | `storage_kernels.py` | Numba-compiled kernels (tree core, DP solver, probabilities). Kept separate so edits to `storage_model.py` do not invalidate the Numba disk cache (avoids 20-40s recompiles) |
+| `benchmarks.py` | Executable fixtures — every contested configuration with its source revision and package versions, the inventory- and price-grid convergence ladders, and the realised-forward spread statistics. Run it directly: `python benchmarks.py` |
+| `two_factor_probe.py` | Independent small DP for the P4.1 question — what a second price factor is worth, and why the answer depends on the calibration anchor |
 | `streamlit_app.py` | Streamlit app — value a single swing/storage deal interactively |
 | `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |
 | `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal; the most feature-complete path (per-deal `sMR`, deal-independent daily curve, asymmetric inject/withdraw rates) |
