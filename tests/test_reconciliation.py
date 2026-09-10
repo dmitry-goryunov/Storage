@@ -2028,3 +2028,52 @@ def test_a_flat_month_makes_intra_month_churn_exactly_free():
         return np.clip(moved, 0, None).sum(axis=(1, 2)).sum()
 
     assert smooth_volume(1e-6) == pytest.approx(smooth_volume(0.0), rel=1e-9)
+
+
+def test_the_intrinsic_hedge_is_the_intrinsic_schedule():
+    """With no price uncertainty, delta collapses onto volume.
+
+    `delta[i] = E[S_i Q_i] / F_i`. On an `n_p = 0` tree there is one price state,
+    so `E[S | exercise] = F` and the hedge equals the schedule exactly. That is
+    what makes "intrinsic delta" meaningful: it is what you trade today to lock
+    the intrinsic value and then leave alone, and
+
+        total delta = intrinsic delta + extrinsic delta
+
+    mirrors the value split. For a store the intrinsic delta nets to zero -- the
+    deterministic schedule is a closed cycle -- so every MWh of net hedge is
+    extrinsic, which is not obvious until the two are shown apart.
+    """
+    months = {1: 30.0, 2: 30.0, 3: 25.0, 4: 25.0, 5: 25.0, 6: 25.0,
+              7: 25.0, 8: 25.0, 9: 25.0, 10: 30.0, 11: 30.0, 12: 30.0}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series([months[d.month] for d in span], index=span)
+
+    def model_for(n_p):
+        base = dict(product_type="storage", valDate="2026-06-01",
+                    storageStart="2027-01-01", storageEnd="2027-12-31",
+                    capacity_mwh=600_000.0, daily_max=20_000.0, clips_per_day=2,
+                    inj_rate=2, wdr_rate=1, initial_inv_clips=0, terminal_inv_clips=0,
+                    inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=n_p,
+                    run_intrinsic=False, discount_rate=0.10, daily_curve=curve)
+        return sm.run_valuation(None, base)[0]
+
+    deterministic = model_for(0)
+    n = deterministic.n_t
+    intrinsic_delta = np.asarray(deterministic.delta[:n])
+    intrinsic_volume = np.asarray(deterministic.exp_ex[:n])
+
+    scale = max(float(np.abs(intrinsic_volume).sum()), 1.0)
+    np.testing.assert_allclose(intrinsic_delta, intrinsic_volume, rtol=0, atol=1e-9 * scale)
+
+    # A closed cycle, so the locked-in hedge is volume-neutral...
+    assert abs(intrinsic_delta.sum()) < 1e-9 * scale, intrinsic_delta.sum()
+
+    # ...while the full hedge is not, and the difference is all extrinsic.
+    full = model_for(20)
+    total_delta = np.asarray(full.delta[:full.n_t])
+    assert abs(total_delta.sum()) > 1e-4 * scale, total_delta.sum()
+
+    extrinsic_delta = total_delta - intrinsic_delta
+    np.testing.assert_allclose(extrinsic_delta.sum(), total_delta.sum(),
+                               rtol=0, atol=1e-9 * scale)
