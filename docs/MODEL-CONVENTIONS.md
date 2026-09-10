@@ -305,6 +305,36 @@ the level and the call sells 4.395 above it. In log terms that is −0.1104 agai
 tail turns a smaller log move into a larger euro move. The gap widens with vol (0.078 at
 30 %, 0.215 at 50 %). A symmetric result in euros would be the bug.
 
+## Fuel loss, and why it splits volume from hedge
+
+`fuel_loss` is the fraction of injected gas retained for compression, so putting one clip
+into inventory takes `1/(1 - fuel_loss)` clips out of the market. Real storage retains 1–2 %.
+It defaults to `0.0`, which changes nothing.
+
+**It scales the price, not the cost.** The fuel is taken in kind, so what it costs depends on
+what gas is worth that day; `inj_cost` is a fixed EUR/MWh and cannot express that. The charge
+therefore lands on the price leg in the kernel: the per-clip injection cash becomes
+`-price * inj_fuel_mult - inj_cost`. On the reference store 1.5 % retention costs **8.9 %** of
+value — 3,211,211 EUR falling to 2,925,871 — because it both taxes every cycle and removes
+the marginal ones.
+
+**Decision D-O3, 2026-09-10: `exp_ex` stays physical, `delta` becomes the traded volume.**
+With a loss the two part company, and they answer their usual different questions:
+
+| | |
+|---|---|
+| `exp_ex` | gas that moves in and out of the store. Still nets to zero over a cycle — a store gives back what it takes |
+| `delta` | MWh of forward to trade, which on the way *in* is `1/(1 - fuel_loss)` times the inventory move, and on the way *out* is equal to it |
+
+Measured on a deterministic tree, where `E[S | exercise] = F` makes the ratio exact: at 1.5 %
+loss, `delta / physical` is 1.015228 on injection days and 1.000000 on withdrawal days.
+
+The convention is not arbitrary — it is the one under which **the repricing identity still
+closes**. `sum_i DF_i · delta_i · F_i == V0` holds at 1.8e-15 for every loss tested. Had
+`delta` remained the inventory volume, the identity would have needed a separate fuel term
+and the reported hedge would no longer have repriced the deal, which is the test that told
+us which convention was right.
+
 ## Ratchets, and the grid they need
 
 `ratchets` takes a table of fullness to rate multiplier, and the daily rate at inventory

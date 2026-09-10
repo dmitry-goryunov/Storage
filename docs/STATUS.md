@@ -8,7 +8,7 @@ changes — a status document that lags is worse than none.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **98 passed** |
+| Tests | `python -m pytest -q` → **101 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -170,7 +170,7 @@ first — the work that did not is finished.
 | P2.2 | Scale-aware exercise tie threshold | `1e-6` is absolute, on values that scale with deal size |
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |
 | **P4.1** | **A second factor, so the seasonal spread can move** | One factor means any two forwards correlate **exactly 1.000**, so the summer/winter spread carries about 1.03 EUR/MWh of uncertainty against a 12.00 EUR/MWh spread. Storage extrinsic comes out at 4.2 % of value and *rises* with mean reversion — it is measuring short-term cycling, not spread optionality |
-| **P4.2** | **Volumetric fuel loss** | Not modelled: only EUR/MWh costs, so 100 MWh injected is always 100 MWh withdrawable. At 1–2 % retention that is 150,000–300,000 EUR on the reference deal, against 282,000 EUR of total extrinsic |
+| ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
 | **P4.3** | **Calibrate at the sensitivity that matters** | A spot-fitted vol is the wrong target for a spread product; the answer swings tenfold across plausible `sMR` |
 
 Also open and needing a data source rather than a decision: **`ttf q.xlsx` row 4172** (quote
@@ -180,7 +180,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 98 tests, ~37 s
+python -m pytest -q                  # 101 tests, ~38 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below

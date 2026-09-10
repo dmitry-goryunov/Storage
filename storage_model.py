@@ -114,7 +114,7 @@ class Storage:
 
     def __init__(self, valDate, storageStart, storageEnd,
                  curve=None, n_p=0, v_step=1000, sVol=0.9, sMR=1.0, clips_per_day=3,
-                 daily_curve=None, discount_rate=0.0):
+                 daily_curve=None, discount_rate=0.0, fuel_loss=0.0):
         self.valDate      = pd.Timestamp(valDate)
         self.storageStart = pd.Timestamp(storageStart)
         self.storageEnd   = pd.Timestamp(storageEnd)
@@ -160,6 +160,16 @@ class Storage:
         # day's cash flow by this, so a positive rate makes it prefer earlier
         # exercise -- with rate 0 (the default) it is all ones and nothing changes.
         # Assign self.d_curve directly for a real, non-flat discount curve.
+        # Fuel retained on injection, as a fraction of the gas bought. Putting one
+        # clip into inventory therefore takes 1/(1 - fuel_loss) clips out of the
+        # market. Real storage retains 1-2 %; the default of 0 keeps every existing
+        # valuation unchanged.
+        self.fuel_loss = float(fuel_loss)
+        if not 0.0 <= self.fuel_loss < 1.0:
+            raise ValueError(
+                f"fuel_loss is a fraction of injected gas retained and must be in [0, 1); "
+                f"got {self.fuel_loss}. For 1.5 % pass 0.015.")
+        self.inj_fuel_mult = 1.0 / (1.0 - self.fuel_loss)
         self.discount_rate = float(discount_rate)
         self.d_curve = discount_factors(self.n_t, self.discount_rate)
 
@@ -262,7 +272,8 @@ class Storage:
         self.v, self.strat = run_model(
             self.n_t, self.n_p, self.n_op, self.v_step, self.x, p_u, p_m, p_d,
             self.d_curve, self.i_curve, self.w_curve, self.i_cost, self.w_cost,
-            self.t_p_curve, self.i_ratch, self.w_ratch, self.mintunnel, self.max_tunnel)
+            self.t_p_curve, self.i_ratch, self.w_ratch, self.mintunnel, self.max_tunnel,
+            self.inj_fuel_mult)
 
         self.prob = probabilities(
             self.n_t, self.n_p, self.n_op, q, self.strat, p_u, p_m, p_d,
@@ -279,7 +290,8 @@ class Storage:
         self.exp_ex, self.delta = compute_all_metrics(
             self.n_t, self.n_p, self.n_op, self.prob, self.strat,
             self.i_ratch, self.w_ratch, self.v_step,
-            self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd)
+            self.w_curve, self.i_curve, self.d_curve, self.x, self.fwd,
+            self.inj_fuel_mult)
         self.delta_pv = list(np.asarray(self.delta[:self.n_t]) * self.d_curve) + [0.0]
 
         return self
@@ -1048,7 +1060,7 @@ def value_storage(curve, params):
     inj_rate = int(params["inj_rate"]) if params.get("inj_rate") is not None else cpd
     wdr_rate = int(params["wdr_rate"]) if params.get("wdr_rate") is not None else cpd
     clips_per_day = max(inj_rate, wdr_rate)
-    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day, discount_rate=params.get("discount_rate", 0.0))
+    s = Storage(params["valDate"], params["storageStart"], params["storageEnd"], curve=curve, daily_curve=params.get("daily_curve"), n_p=0, v_step=v_step, sVol=params["vol"], sMR=params.get("sMR", 1.0), clips_per_day=clips_per_day, discount_rate=params.get("discount_rate", 0.0), fuel_loss=params.get("fuel_loss", 0.0))
     apply_funding_rate(s, params, "both", 0.0)
     n, active = active_masks(s)
     s.i_curve = inj_rate * active
@@ -1192,12 +1204,20 @@ def build_tree(price_curve, n_t, n_p, vol_curve, mr_curve):
 # ── Valuation helpers ─────────────────────────────────────────────────────────
 
 def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
-                        w_curve, i_curve, d_curve, x, fwd):
+                        w_curve, i_curve, d_curve, x, fwd, inj_fuel_mult=1.0):
     # strat holds the signed clip count moved per state (neg=withdraw, pos=inject).
     action = strat[:n_t] * v_step               # MWh moved per (time, price, vol)
 
     pa     = prob * action
     exp_ex = list(-pa.sum(axis=(1, 2))) + [0.0]
+
+    # With fuel loss the gas bought exceeds the gas stored, so the market volume
+    # and the inventory volume part company. `exp_ex` stays physical -- it is what
+    # the store holds -- while `delta` is scaled on the injection leg, because the
+    # hedge is what you trade, not what you keep. Decision D-O3, 2026-09-10: with
+    # `fuel_loss = 0` the two coincide and nothing changes.
+    traded = np.where(action > 0.0, action * inj_fuel_mult, action)
+    pa_traded = prob * traded
 
     # `delta` is an UNDISCOUNTED physical hedge volume: the forward MWh to trade
     # (decision D-O2). Hedging day i with h forwards gives PV = h*DF_i*F_i*eps
@@ -1207,7 +1227,7 @@ def compute_all_metrics(n_t, n_p, n_op, prob, strat, i_ratch, w_ratch, v_step,
     # 3 %, 7.7 % at 5 %). The discount weights belong in the repricing identity
     # instead: sum_i d_curve[i] * delta[i] * fwd[i] == v[0, n_p, initial_state].
     exp_x    = np.exp(x)[:, :, None]
-    delta    = list(-(pa * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
+    delta    = list(-(pa_traded * exp_x).sum(axis=(1, 2)) / fwd[:n_t]) + [0.0]
 
     return exp_ex, delta
 

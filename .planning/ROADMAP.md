@@ -119,6 +119,24 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 4. Review the 0.9 default annualised volatility and document or change it with
    calibration evidence (remaining part of finding 16).
 
+## Deferred: calibration and backtesting
+
+**Decided 2026-09-10.** Both are deliberately deferred, not forgotten, and the reason is worth
+recording because the data for them is already in the repository.
+
+`ttf q.xlsx` carries 4,117 day-ahead prints alongside the forward curves, 2010-03-12 to
+2026-03-06, with no gap over three days. So for any historical quote date there is both the
+curve to price a deal on and the realised path to score it against, and all fourteen mid-year
+dates from 2011 to 2024 have a full year of realised prices after them. A rolling backtest is
+therefore a matter of writing the harness, not of finding data.
+
+That matters because the two are one job. `sVol` 0.9 and `sMR` 1.0 have no provenance, and
+the same file gives 0.409, 1.083 and 0.549 across three regimes — a judgement about which
+regime the deal resembles, until a backtest turns it into an out-of-sample measurement.
+
+Until then every number this model produces remains verified rather than validated, and the
+P1 to P4 items below are improvements argued from first principles rather than from evidence.
+
 ## Priority 4: model capability
 
 Not defects. The model computes what it claims and 91 tests say so. These are things it
@@ -153,13 +171,17 @@ by what they are worth against what they cost.
    outputs -- the wrong model with the right sensitivity, which is defensible only when
    documented.
 
-2. **Volumetric fuel loss.** Not modelled at all. `value_storage` reads `inj_cost` and
+2. **DONE 2026-09-10 — volumetric fuel loss.** Was not modelled at all. `value_storage` reads `inj_cost` and
    `wdr_cost` in EUR/MWh and nothing volumetric, so injecting 100 MWh always makes 100 MWh
    available to withdraw. Real storage retains 1-2 % of injected gas as fuel. On a 600,000
    MWh deal at ~25 EUR/MWh that is 150,000-300,000 EUR -- comparable to the entire extrinsic
    value of 282,000 EUR on the same deal, so it is first-order for storage and currently
-   absent. Much cheaper than item 1: scale the volume that arrives in inventory against the
-   volume injected, in the transition.
+   absent. Implemented as a multiplier on the injection price leg rather than on the volume,
+   because the fuel is taken in kind and so scales with the price, which a fixed `inj_cost`
+   cannot express. 1.5 % retention costs 8.9 % of value on the reference store. It also
+   forced decision D-O3: `exp_ex` stays physical while `delta` becomes the traded volume,
+   `1/(1 - loss)` times the inventory move on the way in — the convention under which the
+   repricing identity still closes, at 1.8e-15.
 
 3. **Calibrate at what the product is sensitive to.** Related to P3.4 but sharper than it. A
    vol fitted to front-month spot returns is calibrated to the wrong quantity for a spread

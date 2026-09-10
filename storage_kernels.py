@@ -80,7 +80,8 @@ def _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt):
 @jit(nopython=True, parallel=True, cache=True)
 def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
               d_curve, i_curve, w_curve, i_cost, w_cost,
-              t_p_curve, i_ratch, w_ratch, mintunnel, max_tunnel):
+              t_p_curve, i_ratch, w_ratch, mintunnel, max_tunnel,
+              inj_fuel_mult):
     """
     Backward induction. On each active day the controller may move ANY integer
     number of clips between 0 and the daily rate (further capped by remaining
@@ -140,7 +141,10 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
 
             price_k = exp_x[i, k]
             pcw = dc * (price_k - w_cost_i)    # per-clip withdraw (sell) profit
-            pci = dc * (-price_k - i_cost_i)   # per-clip inject (buy) profit
+            # Fuel: putting one clip INTO inventory means buying `inj_fuel_mult`
+            # clips in the market, the excess being retained for compression.
+            # It scales the price, not the cost, because the fuel is taken in kind.
+            pci = dc * (-price_k * inj_fuel_mult - i_cost_i)
 
             for l in range(n_op):
                 idle = v_next_l[l]

@@ -2307,3 +2307,90 @@ def test_ratchets_cap_the_store_through_the_exit_not_the_entry():
     # And a floor above that peak is refused rather than approximated.
     with pytest.raises(ValueError, match="floor on 2027-10-01 was not met"):
         peak(True, min_inventory={"2027-10-01": 0.70})
+
+
+def _fuelled_storage(fuel_loss, n_p=15):
+    months = {1: 30.0, 2: 30.0, 3: 24.9, 4: 25.0, 5: 25.0, 6: 25.0,
+              7: 25.0, 8: 25.0, 9: 25.0, 10: 30.0, 11: 30.0, 12: 30.0}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series([months[d.month] for d in span], index=span)
+    model, _ = sm.run_valuation(None, dict(
+        product_type="storage", valDate="2026-06-01", storageStart="2027-01-01",
+        storageEnd="2027-12-31", capacity_mwh=600_000.0, daily_max=20_000.0,
+        clips_per_day=2, inj_rate=2, wdr_rate=1, initial_inv_clips=0,
+        terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0,
+        n_p_full=n_p, run_intrinsic=False, discount_rate=0.10, daily_curve=curve,
+        fuel_loss=fuel_loss))
+    return model
+
+
+def test_fuel_loss_charges_the_gas_it_retains():
+    """Injecting a clip buys 1/(1 - fuel_loss) clips; the excess is burnt.
+
+    Real storage retains 1-2 % of injected gas for compression, and the model had
+    no way to say so -- `inj_cost` is a fixed EUR/MWh and the loss is taken in
+    kind, so it scales with the price. The charge therefore lands on the price
+    leg in the kernel, not the cost leg.
+
+    Default 0.0 leaves every existing valuation untouched.
+    """
+    free = _fuelled_storage(0.0)
+    burnt = _fuelled_storage(0.015)
+    free_value = float(free.v[0, free.n_p, free.initial_state])
+    burnt_value = float(burnt.v[0, burnt.n_p, burnt.initial_state])
+
+    assert burnt_value < free_value, (burnt_value, free_value)
+    assert 0.03 < 1.0 - burnt_value / free_value < 0.2, (
+        f"1.5 % retention should cost a few per cent of value, got "
+        f"{1 - burnt_value/free_value:.1%}")
+
+    with pytest.raises(ValueError, match="fraction of injected gas"):
+        _fuelled_storage(1.5)          # 1.5, meaning 1.5 %
+
+
+def test_fuel_loss_separates_the_gas_stored_from_the_gas_traded():
+    """`exp_ex` stays physical; `delta` becomes the market volume. Decision D-O3.
+
+    With fuel loss the two part company: putting one clip into inventory takes
+    1/(1 - loss) clips out of the market. The hedge is what you trade, so `delta`
+    carries the multiplier on the injection leg and nothing on the withdrawal
+    leg. On an `n_p = 0` tree `E[S | exercise] = F`, so the ratio is exact.
+
+    The store still gives back exactly what it takes -- physical in equals
+    physical out -- which is what makes the two series distinguishable at all.
+    """
+    for loss in (0.0, 0.015, 0.03):
+        model = _fuelled_storage(loss, n_p=0)
+        n = model.n_t
+        physical = np.asarray(model.exp_ex[:n])
+        delta = np.asarray(model.delta[:n])
+
+        injecting = physical < -1e-9
+        withdrawing = physical > 1e-9
+        assert injecting.any() and withdrawing.any()
+
+        into_store = float(np.abs(physical[injecting]).sum())
+        out_of_store = float(np.abs(physical[withdrawing]).sum())
+        assert into_store == pytest.approx(out_of_store, rel=1e-9), (into_store, out_of_store)
+
+        ratio_in = float(np.abs(delta[injecting]).sum() / into_store)
+        ratio_out = float(np.abs(delta[withdrawing]).sum() / out_of_store)
+        assert ratio_in == pytest.approx(1.0 / (1.0 - loss), rel=1e-9), (loss, ratio_in)
+        assert ratio_out == pytest.approx(1.0, rel=1e-9), (loss, ratio_out)
+
+
+def test_the_repricing_identity_survives_fuel_loss():
+    """`sum(DF * delta * F) == V0` still closes, because delta is the traded volume.
+
+    This is the check that D-O3 is the right convention rather than merely a
+    plausible one: had `delta` stayed the inventory volume, the identity would
+    have needed a separate fuel term and the reported hedge would not have
+    repriced the deal.
+    """
+    for loss in (0.0, 0.005, 0.015, 0.03):
+        model = _fuelled_storage(loss)
+        n = model.n_t
+        value = float(model.v[0, model.n_p, model.initial_state])
+        reprice = float(np.dot(model.d_curve[:n] * np.asarray(model.delta[:n]),
+                               np.asarray(model.fwd)[:n]))
+        assert abs(reprice - value) / max(abs(value), 1.0) < 1e-9, (loss, reprice, value)
