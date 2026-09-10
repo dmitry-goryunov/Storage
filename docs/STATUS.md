@@ -171,6 +171,7 @@ first — the work that did not is finished.
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |
 | **P4.1** | **A second factor, so the seasonal spread can move** | One factor means any two forwards correlate **exactly 1.000**, so the summer/winter spread carries about 1.03 EUR/MWh of uncertainty against a 12.00 EUR/MWh spread. Storage extrinsic comes out at 4.2 % of value and *rises* with mean reversion — it is measuring short-term cycling, not spread optionality |
 | ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
+| ~~P4.4~~ | ~~Report hedge stability~~ | **Done 2026-09-10.** A 1 % bump per month, measured against the book's largest position. Oct–Dec move 0.1 %; Apr–Aug move 44–51 %, because months priced alike leave the optimiser flipping between them |
 | **P4.3** | **Calibrate at the sensitivity that matters** | A spot-fitted vol is the wrong target for a spread product; the answer swings tenfold across plausible `sMR` |
 
 Also open and needing a data source rather than a decision: **`ttf q.xlsx` row 4172** (quote

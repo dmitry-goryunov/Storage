@@ -183,6 +183,17 @@ by what they are worth against what they cost.
    `1/(1 - loss)` times the inventory move on the way in — the convention under which the
    repricing identity still closes, at 1.8e-15.
 
+4. **DONE 2026-09-10 — report hedge stability.** A delta is a local derivative and
+   nothing said how local. `Storage_30_60.ipynb` section 4 now bumps each month by
+   1 % and reports how far that month's own hedge moves, against the book's largest
+   position rather than against its own delta, which is meaningless near zero.
+
+   On a curve with six months priced identically the answer is stark: Oct, Nov and
+   Dec move 0.1 % and can be hedged and left, while Apr to Aug move 44 to 51 % of
+   the largest position — the optimiser flips between months it cannot tell apart
+   and the hedge jumps with it. The remedy is in the reader's hands, not the
+   model's: separate the monthly prices, or re-hedge those months.
+
 3. **Calibrate at what the product is sensitive to.** Related to P3.4 but sharper than it. A
    vol fitted to front-month spot returns is calibrated to the wrong quantity for a spread
    product, and the table above shows the answer swinging tenfold across plausible `sMR`.
