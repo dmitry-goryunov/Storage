@@ -13,9 +13,9 @@ together. Update this file when that changes — a status document that lags is 
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **115 passed** |
+| Tests | `python -m pytest -q` → **116 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
-| Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
+| Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 
 ---
 

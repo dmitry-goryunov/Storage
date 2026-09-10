@@ -18,6 +18,7 @@ Run it directly for the table:
 The cases are the ones the review turned on, so a change of answer here is a
 change of answer to the review.
 """
+import os
 import subprocess
 import sys
 import time
@@ -26,6 +27,8 @@ import numpy as np
 import pandas as pd
 
 import storage_model as sm
+
+_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 CAPACITY = 600_000.0
 INJ_MWH_DAY = 20_000.0          # 30 days to fill
@@ -324,18 +327,52 @@ def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
 #   rolls               continuous rank c6 refers to a different delivery month
 #                       after a roll, so month-change observations are optionally
 #                       excluded
-WORKBOOK = "ttf q.parquet"
+# The tracked workbook, NOT `ttf q.parquet` -- that is a gitignored local cache
+# derived from it, so pointing here at the cache made these numbers reproducible
+# on one machine and nowhere else. CI caught it on the first push.
+WORKBOOK = os.path.join(_ROOT, "ttf q.xlsx")
+_PARQUET_CACHE = os.path.join(_ROOT, "ttf q.parquet")
 SPREAD_PAIRS = ((1, 3), (1, 6), (6, 12), (1, 12), (12, 24), (1, 24))
 TRADING_DAYS = 252.0
 
 
-def forward_panel(path=WORKBOOK, since="2015-01-01"):
-    df = pd.read_parquet(path).sort_values("quote_date").reset_index(drop=True)
+def load_quote_matrix(path=None):
+    """The TTF quote matrix, cleaned the way the rest of the project cleans it.
+
+    Reads the parquet cache when it is at least as fresh as the workbook, and
+    rebuilds it from the workbook otherwise -- the same policy as
+    `portfolio_app.load_quote_matrix_local`, and the same cleaning, so the cache
+    and the workbook cannot disagree. Writing the cache is best effort: a
+    read-only checkout should still be able to read the data.
+    """
+    path = WORKBOOK if path is None else path
+    if str(path).endswith(".parquet"):
+        return pd.read_parquet(path)
+    if (os.path.exists(_PARQUET_CACHE)
+            and os.path.getmtime(_PARQUET_CACHE) >= os.path.getmtime(path)):
+        return pd.read_parquet(_PARQUET_CACHE)
+
+    quotes = pd.read_excel(path)
+    quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"})
+    quotes = quotes.dropna(subset=["quote_date"]).copy()
+    quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
+    for column in quotes.columns[1:]:               # "Retrieving..." and friends
+        quotes[column] = pd.to_numeric(quotes[column], errors="coerce")
+    quotes = quotes.sort_values("quote_date").reset_index(drop=True)
+    try:
+        quotes.to_parquet(_PARQUET_CACHE)
+    except Exception:
+        pass
+    return quotes
+
+
+def forward_panel(path=None, since="2015-01-01"):
+    df = load_quote_matrix(path).sort_values("quote_date").reset_index(drop=True)
     return df[df["quote_date"] >= pd.Timestamp(since)]
 
 
 def spread_statistics(pairs=SPREAD_PAIRS, since="2015-01-01", exclude_rolls=False,
-                      path=WORKBOOK):
+                      path=None):
     """Realised correlation and annualised log-ratio volatility, by maturity pair."""
     panel = forward_panel(path, since)
     rows = []
@@ -376,7 +413,7 @@ def model_log_ratio_vol(sigma, kappa, tau_1, tau_2):
 
 
 def spread_comparison(sigma=0.50, kappa=1.0, pair=(6, 12), since="2015-01-01",
-                      path=WORKBOOK):
+                      path=None):
     """Model against realised for one pair, with the maturity approximation stated."""
     tau_1, tau_2 = pair[0] / 12.0, pair[1] / 12.0
     model = model_log_ratio_vol(sigma, kappa, tau_1, tau_2)

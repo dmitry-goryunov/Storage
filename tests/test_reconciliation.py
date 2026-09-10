@@ -2795,3 +2795,27 @@ def test_the_probe_would_catch_its_own_lattice_going_wrong():
         row = row @ narrow[1]
     drifted = float((row * np.exp(narrow[0])).sum())
     assert drifted < np.cosh(0.8 * np.sqrt(probe.DT)) ** (probe.N_T - 1) - 1e-6, drifted
+
+
+def test_the_fixtures_depend_only_on_files_the_repository_carries():
+    """A fixture that reads an untracked file is reproducible on one machine only.
+
+    `benchmarks.py` pointed at `ttf q.parquet`, which is a gitignored local cache
+    derived from `ttf q.xlsx`. Everything passed locally and CI failed on the
+    first push, which is the good outcome -- but the whole point of these
+    fixtures is that someone else can reconstruct the numbers, so the dependency
+    is worth asserting rather than remembering.
+    """
+    import benchmarks
+
+    tracked = set(subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True,
+        check=True).stdout.split("\n"))
+
+    for name, path in (("WORKBOOK", benchmarks.WORKBOOK),):
+        relative = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        assert relative in tracked, f"benchmarks.{name} reads untracked {relative}"
+
+    # The cache is legitimate, but only as a cache: the workbook must be enough.
+    assert not benchmarks.WORKBOOK.endswith(".parquet"), benchmarks.WORKBOOK
+    assert os.path.exists(benchmarks.WORKBOOK), benchmarks.WORKBOOK

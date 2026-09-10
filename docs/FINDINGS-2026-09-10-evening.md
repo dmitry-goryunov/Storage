@@ -126,6 +126,17 @@ Three of my own, made while responding to it:
   `packed-refs.lock` incidents yesterday. As before the operation succeeded and only the
   lock was left behind — which is the part worth knowing, because the error message says
   the opposite.
+- **CI failed on the first push, and it was right to.** `benchmarks.py` read
+  `ttf q.parquet`, a **gitignored local cache** derived from the tracked `ttf q.xlsx`. The
+  fixtures written to make the contested numbers reproducible were reproducible on one
+  machine and nowhere else. It now reads the workbook and treats the parquet as a cache,
+  reproducing the correlations to the last bit either way, and a test asserts that
+  everything the fixtures read is tracked.
+- **A green local run is not evidence about CI.** This machine is behind
+  `requirements-lock.txt` on every pin — NumPy 2.4.3 against 2.5.3, pandas 2.3.3 against
+  3.0.5, Numba 0.65.1 against 0.67.0 — so "115 passing" said nothing about the pinned
+  environment. It was a missing file rather than a version difference this time. Next time
+  it need not be.
 
 ## What to do next
 
