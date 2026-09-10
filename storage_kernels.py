@@ -10,6 +10,22 @@ recompile of all kernels.
 import numpy as np
 from numba import jit, prange
 
+# An inventory state a hard dated bound forbids. Large enough that a mixture of
+# it with any real deal value is still unmistakably infeasible, small enough
+# that propagating it across a few hundred timesteps cannot reach -inf.
+FORBIDDEN = -1e30
+
+# Anything at or below this is infeasibility propagated back to the reported
+# value, not a very bad deal. Real deal values are millions.
+INFEASIBLE_VALUE = -1e20
+
+# Callers mark a disallowed terminal inventory with -1e9 in `t_p_curve`. It is
+# read as a prohibition, not as a price: a penalty a large enough deal can pay is
+# not a constraint, and it left the store buying its way out of the terminal
+# condition and reporting a value of about -1e9 rather than a refusal. A genuine
+# terminal valuation of leftover gas sits far above this.
+TERMINAL_FORBIDDEN = -1e9
+
 
 @jit(nopython=True, cache=True)
 def _tree_core(x, p_u, p_m, p_d, fwd, vol_arr, mr_arr, n_t, n_p, dx, dt):
@@ -90,47 +106,64 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
     actually moved: negative = withdraw, positive = inject, 0 = idle.
     Price dimension (k) uses prange; volume (l) and clip-count (d) are scalar
     loops so the optimal partial-day volume can be searched per state.
+
+    `mintunnel`/`max_tunnel` are HARD dated inventory bounds: an inventory state
+    outside them on day i is inadmissible, and the infeasibility propagates back
+    through every state that could reach it. They were a `1000 * v_step` per-clip
+    penalty until 2026-09-10, which made a contractual breach purchasable -- a
+    deal worth more than the penalty simply paid it, and at a high enough price
+    level a fifth of paths opened a floored day empty. A finite number is not a
+    constraint. Value FORBIDDEN (-1e30) marks an inadmissible state; callers
+    detect an infeasible contract by testing the reported value against
+    `INFEASIBLE_VALUE`, not by re-deriving the schedule.
     """
     n_k_max  = 2*n_p + 1
 
     v     = np.zeros((n_t, n_k_max, n_op), dtype=np.float64)
     strat = np.zeros((n_t, n_k_max, n_op), dtype=np.float64)
 
-    t_p = t_p_curve[:n_op]
-    for ii in range(n_k_max):
-        v[n_t-1, ii] = t_p
-
     l_arr = np.arange(n_op)
     l_f   = l_arr.astype(np.float64)
 
     # Per-timestep max clip counts (already capped at inventory / headroom by the
-    # min() below), tunnel penalty and discounted clip size. Precomputed once.
-    all_wdr_steps  = np.empty((n_t, n_op), dtype=np.int64)
-    all_inj_steps  = np.empty((n_t, n_op), dtype=np.int64)
-    all_tunnel_pen = np.empty((n_t, n_op), dtype=np.float64)
-    all_dc         = np.empty(n_t, dtype=np.float64)
+    # min() below), the hard bound mask and the discounted clip size.
+    all_wdr_steps = np.empty((n_t, n_op), dtype=np.int64)
+    all_inj_steps = np.empty((n_t, n_op), dtype=np.int64)
+    all_barred    = np.empty((n_t, n_op), dtype=np.bool_)
+    all_dc        = np.empty(n_t, dtype=np.float64)
 
     for i in range(n_t):
         wdr_raw = w_curve[i] * w_ratch
         inj_raw = i_curve[i] * i_ratch
-        all_wdr_steps[i]  = np.minimum(wdr_raw, l_f).astype(np.int64)
-        all_inj_steps[i]  = np.minimum(inj_raw, (n_op - 1) - l_f).astype(np.int64)
-        all_tunnel_pen[i] = 1000.0 * v_step * (
-            np.maximum(float(mintunnel[i]) - l_f, 0.0) +
-            np.maximum(l_f - float(max_tunnel[i]), 0.0)
-        )
+        all_wdr_steps[i] = np.minimum(wdr_raw, l_f).astype(np.int64)
+        all_inj_steps[i] = np.minimum(inj_raw, (n_op - 1) - l_f).astype(np.int64)
+        all_barred[i] = ((l_f < float(mintunnel[i]))
+                         | (l_f > float(max_tunnel[i])))
         all_dc[i] = d_curve[i] * v_step
+
+    # The terminal slice carries its own bound: a floor on the last day is as
+    # binding as one in the middle. A disallowed terminal inventory is forbidden
+    # outright rather than priced at -1e9, so that a state which cannot reach a
+    # permitted terminal inventory is infeasible rather than merely expensive.
+    t_p = t_p_curve[:n_op]
+    barred_last = all_barred[n_t-1]
+    for ii in range(n_k_max):
+        for l in range(n_op):
+            if barred_last[l] or t_p[l] <= TERMINAL_FORBIDDEN:
+                v[n_t-1, ii, l] = FORBIDDEN
+            else:
+                v[n_t-1, ii, l] = t_p[l]
 
     # Precompute exp(x) for all (i, k) once — removes exp() from the hot inner loop
     exp_x = np.exp(x)
 
     for i in range(n_t-2, -1, -1):
-        wdr_max    = all_wdr_steps[i]
-        inj_max    = all_inj_steps[i]
-        tunnel_pen = all_tunnel_pen[i]
-        dc         = all_dc[i]
-        w_cost_i   = w_cost[i]
-        i_cost_i   = i_cost[i]
+        wdr_max  = all_wdr_steps[i]
+        inj_max  = all_inj_steps[i]
+        barred   = all_barred[i]
+        dc       = all_dc[i]
+        w_cost_i = w_cost[i]
+        i_cost_i = i_cost[i]
 
         k_lo = max(n_p - i, 0)
         k_hi = min(n_p + i, 2*n_p) + 1
@@ -147,6 +180,13 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
             pci = dc * (-price_k * inj_fuel_mult - i_cost_i)
 
             for l in range(n_op):
+                # Outside a hard dated bound: not a state the contract permits,
+                # so there is nothing to optimise and nothing may route here.
+                if barred[l]:
+                    v[i, k, l]     = FORBIDDEN
+                    strat[i, k, l] = 0
+                    continue
+
                 idle = v_next_l[l]
                 best = idle
                 step = 0
@@ -176,7 +216,7 @@ def run_model(n_t, n_p, n_op, v_step, x, p_u, p_m, p_d,
                     best = idle
                     step = 0
 
-                v[i, k, l]     = best - tunnel_pen[l]
+                v[i, k, l]     = best
                 strat[i, k, l] = step
 
     return v, strat

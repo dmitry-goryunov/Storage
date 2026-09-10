@@ -28,11 +28,14 @@ Symbol glossary (used throughout this module and the kernels)
     i_curve/w_curve   per-day injection/withdrawal permission (clips/day)
     i_cost/w_cost     per-MWh injection/withdrawal cost (a strike enters here)
     i_ratch/w_ratch   per-inventory-level rate multipliers (ratchets)
-    mintunnel/max_tunnel  per-day inventory floor/ceiling
+    mintunnel/max_tunnel  per-day inventory floor/ceiling — HARD constraints
 
-Kernel penalty constants (storage_kernels.py): a forbidden terminal inventory
-carries -1e9; violating a tunnel costs 1000*v_step per clip out of bounds; an
-exercise whose gain over idling is < 1e-6 is snapped to idle (treated as no-trade).
+Kernel constants (storage_kernels.py): a forbidden terminal inventory carries
+-1e9; an inventory state outside a dated bound is FORBIDDEN (-1e30) and cannot
+be entered at any price, with `INFEASIBLE_VALUE` marking that propagated back to
+the reported value; an exercise whose gain over idling is < 1e-6 is snapped to
+idle (treated as no-trade). The tunnel was a 1000*v_step per-clip penalty until
+2026-09-10 — see `apply_inventory_bounds`.
 """
 import numpy as np
 from math import sqrt
@@ -43,7 +46,13 @@ import pandas as pd
 # Numba kernels live in storage_kernels.py so that edits to this file do not
 # invalidate their disk cache (which would trigger a 20-40s recompile).
 # Re-exported here for backward compatibility.
+import storage_kernels as sk
 from storage_kernels import _tree_core, run_model, probabilities
+
+# Floating-point slack when a requested inventory fraction should land exactly on
+# a grid state (0.7 * 10 == 7.000000000000001). Scaled by the state count in
+# `apply_inventory_bounds`. Deliberately far smaller than a clip.
+_GRID_TOLERANCE = 1e-9
 
 
 # ── Curve utilities ───────────────────────────────────────────────────────────
@@ -274,6 +283,12 @@ class Storage:
             self.d_curve, self.i_curve, self.w_curve, self.i_cost, self.w_cost,
             self.t_p_curve, self.i_ratch, self.w_ratch, self.mintunnel, self.max_tunnel,
             self.inj_fuel_mult)
+
+        # Before the forward pass: with hard dated bounds an infeasible contract
+        # leaves `strat` meaningless, so `prob` would flow into forbidden states
+        # and the terminal check below would blame the terminal condition for a
+        # floor that was never reachable.
+        assert_contract_feasible(self)
 
         self.prob = probabilities(
             self.n_t, self.n_p, self.n_op, q, self.strat, p_u, p_m, p_d,
@@ -665,17 +680,32 @@ def apply_inventory_bounds(model, params):
     what the contract says and it survives a change of clip size.
 
     **The bound applies to the balance the day OPENS with**, before that day's
-    injection or withdrawal. That is the model's own convention -- the penalty
+    injection or withdrawal. That is the model's own convention -- the constraint
     attaches to the state at time `i` -- and it is the reading most storage
     contracts intend, but it is not the only one: a report of the closing
     balance will show the day's move already applied and can look a clip short.
     Roadmap P1.1 covers making the choice explicit rather than implied.
 
+    **Rounding is conservative, not nearest.** A floor rounds UP to the next grid
+    state and a ceiling rounds DOWN, so the enforced contract is never weaker
+    than the one asked for. `round()` gave the opposite: on a ten-clip grid a
+    71 % floor became 70 % and a 29 % ceiling became 30 %, each relaxed past what
+    the term sheet says, and the post-check then validated the relaxed bound and
+    saw nothing. Rounding a bound is a change of contract, so it is reported.
+
     Call after `set_volume_states`, which resets the tunnel arrays. The bound is
-    enforced by a penalty rather than a hard constraint, so
-    `assert_inventory_bounds` re-checks it on the built policy.
+    a hard constraint in the DP; `assert_inventory_bounds` independently re-reads
+    the built policy's state distribution rather than trusting it.
+
+    Returns a list of `(index, kind, stamp, fraction, clips)`, where `clips` is
+    the effective grid bound actually enforced.
     """
     n_states = model.n_op - 1
+    # Grid states are exact integers scaled by a fraction, so a requested bound
+    # that lands on a state can miss it by an ulp (0.7 * 10 = 7.000000000000001).
+    # Absorb that much and no more: the tolerance is for floating point, not for
+    # granting a clip.
+    tol = _GRID_TOLERANCE * max(1.0, float(n_states))
     bounds = []
     for key, kind in (("min_inventory", "min"), ("max_inventory", "max")):
         spec = params.get(key)
@@ -694,7 +724,10 @@ def apply_inventory_bounds(model, params):
                     f"{key}[{when}] falls outside the model's grid, which runs "
                     f"{model.valDate:%Y-%m-%d} to {model.backStop:%Y-%m-%d}. A bound the "
                     f"model cannot see would be silently ignored.")
-            bounds.append((index, kind, stamp, fraction, int(round(fraction * n_states))))
+            raw = fraction * n_states
+            clips = (int(np.ceil(raw - tol)) if kind == "min"
+                     else int(np.floor(raw + tol)))
+            bounds.append((index, kind, stamp, fraction, clips))
 
     for index, kind, stamp, fraction, clips in bounds:
         if kind == "min":
@@ -702,43 +735,98 @@ def apply_inventory_bounds(model, params):
         else:
             model.max_tunnel[index] = clips
     for index, _, stamp, _, _ in bounds:
-        if model.mintunnel[index] > model.max_tunnel[index]:
+        floor, ceiling = int(model.mintunnel[index]), int(model.max_tunnel[index])
+        if floor > min(ceiling, n_states):
             raise ValueError(
-                f"inventory bounds cross on {stamp:%Y-%m-%d}: floor "
-                f"{model.mintunnel[index]} clips above ceiling {model.max_tunnel[index]}.")
+                f"inventory bounds leave no admissible state on {stamp:%Y-%m-%d}: the grid "
+                f"holds 0..{n_states} clips, the floor rounds up to {floor} and the ceiling "
+                f"down to {min(ceiling, n_states)}. Conservative rounding cannot satisfy both "
+                f"on a {n_states}-clip grid -- refine the grid so the bounds land on states, "
+                f"or restate them.")
     return bounds
 
 
-def assert_inventory_bounds(model, bounds, tolerance_clips=1e-6):
-    """Verify dated inventory bounds held on the built policy.
+def describe_inventory_bounds(model, bounds):
+    """What was asked for against what the grid can actually express.
 
-    The tunnel is a **penalty**, not a hard constraint: `1000 * v_step` per clip
-    out of bounds. That is large against an ordinary deal but it is a number, not
-    a guarantee, so a big enough contract can pay it and breach the bound. This
-    turns that into a failure rather than a quietly wrong schedule.
+    Rounding a bound to a grid state changes the contract, so both numbers are
+    reported rather than only the enforced one.
+    """
+    n_states = model.n_op - 1
+    rows = []
+    for index, kind, stamp, fraction, clips in bounds:
+        effective = clips / n_states if n_states else float("nan")
+        rows.append({"date": stamp, "bound": kind, "requested": fraction,
+                     "effective": effective, "clips": clips,
+                     "MWh": clips * model.v_step,
+                     "moved by rounding": effective - fraction})
+    return pd.DataFrame(rows)
 
-    Checked on the opening balance, matching `apply_inventory_bounds`.
+
+def assert_inventory_bounds(model, bounds, mass_tolerance=1e-9):
+    """Verify dated inventory bounds on the built policy's state distribution.
+
+    Read directly from `model.prob[index, :, l]`, which IS the law of opening
+    inventory on day `index`. Two earlier versions of this check were wrong in
+    ways that a distribution cannot be:
+
+    * It compared an **expectation** against the bound. An average above a floor
+      says nothing about the states beneath it, and while the tunnel was a finite
+      penalty the optimiser would buy its way below one -- 19.5 % of paths opened
+      a floored day empty at a high enough price level, and this returned
+      quietly.
+    * It rebuilt the balance as `cumsum(net moves)` and added `initial_state` to
+      the first day only, so every later day was short by the opening inventory.
+      A full store that correctly held everything was rejected against a 100 %
+      floor, reported as "0.00 clips against 10".
+
+    `mass_tolerance` absorbs accumulated floating-point error in the forward
+    probability pass. It is not an allowance for a breach: the DP makes an
+    out-of-bounds state inadmissible, so any mass found there is a numerical
+    fault or a bug, and either way not something to price through.
     """
     if not bounds:
         return
-    n = model.n_t
-    moved = model.prob[:n] * model.strat[:n] * model.v_step
-    net = moved.sum(axis=(1, 2))
-    closing = np.cumsum(net)
-    opening = np.concatenate([[float(model.initial_state) * model.v_step], closing[:-1]])
-
+    n_states = model.n_op - 1
     for index, kind, stamp, fraction, clips in bounds:
-        held = opening[index] / model.v_step
-        if kind == "min" and held < clips - tolerance_clips:
-            raise ValueError(
-                f"the {fraction:.0%} floor on {stamp:%Y-%m-%d} was not met: the day opens "
-                f"with {held:.2f} clips against {clips}. The tunnel is a penalty of "
-                f"1000*v_step per clip, and this deal was worth more than that -- raise the "
-                f"penalty or impose the bound as a hard constraint.")
-        if kind == "max" and held > clips + tolerance_clips:
-            raise ValueError(
-                f"the {fraction:.0%} ceiling on {stamp:%Y-%m-%d} was breached: the day opens "
-                f"with {held:.2f} clips against {clips}. See the note above on the penalty.")
+        dist = model.prob[index].sum(axis=0)
+        outside = dist[:clips].sum() if kind == "min" else dist[clips + 1:].sum()
+        if outside <= mass_tolerance:
+            continue
+        held = float((np.arange(model.n_op) * dist).sum())
+        word, side = (("floor", "below"), ("ceiling", "above"))[kind == "max"]
+        raise ValueError(
+            f"the {fraction:.0%} {word} on {stamp:%Y-%m-%d} does not hold: {outside:.6%} of "
+            f"probability opens the day {side} the {clips}-clip bound "
+            f"({clips * model.v_step:,.0f} MWh of {n_states * model.v_step:,.0f}), against a "
+            f"tolerance of {mass_tolerance:.0e}. Expected opening inventory is {held:.2f} "
+            f"clips, which is why an average is not a check. The bound is hard in the DP, so "
+            f"this is a numerical fault rather than an economic choice.")
+
+
+def assert_contract_feasible(model, label="contract"):
+    """Fail loudly when no admissible policy exists, rather than reporting -1e30.
+
+    Dated inventory bounds and the terminal inventory requirement are both hard,
+    and they can be jointly unsatisfiable with the rates, ratchets and date masks.
+    The DP marks those states FORBIDDEN and the infeasibility propagates back to
+    the reported value; without this the caller would divide -1e30 by a volume and
+    print it.
+
+    Both used to be finite penalties, which a large enough deal simply paid.
+    """
+    value = float(model.v[0, model.n_p, model.initial_state])
+    if value > sk.INFEASIBLE_VALUE:
+        return value
+    raise ValueError(
+        f"no admissible policy exists for this {label}: from an opening inventory of "
+        f"{model.initial_state} clips, every schedule either breaches a dated inventory "
+        f"bound or cannot reach a permitted terminal inventory under the configured rates, "
+        f"ratchets and date masks. **A bound refused on a coarse grid may be reachable on a "
+        f"finer one**, because the rates are whole clips and `int(rate x multiplier)` "
+        f"understates a ratcheted rate -- on the reference store the 70 % October floor is "
+        f"refused at 240 clips and met at 480. Refine the clip before concluding that the "
+        f"contract is physically impossible (roadmap P1.4).")
 
 
 def resolve_grid(params, states_key):
@@ -1081,6 +1169,11 @@ def value_storage(curve, params):
     max_vol = n_states * v_step
     if params["run_intrinsic"]:
         s.build()
+        # Both passes price the same contract, so both are checked against it.
+        # Only the stochastic one was, which left the intrinsic schedule free to
+        # breach a bound the reported extrinsic split was then measured against.
+        # (`build` has already established that an admissible policy exists.)
+        assert_inventory_bounds(s, inventory_bounds)
         intrinsic_eur = s.v[0, 0, init_inv]
         intrinsic_profile_raw = np.array(s.exp_ex)
     else:
@@ -1089,7 +1182,8 @@ def value_storage(curve, params):
 
     s.n_p = params["n_p_full"]
     s.build()
-    # The tunnel is a penalty, not a hard constraint, so verify rather than assume.
+    # The bounds are hard in the DP; this re-reads the state distribution rather
+    # than trusting the kernel to have applied them.
     assert_inventory_bounds(s, inventory_bounds)
     total_eur = s.v[0, s.n_p, init_inv]
     extrinsic_eur = total_eur - intrinsic_eur if params["run_intrinsic"] else np.nan

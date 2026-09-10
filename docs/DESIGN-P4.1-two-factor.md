@@ -1,5 +1,49 @@
 # P4.1 — a second factor, so the seasonal spread can move
 
+> ## Correction notice, 2026-09-10 (evening)
+>
+> **Do not implement this plan as written.** An
+> [independent review](INDEPENDENT-REVIEW-2026-09-10.md) found three of its
+> arguments wrong; all three were checked and the review is right. Measurements
+> in [REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md).
+>
+> 1. **The long factor need not add any storage value.** With a common
+>    multiplicative long factor, zero fixed fees, price-independent constraints
+>    and a homogeneous terminal condition, storage cashflows are homogeneous of
+>    degree one, the optimal policy is scale-invariant, and the factor integrates
+>    out against its own martingale. An independent DP agrees to **1e-14** across
+>    κ = 0.2, 1.0, 4.0. Fixed cash fees, a strike, or a factor that changes
+>    *relative* prices break the reduction — so this narrows the case, it does
+>    not close it. Market-model selection and valuation-state reduction are
+>    separate decisions.
+> 2. **The repricing invariant is not lost under LSMC.** With
+>    `delta_i := E[S_i Q_i]/F_i`, `sum_i DF_i delta_i F_i = V_policy` is linearity
+>    of expectation for *any* adapted policy — 5.7e-14 on a deliberately
+>    non-optimal Monte Carlo policy. The fork table below is wrong on the one row
+>    the recommendation rests on. Determinism and exhaustive policy enumeration
+>    are still reasons to prefer a lattice; this is not.
+> 3. **A mean-reversion sign flip is not a valid acceptance test.** The log-ratio
+>    volatility `σ·|e^(−κτ₁) − e^(−κτ₂)|` is non-monotone in κ, peaking at
+>    κ = 1.385. Step 5 would reject a correct model.
+>
+> **Numbers withdrawn:** the "nine times too little" comparison divided by
+> `sqrt(2κ)`, which converts a stationary *level* standard deviation, not the
+> annualised volatility of daily log-ratio *changes*. At σ 0.5, κ 1 the model
+> gives **0.11933** against 0.373 realised — about **3.1×**, and that is one
+> point-maturity comparison, not an established replacement. Delivery averaging,
+> observation alignment, estimation window and parameter provenance all remain
+> unspecified. The **4.2 %** extrinsic baseline and its 1.1 % / 10.5 % endpoints
+> match no recorded configuration; the shipped notebook gives **19.62 %**, and
+> 1.91 % / 36.86 % across the same κ range.
+>
+> **What survives.** The realised correlations (c1/c6 0.801, c6/c12 0.771,
+> c1/c24 0.633) reproduce to six decimals, one factor does understate the
+> seasonal spread, and extrinsic does rise with mean reversion — the review
+> confirms that increase in its own example and objects only to using its
+> reversal as a gate. **Step 1, the calibration, survives intact and is now the
+> whole of the item.** Steps 2–6 need a fresh justification from struck swings or
+> fee-bearing contracts, not from storage value.
+
 Design note, 2026-09-10. Not yet implemented. Written because the item is large enough that
 starting it without agreeing the numerical method would be a mistake, and because the case
 for doing it at all is now measured rather than argued.

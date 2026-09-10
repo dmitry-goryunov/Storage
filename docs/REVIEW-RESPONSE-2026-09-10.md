@@ -5,7 +5,13 @@
 [DESIGN-P4.1-two-factor.md](DESIGN-P4.1-two-factor.md) were written. This is what happened
 when its claims were checked, and what is outstanding as a result.
 
-**Nothing here has been fixed yet.** The ranking at the end is a proposal, not a record.
+**Nothing here had been fixed when this was written.** The ranking at the end was a
+proposal; it was then replied to in
+[REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md),
+which accepted the findings, raised three qualifications (accepted in place below) and set
+the delivery order. **Since then: item 2, the inventory bounds, is repaired and the
+correction notices and [`benchmarks.py`](../benchmarks.py) fixtures are in. Item 1, the
+ratchet discretisation, is still open.**
 
 ---
 
@@ -38,7 +44,7 @@ the review to six decimals, two separate constructions arrived at it.
 | 7 | The repricing identity is not special to an exhaustive DP | **Confirmed** at 5.7e-14 on a deliberately bad policy |
 | 8 | Memory budget and `int8` overflow | **Confirmed** by arithmetic |
 
-Nothing in the review was found to be wrong. Two qualifications are noted at the end.
+Nothing in the review was found to be wrong. One qualification is noted at the end.
 
 ---
 
@@ -144,7 +150,7 @@ not remove the swing case, which is untested.
 
 | where | says | measured |
 |---|---|---|
-| FINDINGS, DESIGN, STATUS | c6/c12 spread vol "**nine times** too little" | **3.1×** — σ·\|a₁−a₂\| = 0.11933 at σ 0.5, κ 1, against 0.373 realised |
+| FINDINGS, DESIGN, STATUS | c6/c12 spread vol "**nine times** too little" | **about 3.1× at one point-maturity comparison** — σ·\|a₁−a₂\| = 0.11933 at σ 0.5, κ 1, against 0.373 pooled raw (3.13×) or 0.37776 excluding rolls (3.17×). The ninefold claim is unsupported as written; **3.1× is illustrative, not an established replacement** — delivery averaging, observation alignment, estimation window and parameter provenance are all still unspecified |
 | FINDINGS, DESIGN | storage extrinsic is "**4.2 %** of value" | **19.62 %** on the shipped notebook, 23.77 % unratcheted. 4.2 % matches no recorded configuration |
 | DESIGN | "1.1 % at sMR 0.2, 10.5 % at sMR 4.0" | **1.91 %** and **36.86 %** ratcheted; 2.64 % and 42.90 % unratcheted |
 | DESIGN | the repricing invariant is "**Lost**" under LSMC | It is an identity for any adapted policy |
@@ -177,14 +183,18 @@ formula at the reference deal's own σ = 0.5, κ = 1.
 
 ## Where to push back
 
-Two small things, neither changing a conclusion.
+One small thing, changing no conclusion.
 
 - The review **understates its own ratchet case**. It cites 16.7 % rate loss, which is the
-  shortfall at the bottom multiplier; at 10 % fullness on the same grid it is 34.2 %.
-- It treats "extrinsic rises with mean reversion" as an unsupported baseline. The *levels*
-  cited are indeed unreproducible, but the *observation* holds on every configuration
-  measured here. What is wrong is using its reversal as a gate, which the review argues
-  separately and correctly.
+  shortfall at the bottom multiplier; at 10 % fullness on the same grid it is 34.2 %. The
+  reply notes correctly that its figure was for a different inventory level and that it
+  explicitly allowed larger errors elsewhere.
+
+> **Withdrawn, later the same evening.** A second bullet here said the review "treats
+> 'extrinsic rises with mean reversion' as an unsupported baseline". It does not: §6.4
+> demonstrates that increase in its own two-factor example, and objects only to the
+> unreproduced numerical baselines and to requiring a sign reversal as a gate. I had read
+> §6.6's dispute of the endpoints as a dispute of the direction.
 
 **Not checked here:** the exploratory covariance fit and PCA shares in §5, the claim that six
 consecutive imposed floors reach only 59.2 %, and the review's process observations about
@@ -206,7 +216,7 @@ inventory level, and gate on value and feasibility convergence at fixed physical
 Retain the zero-rate guard as an early check. Retract the notebook prose, the FINDINGS
 bullets, and replace the test.
 
-### 2. The three inventory-bound defects *(review §2; settles P1.1)*
+### 2. The three inventory-bound defects *(review §2; settles P1.1)* — **DONE**
 
 Three bugs in about thirty lines of [storage_model.py](../storage_model.py). Two give a
 wrong answer, one gives none:
@@ -218,8 +228,11 @@ wrong answer, one gives none:
 - The check compares an expectation. The exact inventory law is one line away; a contractual
   bound needs a probability tolerance, not an expected-inventory comparison.
 
-The third is a decision, not a fix: hard admissibility in the DP versus the present
-`1000·v_step` penalty. That is P1.1's open question, so answer it here.
+The third was a decision, not a fix: hard admissibility in the DP versus the present
+`1000·v_step` penalty. **Answered — hard.** The terminal condition was hardened with it: a
+`-1e9` penalty is purchasable for the same reason, and the store was buying its way out of
+it. Values on deals whose optimal policy already satisfied their bounds are unchanged to the
+euro; only a breach that was profitable moves.
 
 ### 3. Correct the documents
 
@@ -241,10 +254,19 @@ The homogeneity reduction removes the storage rationale entirely. What survives:
 
 ### 5. Calibration itself *(currently deferred)*
 
-The 3.1× spread understatement is real and it is a **one-factor** calibration problem: σ and
-κ are unfit defaults. This is now the highest-value new work in the repo and it is cheaper
-than the item it replaces. Worth reopening ahead of the backtest, which stays deferred — a
-backtest answers "is it better", and nothing is yet better.
+The spread understatement is real and σ and κ are unfit defaults, so this is the
+highest-value new work in the repo and cheaper than the item it replaces. Worth reopening
+ahead of the backtest, which stays deferred — a backtest answers "is it better", and nothing
+is yet better.
+
+> **Corrected, later the same evening.** This called it "a **one-factor** calibration
+> problem", which is premature. The homogeneity reduction removes an extra *valuation state*
+> for one particular factor — a common multiplicative one — under zero fees. It says nothing
+> about a factor that changes *relative* prices, and a joint market calibration can move the
+> short-factor estimate even where valuation later reduces to one state. **Market-model
+> selection and valuation-state reduction are separate decisions.** The comparison should run
+> a one-factor OU baseline, Schwartz–Smith, two differing mean-reversion speeds and a
+> seasonal-loading candidate, without committing in advance to any of them or to Kalman.
 
 One spread observation is one equation in two unknowns. At κ 0.2 the realised 0.373 needs
 σ = 4.33; at κ 1.0, σ = 1.56; at κ 4.0, σ = 3.19. It pins a curve, not a point, so the

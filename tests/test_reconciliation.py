@@ -2100,11 +2100,29 @@ def _dated_storage(**extra):
                   run_intrinsic=False, discount_rate=0.10, daily_curve=curve)
     params.update(extra)
     model, _ = sm.run_valuation(None, params)
+    return (model,) + _opening_and_closing(model)
+
+
+def _opening_and_closing(model):
+    """Expected opening and closing balances, in MWh, from the state distribution.
+
+    `prob[t, :, l]` IS the law of OPENING inventory on day t, so the balance is
+    read rather than rebuilt. The old `cumsum(net moves)` reconstruction added
+    `initial_state` to the first day only and was therefore wrong for every store
+    that starts with gas in it.
+    """
     n = model.n_t
-    closing = np.cumsum((model.prob[:n] * model.strat[:n] * model.v_step).sum(axis=(1, 2)))
-    opening = np.concatenate([[0.0], closing[:-1]])
+    levels = np.arange(model.n_op) * model.v_step
+    opening = (model.prob[:n].sum(axis=1) * levels).sum(axis=1)
+    moved = (model.prob[:n] * model.strat[:n] * model.v_step).sum(axis=(1, 2))
     dates = pd.DatetimeIndex(model.date_span)[:n]
-    return model, pd.Series(opening, index=dates), pd.Series(closing, index=dates)
+    return pd.Series(opening, index=dates), pd.Series(opening + moved, index=dates)
+
+
+def _inventory_law(model, when):
+    """P(opening inventory = l clips) on a given date."""
+    index = (pd.Timestamp(when) - model.valDate).days
+    return model.prob[index].sum(axis=0)
 
 
 def test_dated_inventory_bounds_bind_on_the_opening_balance():
@@ -2153,21 +2171,130 @@ def test_inventory_bounds_refuse_what_they_cannot_honour():
         _dated_storage(min_inventory={"2027-04-01": 70})          # 70, meaning 70 %
     with pytest.raises(ValueError, match="outside the model's grid"):
         _dated_storage(min_inventory={"2030-01-01": 0.5})         # never seen by the DP
-    with pytest.raises(ValueError, match="bounds cross"):
+    with pytest.raises(ValueError, match="no admissible state"):
         _dated_storage(min_inventory={"2027-04-01": 0.8},
                        max_inventory={"2027-04-01": 0.3})
 
 
 def test_an_unmeetable_inventory_floor_fails_rather_than_being_approximated():
-    """The tunnel is a penalty, so a bound can be breached. Say so, do not hide it.
+    """A hard bound has no approximation to offer: either a policy exists or none does.
 
-    A floor above what the injection rate can reach by that date is physically
-    impossible. The optimiser pays the penalty and gets as close as it can, which
-    would otherwise be reported as a valuation of the contract asked for.
+    A floor above what the injection rate can reach by that date is unreachable.
+    While the tunnel was a `1000 * v_step` penalty the optimiser paid it and got
+    as close as it could, and that near-miss was reported as a valuation of the
+    contract asked for. Now no admissible schedule exists and the model says so.
+
+    The message must not blame the terminal condition -- with hard bounds an
+    infeasible contract also leaves no probability at any terminal state, so the
+    order of the two checks is what makes the diagnosis useful.
     """
     # 30 days to fill, so 100 % by 15 January is unreachable from empty on 1 January.
-    with pytest.raises(ValueError, match="floor on 2027-01-15 was not met"):
+    with pytest.raises(ValueError, match="no admissible policy exists"):
         _dated_storage(min_inventory={"2027-01-15": 1.0})
+
+
+def test_inventory_bounds_round_towards_the_contract_never_away():
+    """Rounding a bound to a grid state must not relax it.
+
+    `round()` did, in both directions: on a ten-clip grid a 71 % floor became
+    70 % and a 29 % ceiling became 30 %. Each is the contract the caller did not
+    ask for, and because the post-check validated the ROUNDED bound it reported
+    nothing. A floor now rounds up and a ceiling down, so the enforced contract
+    is never weaker than the requested one.
+    """
+    def effective(kind, fraction, n_states=10):
+        s = sm.Storage("2026-01-01", "2026-01-01", "2026-12-31", curve=None,
+                       daily_curve=pd.Series(30.0, index=pd.date_range(
+                           "2026-01-01", "2026-12-31", freq="D")),
+                       n_p=0, v_step=10.0, sVol=0.5, sMR=1.0, clips_per_day=1)
+        s.set_volume_states(n_states, initial_state=0)
+        bounds = sm.apply_inventory_bounds(s, {f"{kind}_inventory": {"2026-06-01": fraction}})
+        return bounds[0][4] / n_states
+
+    assert effective("min", 0.71) == pytest.approx(0.80)      # up, was 0.70
+    assert effective("max", 0.29) == pytest.approx(0.20)      # down, was 0.30
+    # A fraction that lands on a state stays there: the tolerance is for the ulp
+    # in 0.7 * 10 == 7.000000000000001, not for granting a clip either way.
+    assert effective("min", 0.70) == pytest.approx(0.70)
+    assert effective("max", 0.30) == pytest.approx(0.30)
+
+    # And the rounding is reported rather than applied silently.
+    s = sm.Storage("2026-01-01", "2026-01-01", "2026-12-31", curve=None,
+                   daily_curve=pd.Series(30.0, index=pd.date_range(
+                       "2026-01-01", "2026-12-31", freq="D")),
+                   n_p=0, v_step=10.0, sVol=0.5, sMR=1.0, clips_per_day=1)
+    s.set_volume_states(10, initial_state=0)
+    table = sm.describe_inventory_bounds(
+        s, sm.apply_inventory_bounds(s, {"min_inventory": {"2026-06-01": 0.71}}))
+    assert table.loc[0, "requested"] == pytest.approx(0.71)
+    assert table.loc[0, "effective"] == pytest.approx(0.80)
+    assert table.loc[0, "moved by rounding"] == pytest.approx(0.09)
+
+
+def test_a_bound_is_checked_against_the_inventory_actually_held():
+    """A store that starts full and holds everything satisfies a 100 % floor.
+
+    The old check rebuilt the balance as `cumsum(net moves)` and prepended the
+    initial inventory to the FIRST opening balance only, so every later day was
+    short by the entire opening stock. This exact contract -- start full, end
+    full, flat curve, nothing worth doing -- was rejected as opening "with 0.00
+    clips against 10" while the state distribution held all ten.
+    """
+    curve = pd.Series(30.0, index=pd.date_range("2026-01-01", "2026-12-31", freq="D"))
+    params = dict(product_type="storage", valDate="2026-01-01",
+                  storageStart="2026-01-01", storageEnd="2026-12-31",
+                  v_step=10.0, inj_days=10, clips_per_day=1,
+                  initial_inv_clips=10, terminal_inv_clips=10,
+                  inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=0,
+                  run_intrinsic=False, discount_rate=0.0, daily_curve=curve,
+                  min_inventory={"2026-01-03": 1.0})
+    model, _ = sm.run_valuation(None, params)
+    assert _inventory_law(model, "2026-01-03")[10] == pytest.approx(1.0)
+    opening, _ = _opening_and_closing(model)
+    assert opening["2026-01-03"] == pytest.approx(100.0)
+
+
+def test_a_hard_bound_cannot_be_bought_out_of():
+    """The bound must hold at any price, not merely at ordinary ones.
+
+    While it was a `1000 * v_step` per-clip penalty, a deal worth more than the
+    penalty simply paid it: at a EUR 10,000 price level 19.52 % of paths opened a
+    floored day empty, and the checker -- comparing an EXPECTATION of 7.03 clips
+    against a 2-clip floor -- accepted every one of them. Both halves are fixed
+    here, so the test would fail if either regressed.
+    """
+    val, end = "2026-01-01", "2027-12-31"
+    inj_day, floor_day = pd.Timestamp("2027-01-01"), pd.Timestamp("2027-06-02")
+    n_states, floor_clips = 10, 2
+
+    def priced_at(level):
+        idx = pd.date_range(val, end, freq="D")
+        prices = pd.Series(float(level), index=idx)
+        prices.loc[inj_day] = 1.0                    # one cheap day to fill
+        s = sm.Storage(val, val, end, curve=None, daily_curve=prices, n_p=0,
+                       v_step=1.0, sVol=0.8, sMR=1.0, clips_per_day=n_states)
+        s.set_volume_states(n_states, initial_state=0)
+        s.i_curve = np.zeros(len(s.date_span), dtype=np.int64)
+        s.w_curve = np.zeros(len(s.date_span), dtype=np.int64)
+        s.i_curve[(inj_day - s.valDate).days] = n_states
+        for sell in (pd.Timestamp("2027-06-01"), pd.Timestamp("2027-12-01")):
+            s.w_curve[(sell - s.valDate).days] = n_states
+        s.i_cost[:] = 0.0
+        s.w_cost[:] = 0.0
+        s.t_p_curve = np.full(s.n_op + 2, -1e9)
+        s.t_p_curve[0] = 0.0
+        s.mintunnel[(floor_day - s.valDate).days] = floor_clips
+        s.n_p = 30
+        return s.build()
+
+    for level in (300.0, 1_000.0, 10_000.0):
+        model = priced_at(level)
+        law = _inventory_law(model, floor_day)
+        assert law[:floor_clips].sum() == pytest.approx(0.0, abs=1e-12), (
+            f"probability opened below the floor at a price level of {level:,.0f}")
+        # The contract is still worth something: the optimiser found a feasible
+        # alternative rather than the constraint making it infeasible.
+        assert float(model.v[0, model.n_p, model.initial_state]) > 0.0
 
 
 def _ratcheted_storage(n_states, ratchets=None):
@@ -2262,18 +2389,11 @@ def test_a_zero_ratchet_multiplier_is_left_alone():
     assert plain > 0.0
 
 
-def test_ratchets_cap_the_store_through_the_exit_not_the_entry():
-    """A withdrawal ratchet limits how full a store can usefully get.
+def _exit_ratcheted_store(n_states, ratcheted=True, **extra):
+    """The reference ratcheted store at a chosen inventory clip.
 
-    Filling is not the constraint -- injection still runs at 8 clips/day below
-    half full. Emptying is: withdrawal ratchets to 0.3 near empty, so the last
-    stretch crawls, and the store can only fill to what it can still empty before
-    the window closes. On the reference deal that caps it at 52.5 % against
-    100 % with constant rates.
-
-    The consequence is that ratchets and dated inventory bounds have to be chosen
-    together: a 70 % floor on 1 October is unreachable under this profile, and
-    `assert_inventory_bounds` refuses it rather than pricing a different deal.
+    The PHYSICAL deal is held fixed as the grid is refined -- 600,000 MWh working
+    volume, 20,000 MWh/day in, 10,000 MWh/day out -- so only the resolution moves.
     """
     months = {1: 30.0, 2: 30.0, 3: 24.9, 4: 25.0, 5: 25.0, 6: 25.0,
               7: 25.0, 8: 25.0, 9: 25.0, 10: 30.0, 11: 30.0, 12: 30.0}
@@ -2282,31 +2402,75 @@ def test_ratchets_cap_the_store_through_the_exit_not_the_entry():
     profile = pd.DataFrame({"fullness": [0.0, 0.5, 0.8, 1.0],
                             "injection": [1.0, 1.0, 0.6, 0.3],
                             "withdrawal": [0.3, 0.7, 1.0, 1.0]})
-    capacity, n_states = 600_000.0, 240
+    capacity, inj_mwh, wdr_mwh = 600_000.0, 20_000.0, 10_000.0
+    v_step = capacity / n_states
+    inj_rate, wdr_rate = round(inj_mwh / v_step), round(wdr_mwh / v_step)
+    params = dict(product_type="storage", valDate="2026-06-01",
+                  storageStart="2027-01-01", storageEnd="2027-12-31",
+                  capacity_mwh=capacity, daily_max=inj_rate * v_step,
+                  clips_per_day=inj_rate, inj_rate=inj_rate, wdr_rate=wdr_rate,
+                  initial_inv_clips=0, terminal_inv_clips=0, inj_cost=0.0,
+                  wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
+                  discount_rate=0.10, daily_curve=curve)
+    if ratcheted:
+        params["ratchets"] = profile
+    params.update(extra)
+    model, res = sm.run_valuation(None, params)
+    opening, _ = _opening_and_closing(model)
+    return float(opening.max()) / capacity, float(res["total_eur"])
 
-    def peak(ratcheted, **extra):
-        params = dict(product_type="storage", valDate="2026-06-01",
-                      storageStart="2027-01-01", storageEnd="2027-12-31",
-                      capacity_mwh=capacity, daily_max=8 * capacity / n_states,
-                      clips_per_day=8, inj_rate=8, wdr_rate=4, initial_inv_clips=0,
-                      terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5,
-                      sMR=1.0, n_p_full=0, run_intrinsic=False, discount_rate=0.10,
-                      daily_curve=curve)
-        if ratcheted:
-            params["ratchets"] = profile
-        params.update(extra)
-        model, _ = sm.run_valuation(None, params)
-        n = model.n_t
-        closing = np.cumsum((model.prob[:n] * model.strat[:n] * model.v_step).sum(axis=(1, 2)))
-        return float(np.concatenate([[0.0], closing[:-1]]).max()) / capacity
 
-    assert peak(False) == pytest.approx(1.0, abs=1e-3), peak(False)
-    ratcheted_peak = peak(True)
-    assert 0.4 < ratcheted_peak < 0.7, ratcheted_peak
+def test_the_ratcheted_peak_is_a_property_of_the_grid_not_of_the_store():
+    """The 52.5 % cap was discretisation, and this pins that it is.
 
-    # And a floor above that peak is refused rather than approximated.
-    with pytest.raises(ValueError, match="floor on 2027-10-01 was not met"):
-        peak(True, min_inventory={"2027-10-01": 0.70})
+    Recorded on 2026-09-10 as physical behaviour -- "ratchets cap a store through
+    the exit, so it peaks at 52.5 % full" -- and disproved by the independent
+    review the same evening. The rates are whole clips, so the kernel takes
+    `int(rate * multiplier)`: at 10 % full the contract allows 3,800 MWh/day and
+    a 240-clip grid delivers 2,500, a 34 % shortfall. The store then refuses to
+    fill past what that crippled rate can drain.
+
+    Refining the clip on the SAME physical deal roughly doubles the reachable
+    peak and moves the value by 70 %. An independent continuous-volume
+    reachability calculation puts the physical cap near 92.8 %.
+
+    This is a defect under repair (roadmap P1.4), so the test pins the direction
+    and the discretisation dependence rather than any particular number. It must
+    not be turned back into an assertion about the store.
+    """
+    coarse_peak, coarse_value = _exit_ratcheted_store(240)
+    fine_peak, fine_value = _exit_ratcheted_store(960)
+
+    assert coarse_peak < 0.60, coarse_peak
+    assert fine_peak > 0.80, fine_peak
+    assert fine_value > 1.5 * coarse_value, (coarse_value, fine_value)
+
+    # Unratcheted, the rates ARE exactly expressible and refinement is genuinely
+    # answer-neutral. That is the control the original check mistook for proof.
+    _, free_coarse = _exit_ratcheted_store(240, ratcheted=False)
+    _, free_fine = _exit_ratcheted_store(480, ratcheted=False)
+    assert free_fine == pytest.approx(free_coarse, rel=1e-12)
+
+
+def test_a_floor_refused_on_a_coarse_grid_may_be_reachable_on_a_finer_one():
+    """A grid rejection is not evidence of physical infeasibility.
+
+    The 70 % October floor was recorded as jointly infeasible with the ratchets
+    and therefore physical. It is met on a 480-clip grid with the same rates,
+    ratchets, dates and curve. Until a continuous-volume argument says otherwise,
+    a refusal at one resolution is a statement about that resolution.
+    """
+    floor = {"min_inventory": {"2027-10-01": 0.70}}
+    with pytest.raises(ValueError, match="no admissible policy exists"):
+        _exit_ratcheted_store(240, **floor)
+
+    peak, value = _exit_ratcheted_store(480, **floor)
+    assert peak >= 0.70, peak
+    assert value > 0.0
+
+    # The refusal must point at the grid, not leave the reader concluding physics.
+    with pytest.raises(ValueError, match="reachable on a finer one"):
+        _exit_ratcheted_store(240, **floor)
 
 
 def _fuelled_storage(fuel_loss, n_p=15):
