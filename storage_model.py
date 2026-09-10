@@ -789,6 +789,53 @@ def ratchet_arrays(n_op, fullness, inj_mult, wdr_mult):
     return i_ratch, w_ratch
 
 
+def assert_ratchets_expressible(model):
+    """Fail when a ratchet multiplier truncates a daily rate to zero clips.
+
+    The DP moves whole clips, so the kernel takes ``int(rate * multiplier)``.
+    A multiplier that is positive but small enough to floor to zero therefore
+    means "cannot move at all" where the caller meant "move slowly" -- and it
+    does so silently: the store freezes and the deal prices at zero with no
+    error. A perfectly ordinary profile does it. Withdrawal at 1 clip/day with a
+    0.30 multiplier near empty gives 0.30 clips/day, floors to 0, and the store
+    can never take out its first clip.
+
+    A multiplier of exactly zero is left alone: that is the legitimate way to say
+    the rate is shut off at that fullness.
+
+    The fix when this fires is a finer clip: the smallest non-zero multiplier `m`
+    needs a base rate of at least `ceil(1/m)` clips per day, which means dividing
+    `v_step` by the same factor and multiplying `n_states` by it.
+    """
+    i_ratch = np.asarray(model.i_ratch, dtype=float)
+    w_ratch = np.asarray(model.w_ratch, dtype=float)
+    i_curve = np.asarray(model.i_curve, dtype=float)
+    w_curve = np.asarray(model.w_curve, dtype=float)
+
+    for label, curve, ratch in (("injection", i_curve, i_ratch),
+                                ("withdrawal", w_curve, w_ratch)):
+        rate = float(curve.max()) if curve.size else 0.0
+        if rate <= 0.0:
+            continue
+        effective = rate * ratch
+        lost = np.flatnonzero((effective > 0.0) & (effective < 1.0))
+        if lost.size == 0:
+            continue
+        worst = int(lost[np.argmin(effective[lost])])
+        multiplier = float(ratch[worst])
+        fullness = worst / max(model.n_op - 1, 1)
+        needed = int(np.ceil(1.0 / multiplier))
+        raise ValueError(
+            f"the {label} ratchet truncates to zero at {fullness:.0%} full: a multiplier of "
+            f"{multiplier:.3f} on {rate:g} clip(s)/day gives {effective[worst]:.3f} clips, "
+            f"which the DP floors to 0 -- the store would be unable to move there at all and "
+            f"the deal would price at zero with no error. {lost.size} of {model.n_op} "
+            f"inventory states are affected. Use a base rate of at least {needed} clip(s)/day "
+            f"(divide v_step by {needed}, multiply n_states by {needed}), or set the "
+            f"multiplier to exactly 0 if the rate really is shut off there."
+        )
+
+
 def apply_ratchets_from_params(model, params):
     """Apply ratchets to a model if params['ratchets'] is set (path, DataFrame,
     or a pre-loaded (fullness, inj, wdr) tuple). Call after set_volume_states."""
@@ -797,6 +844,9 @@ def apply_ratchets_from_params(model, params):
         return
     f, inj, wdr = ratch if isinstance(ratch, tuple) else load_ratchets(ratch)
     model.apply_ratchets(f, inj, wdr)
+    # The kernel floors rate * multiplier to whole clips, so check the profile is
+    # expressible on this grid rather than letting it silently freeze the store.
+    assert_ratchets_expressible(model)
 
 
 def assert_cycle_feasible(model, clips_needed, clips_per_day, what):

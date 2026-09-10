@@ -2161,3 +2161,95 @@ def test_an_unmeetable_inventory_floor_fails_rather_than_being_approximated():
     # 30 days to fill, so 100 % by 15 January is unreachable from empty on 1 January.
     with pytest.raises(ValueError, match="floor on 2027-01-15 was not met"):
         _dated_storage(min_inventory={"2027-01-15": 1.0})
+
+
+def _ratcheted_storage(n_states, ratchets=None):
+    """A 30/60 store on a seasonal curve, optionally with a ratchet profile."""
+    months = {1: 31.0, 2: 30.0, 3: 28.0, 4: 25.0, 5: 22.0, 6: 20.0,
+              7: 19.0, 8: 19.5, 9: 22.0, 10: 25.5, 11: 28.5, 12: 30.5}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series([months[d.month] for d in span], index=span)
+    capacity = 600_000.0
+    v_step = capacity / n_states
+    inj_rate = max(1, round(n_states / 30))
+    wdr_rate = max(1, round(n_states / 60))
+    params = dict(product_type="storage", valDate="2026-06-01",
+                  storageStart="2027-01-01", storageEnd="2027-12-31",
+                  capacity_mwh=capacity, daily_max=inj_rate * v_step,
+                  clips_per_day=inj_rate, inj_rate=inj_rate, wdr_rate=wdr_rate,
+                  initial_inv_clips=0, terminal_inv_clips=0, inj_cost=0.0,
+                  wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=15, run_intrinsic=False,
+                  discount_rate=0.10, daily_curve=curve)
+    if ratchets is not None:
+        params["ratchets"] = pd.DataFrame(ratchets)
+    model, _ = sm.run_valuation(None, params)
+    return model, float(model.v[0, model.n_p, model.initial_state])
+
+
+def test_a_ratchet_that_truncates_to_zero_clips_is_refused():
+    """A slow rate must not become a stopped one behind the caller's back.
+
+    The DP moves whole clips, so the kernel takes `int(rate * multiplier)`. A
+    multiplier that is positive but floors to zero means "cannot move" where the
+    caller meant "move slowly", and it fails silently: the store freezes and the
+    deal prices at exactly zero with no error.
+
+    An ordinary profile does it. Withdrawal at 1 clip/day with a 0.30 multiplier
+    near empty gives 0.30 clips, floors to 0, and the store can never take out
+    its first clip. On the 60-state grid this returned 0 EUR against 5,299,882
+    unratcheted -- a 100 % loss that was entirely an artefact of the grid.
+    """
+    profile = {"fullness": [0.0, 0.5, 0.8, 1.0],
+               "injection": [1.0, 1.0, 0.6, 0.3],
+               "withdrawal": [0.3, 0.7, 1.0, 1.0]}
+
+    with pytest.raises(ValueError, match="truncates to zero"):
+        _ratcheted_storage(60, profile)
+
+    # The message has to be actionable: it names the fix, not just the fault.
+    try:
+        _ratcheted_storage(60, profile)
+    except ValueError as exc:
+        text = str(exc)
+        assert "clip(s)/day" in text and "n_states" in text, text
+        assert "0.300" in text, text
+
+    # On a grid fine enough to express it, the same profile prices -- and costs
+    # real money, which is the point of modelling ratchets at all.
+    _, ratcheted = _ratcheted_storage(240, profile)
+    _, plain = _ratcheted_storage(240)
+    assert ratcheted > 0.0, ratcheted
+    assert 0.2 < 1.0 - ratcheted / plain < 0.8, (
+        f"a realistic ratchet should cost a serious fraction: {1 - ratcheted/plain:.1%}")
+
+
+def test_a_zero_ratchet_multiplier_is_left_alone():
+    """Exactly zero is the legitimate way to shut a rate off at some fullness.
+
+    Only a positive multiplier that floors to zero is a mistake; an explicit zero
+    is a statement about the asset and passes through untouched.
+
+    The knots matter, because `ratchet_arrays` interpolates: a profile ramping
+    from 0 to 1 over several states puts intermediate multipliers inside the
+    truncation zone and is refused, correctly. Put the knots on state boundaries
+    -- here 0 and 1/60 on a 60-state grid -- and only the state you meant is shut
+    off.
+    """
+    shut_off = {"fullness": [0.0, 1.0 / 60.0, 1.0],
+                "injection": [1.0, 1.0, 1.0],
+                "withdrawal": [0.0, 1.0, 1.0]}   # cannot withdraw from empty
+    model, value = _ratcheted_storage(60, shut_off)
+    assert value > 0.0, value
+    assert model.w_ratch[0] == 0.0, model.w_ratch[0]
+    assert model.w_ratch[1] == pytest.approx(1.0), model.w_ratch[1]
+
+    # A ramp through the truncation zone is refused, and should be.
+    ramp = {"fullness": [0.0, 0.05, 1.0],
+            "injection": [1.0, 1.0, 1.0],
+            "withdrawal": [0.0, 1.0, 1.0]}
+    with pytest.raises(ValueError, match="truncates to zero"):
+        _ratcheted_storage(60, ramp)
+
+    # And no ratchet at all is unaffected by the check.
+    _, plain = _ratcheted_storage(60)
+    assert plain > 0.0

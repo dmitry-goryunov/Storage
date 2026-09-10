@@ -305,6 +305,33 @@ the level and the call sells 4.395 above it. In log terms that is −0.1104 agai
 tail turns a smaller log move into a larger euro move. The gap widens with vol (0.078 at
 30 %, 0.215 at 50 %). A symmetric result in euros would be the bug.
 
+## Ratchets, and the grid they need
+
+`ratchets` takes a table of fullness to rate multiplier, and the daily rate at inventory
+level `l` becomes `rate * multiplier(l)`. The DP moves whole clips, so the kernel takes
+`int(rate * multiplier)` — and **a positive multiplier that floors to zero silently freezes
+the store**. Withdrawal at 1 clip/day with a 0.30 multiplier near empty gives 0.30 clips,
+floors to 0, and the store can never take out its first clip: the deal prices at exactly
+zero, with no error. On a 60-state grid an ordinary profile did precisely that, returning
+0 EUR against 5,299,882 unratcheted.
+
+`assert_ratchets_expressible` now refuses it, naming the offending fullness, the multiplier,
+the resulting fractional clips and the grid that would fix it. **The smallest non-zero
+multiplier `m` needs a base rate of at least `ceil(1/m)` clips per day** — divide `v_step` by
+that factor and multiply `n_states` by it. The same profile on 240 states prices at
+2,807,291 EUR against 5,299,882 without ratchets: a realistic ratchet costs **47 % of value**,
+which is the number the silent version was hiding.
+
+Two details worth knowing. A multiplier of **exactly zero** is left alone — that is the
+legitimate way to say a rate is shut off at some fullness. And the table is **interpolated**
+onto the states, so a profile ramping from 0 to 1 over several states puts intermediate
+multipliers inside the truncation zone and is refused; put the knots on state boundaries if
+you mean to shut off one state only.
+
+None of the current notebooks set ratchets, so every storage valuation in them assumes rates
+independent of fullness. That overstates flexibility, and on the reference deal by about
+half.
+
 ## Dated inventory bounds
 
 A storage contract that says "1 October inventory at least 70 %" is expressed as

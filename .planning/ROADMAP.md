@@ -65,6 +65,16 @@ absent field. The app treasury scenario is exercised end to end, and every code 
    rounding: rates are whole clips per day, so 30/60 needs n_states to be a
    multiple of 60, and a coarser grid silently prices 30/30. Covered by a test.
 
+   ALSO 2026-09-10: the same integer-clip limit reaches ratchets, and there it is
+   worse. `int(rate * multiplier)` floors a positive multiplier to zero, so an
+   ordinary profile -- withdrawal x0.30 near empty on a 1 clip/day rate -- froze the
+   store and priced the deal at exactly 0 EUR against 5,299,882 unratcheted, with no
+   error. `assert_ratchets_expressible` now refuses it and names the grid that would
+   work; on 240 states the same profile prices at 2,807,291, so a realistic ratchet
+   costs 47 % of value. A wrong rate misprices a deal; a wrong ratchet zeroed it.
+   This strengthens the case for expressing rates as something other than whole
+   clips, rather than making each caller find a grid that happens to divide.
+
    PARTLY ADDRESSED: `value_storage` now rejects `wdr_days` without `wdr_rate`
    rather than dropping it, so the mis-specification cannot pass silently. No
    valuation changed -- the legacy path (no `wdr_days`) and the workbook path
