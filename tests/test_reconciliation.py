@@ -1914,7 +1914,14 @@ for index, cell in enumerate(notebook["cells"]):
     exec(compile("".join(cell.get("source", [])),
                  f"Storage_30_60.ipynb:cell-{index}", "exec"), namespace)
     plt.close("all")
-assert (namespace["N_STATES"], namespace["INJ_RATE"], namespace["WDR_RATE"]) == (60, 2, 1)
+# Pin the physical deal, not the grid: the notebook refines the clip to fit a
+# ratchet profile, so N_STATES is its choice and 30/60 is the invariant.
+assert namespace["CAPACITY"] == 600_000.0
+assert namespace["N_STATES"] / namespace["INJ_RATE"] == 30.0
+assert namespace["N_STATES"] / namespace["WDR_RATE"] == 60.0
+step = namespace["CAPACITY"] / namespace["N_STATES"]
+assert namespace["INJ_RATE"] * step == namespace["INJ_MWH_DAY"]
+assert namespace["WDR_RATE"] * step == namespace["WDR_MWH_DAY"]
 free, funded = namespace["RUNS"][0.0][2], namespace["RUNS"][0.10][2]
 assert funded["value"] < free["value"], (funded["value"], free["value"])
 assert max(free["invariant"], funded["invariant"]) < 1e-9
