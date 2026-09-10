@@ -1,5 +1,11 @@
 # Roadmap from the reconciled baseline
 
+> **2026-09-10.** An independent review overturned the ratchet result and the case for P4.1.
+> Its claims were checked and hold. A re-ranking is proposed in
+> [`docs/REVIEW-RESPONSE-2026-09-10.md`](../docs/REVIEW-RESPONSE-2026-09-10.md) and has not
+> been applied to the priorities below. In short: P1.4 and P1.1 rise to the top, P4.1 loses its
+> storage rationale and collapses into calibration with P3.4 and P4.3.
+
 This replaces planning derived from the stale Drive working tree.
 
 ## Priority 0: verification gates

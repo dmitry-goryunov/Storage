@@ -1,7 +1,10 @@
 # Project status
 
-**As of 2026-09-09.** Canonical `main` is `b5c084c`, with the economic corrections to rate
-handling and intrinsic attribution merged: nothing is in flight. Update this file when that
+**As of 2026-09-10.** Canonical `main` carries the storage day’s work. An independent review
+of it landed the same evening and **overturns two results recorded below as established** — the
+ratchet cap and the case for a second factor. Its claims were checked and hold; see
+[REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md) for the measurements and the
+proposed order of work. **Nothing is fixed yet.** Update this file when that
 changes — a status document that lags is worse than none.
 
 | | |
@@ -158,18 +161,20 @@ quota-forced December holds at −1.3 %. Re-hedge; do not carry them across a la
 ## Open work
 
 From [`.planning/ROADMAP.md`](../.planning/ROADMAP.md). Everything here needs a decision
-first — the work that did not is finished.
+first — the work that did not is finished. The order below predates the review;
+[REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md) proposes a different one and is
+the document to argue with.
 
 | | Item | Why it is open |
 |---|---|---|
-| P1.1 | Tunnel semantics — hard vs soft, before/after action | The tunnels cannot bind as built, and the `1000·v_step` penalty scale is arbitrary |
+| **P1.1** | **Tunnel semantics — hard vs soft, before/after action** | Sharpened by the review into three confirmed defects: `round()` relaxes both floors and ceilings, the balance reconstruction drops `initial_state` after day zero, and the check compares an expectation while the exact inventory law sits in `prob[t, :, l]` |
 | P1.2 | Curve-shape acceptance criteria | `main` already reprices its input contracts; the knot solve is now a refinement, worth doing only against stated criteria |
 | P1.3 | Production discount-curve source, purpose and settlement timing | `discount_rate` now prices time value; where a *real* market curve comes from, whether a rate is market/funding/hurdle, and the contractual settlement dates remain open |
-| P1.4 | Withdrawal capacity, remaining half | Rates are whole clips per day, so anything slower than one clip/day is inexpressible. Also `inj_days` still means two things |
+| **P1.4** | **Withdrawal capacity, remaining half** | Now the highest-priority item: `int(rate × multiplier)` understates a ratcheted withdrawal rate by up to 34 %, and the shipped 30/60 notebook is not grid-converged (+2.5 % at 960 clips and still moving). Also `inj_days` still means two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | ~~P2.2~~ | ~~Scale-aware exercise tie threshold~~ | **Considered and declined 2026-09-10.** It cannot misprice a deal — nominal cash is identical to nine decimals whether the store turns once or twice — but it can double the reported hedge, and only at a rate near 1e-9 with a hundredfold size contrast. Left as is |
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |
-| **P4.1** | **A second factor, so the seasonal spread can move** | One factor forces every pair of forwards to correlate **exactly 1.000**. Realised since 2015: c1/c6 **0.801**, c6/c12 **0.771**, c1/c24 **0.633**, and the c6/c12 spread realises 0.373 of vol against the model's 0.041 — **nine times too little**. Plan and steps in [DESIGN-P4.1-two-factor.md](DESIGN-P4.1-two-factor.md) |
+| P4.1 | A second factor — **rationale withdrawn, needs rescoping** | The correlations stand (c1/c6 **0.801**, c6/c12 **0.771**, c1/c24 **0.633**) but the shortfall is **3.1×**, not nine. And a common long factor adds **exactly nothing** to a zero-fee store — verified to 1e-14 — so the storage case for a two-factor lattice is gone. What survives is calibration, and possibly struck swings, where homogeneity fails. [DESIGN-P4.1-two-factor.md](DESIGN-P4.1-two-factor.md) needs the corrections in [REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md) |
 | ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
 | ~~P4.4~~ | ~~Report hedge stability~~ | **Done 2026-09-10.** A 1 % bump per month, measured against the book's largest position. Oct–Dec move 0.1 %; Apr–Aug move 44–51 %, because months priced alike leave the optimiser flipping between them |
 | **P4.3** | **Calibrate at the sensitivity that matters** | A spot-fitted vol is the wrong target for a spread product; the answer swings tenfold across plausible `sMR` |
@@ -207,7 +212,9 @@ charts. The other committed outputs are unchanged by this review.
 
 | | |
 |---|---|
-| [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions |
+| [`docs/REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md) | **Read alongside the two below.** What survived an independent review of them, what did not, and the outstanding work ranked |
+| [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
+| [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
