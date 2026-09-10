@@ -1970,3 +1970,61 @@ def test_a_stores_physical_volume_nets_to_zero_but_its_hedge_does_not():
     value = float(model.v[0, model.n_p, model.initial_state])
     reprice = float(np.dot(model.d_curve[:n] * delta, np.asarray(model.fwd)[:n]))
     assert abs(reprice - value) / abs(value) < 1e-9
+
+
+def test_a_flat_month_makes_intra_month_churn_exactly_free():
+    """A curve that is flat within a month leaves the optimiser indifferent.
+
+    Injecting and withdrawing inside one month buys and sells at the same price,
+    so the round trip is exactly break-even. The DP will do it or not with no
+    effect on value, and any non-zero discount rate tips it into doing it --
+    cycled volume doubles from 600,000 to 1,200,000 MWh while the nominal cash
+    the schedule moves is unchanged at 6,320,000 EUR.
+
+    It is not a defect, but it makes volume a poor measure of what a store is
+    doing on a stepped curve. `Storage_30_60.ipynb` reports cash instead. A
+    smoothed curve has a gradient inside each month and does not do this.
+    """
+    months = {1: 31.0, 2: 30.0, 3: 28.0, 4: 25.0, 5: 22.0, 6: 20.0,
+              7: 19.0, 8: 19.5, 9: 22.0, 10: 25.5, 11: 28.5, 12: 30.5}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    stepped = pd.Series([months[d.month] for d in span], index=span)
+
+    def schedule(rate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="storage", valDate="2026-06-01", storageStart="2027-01-01",
+            storageEnd="2027-12-31", capacity_mwh=600_000.0, daily_max=20_000.0,
+            clips_per_day=2, inj_rate=2, wdr_rate=1, initial_inv_clips=0,
+            terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0,
+            n_p_full=0, run_intrinsic=False, discount_rate=rate, daily_curve=stepped))
+        n = model.n_t
+        moved = model.prob[:n] * model.strat[:n] * model.v_step
+        injected = np.clip(moved, 0, None).sum(axis=(1, 2))
+        withdrawn = -np.clip(moved, None, 0).sum(axis=(1, 2))
+        forward = np.asarray(model.price_curve, dtype=float)[:n]
+        cash = float(np.dot(withdrawn, forward) - np.dot(injected, forward))
+        return injected.sum(), cash
+
+    volume_free, cash_free = schedule(0.0)
+    volume_tiny, cash_tiny = schedule(1e-6)
+
+    assert volume_tiny > 1.5 * volume_free, (volume_free, volume_tiny)
+    assert abs(cash_tiny - cash_free) < 1e-6 * abs(cash_free), (
+        f"the extra churn must be worth nothing: {cash_free:,.2f} vs {cash_tiny:,.2f}")
+
+    # A smoothed curve has a gradient inside each month, so no exact tie arises.
+    smooth = pd.Series(
+        25.0 + 6.0 * np.cos(2 * np.pi * (span.dayofyear.values - 1) / 365.25), index=span)
+
+    def smooth_volume(rate):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="storage", valDate="2026-06-01", storageStart="2027-01-01",
+            storageEnd="2027-12-31", capacity_mwh=600_000.0, daily_max=20_000.0,
+            clips_per_day=2, inj_rate=2, wdr_rate=1, initial_inv_clips=0,
+            terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0,
+            n_p_full=0, run_intrinsic=False, discount_rate=rate, daily_curve=smooth))
+        n = model.n_t
+        moved = model.prob[:n] * model.strat[:n] * model.v_step
+        return np.clip(moved, 0, None).sum(axis=(1, 2)).sum()
+
+    assert smooth_volume(1e-6) == pytest.approx(smooth_volume(0.0), rel=1e-9)
