@@ -1840,3 +1840,50 @@ def test_asymmetric_storage_rates_survive_the_days_to_rate_conversion():
     inventory = np.cumsum(injected - withdrawn)
     assert inventory.max() <= capacity + 1e-6, inventory.max()
     assert abs(inventory[-1]) < 1e-6, f"must end empty, at {inventory[-1]:,.1f}"
+
+
+def test_storage_notebook_executes_clean():
+    """Storage_30_65.ipynb runs every section in a fresh process, with no stale output.
+
+    It also asserts its own grid: §2 raises unless the derived rates reproduce
+    the days asked for, so a silent mis-sizing fails the suite rather than
+    quietly pricing a different contract.
+    """
+    path = os.path.join(ROOT, "Storage_30_65.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            assert cell.get("execution_count") is None
+            assert not cell.get("outputs", [])
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("Storage_30_65.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    source = "".join(cell.get("source", []))
+    exec(compile(source, f"Storage_30_65.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+assert namespace["N_STATES"] == 390, namespace["N_STATES"]
+assert (namespace["INJ_RATE"], namespace["WDR_RATE"]) == (13, 6)
+assert abs(namespace["N_STATES"] / namespace["INJ_RATE"] - 30) < 1e-9
+assert abs(namespace["N_STATES"] / namespace["WDR_RATE"] - 65) < 1e-9
+print("STORAGE_NOTEBOOK_OK")
+'''
+    env = os.environ.copy()
+    env.update({"STORAGE_NOTEBOOK_SMOKE": "1", "MPLBACKEND": "Agg"})
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=300, check=False,
+    )
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
+    assert "STORAGE_NOTEBOOK_OK" in completed.stdout
