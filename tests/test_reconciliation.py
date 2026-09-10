@@ -2253,3 +2253,50 @@ def test_a_zero_ratchet_multiplier_is_left_alone():
     # And no ratchet at all is unaffected by the check.
     _, plain = _ratcheted_storage(60)
     assert plain > 0.0
+
+
+def test_ratchets_cap_the_store_through_the_exit_not_the_entry():
+    """A withdrawal ratchet limits how full a store can usefully get.
+
+    Filling is not the constraint -- injection still runs at 8 clips/day below
+    half full. Emptying is: withdrawal ratchets to 0.3 near empty, so the last
+    stretch crawls, and the store can only fill to what it can still empty before
+    the window closes. On the reference deal that caps it at 52.5 % against
+    100 % with constant rates.
+
+    The consequence is that ratchets and dated inventory bounds have to be chosen
+    together: a 70 % floor on 1 October is unreachable under this profile, and
+    `assert_inventory_bounds` refuses it rather than pricing a different deal.
+    """
+    months = {1: 30.0, 2: 30.0, 3: 24.9, 4: 25.0, 5: 25.0, 6: 25.0,
+              7: 25.0, 8: 25.0, 9: 25.0, 10: 30.0, 11: 30.0, 12: 30.0}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series([months[d.month] for d in span], index=span)
+    profile = pd.DataFrame({"fullness": [0.0, 0.5, 0.8, 1.0],
+                            "injection": [1.0, 1.0, 0.6, 0.3],
+                            "withdrawal": [0.3, 0.7, 1.0, 1.0]})
+    capacity, n_states = 600_000.0, 240
+
+    def peak(ratcheted, **extra):
+        params = dict(product_type="storage", valDate="2026-06-01",
+                      storageStart="2027-01-01", storageEnd="2027-12-31",
+                      capacity_mwh=capacity, daily_max=8 * capacity / n_states,
+                      clips_per_day=8, inj_rate=8, wdr_rate=4, initial_inv_clips=0,
+                      terminal_inv_clips=0, inj_cost=0.0, wdr_cost=0.0, vol=0.5,
+                      sMR=1.0, n_p_full=0, run_intrinsic=False, discount_rate=0.10,
+                      daily_curve=curve)
+        if ratcheted:
+            params["ratchets"] = profile
+        params.update(extra)
+        model, _ = sm.run_valuation(None, params)
+        n = model.n_t
+        closing = np.cumsum((model.prob[:n] * model.strat[:n] * model.v_step).sum(axis=(1, 2)))
+        return float(np.concatenate([[0.0], closing[:-1]]).max()) / capacity
+
+    assert peak(False) == pytest.approx(1.0, abs=1e-3), peak(False)
+    ratcheted_peak = peak(True)
+    assert 0.4 < ratcheted_peak < 0.7, ratcheted_peak
+
+    # And a floor above that peak is refused rather than approximated.
+    with pytest.raises(ValueError, match="floor on 2027-10-01 was not met"):
+        peak(True, min_inventory={"2027-10-01": 0.70})
