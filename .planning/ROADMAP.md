@@ -169,7 +169,14 @@ Not defects. The model computes what it claims and 91 tests say so. These are th
 cannot currently represent at all, found 2026-09-10 while pricing a 30/60 store, and ordered
 by what they are worth against what they cost.
 
-1. **A second factor, so the seasonal spread can move.** This is one-factor: every forward is
+1. **A second factor, so the seasonal spread can move.** Step-by-step plan, the
+   lattice-versus-LSMC fork and the effort estimate are in
+   `docs/DESIGN-P4.1-two-factor.md`. The case is now measured against market data
+   rather than argued from the model: realised correlations since 2015 are 0.801 for
+   c1/c6, 0.771 for c6/c12 and 0.633 for c1/c24, and the c6/c12 spread realises 0.373
+   of annualised vol where this model gives it 0.041 — nine times too little.
+
+   This is one-factor: every forward is
    driven by a single state variable, so any two forwards are correlated **exactly 1.000**
    and the summer/winter spread can only move as a fixed multiple of spot. Measured at
    sVol 0.5, sMR 1.0, from June 2026: Jul-27 carries log-vol 0.170 and Dec-27 0.112, giving
