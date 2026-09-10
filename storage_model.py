@@ -839,8 +839,18 @@ def resolve_grid(params, states_key):
       ``capacity_mwh`` then fixes the number of inventory states as
       ``round(capacity_mwh / v_step)`` (total working volume stays put when the
       clip is refined).
-    * Legacy     — fall back to ``params['v_step']`` and ``params[states_key]``
-      (clip count) when the physical inputs are absent.
+    * Explicit   — ``v_step`` with ``n_states``, the inventory-state count.
+    * Legacy     — ``v_step`` with ``params[states_key]``, where ``states_key``
+      doubles as the state count.
+
+    **``inj_days`` means two different things and this is where they meet.** On
+    the legacy storage path it is the number of inventory STATES; in
+    ``params_for_run_valuation`` and every notebook it is DAYS TO FILL, from
+    which the rate is derived as ``round(n_states / inj_days)``. A 30/60 store
+    written with ``inj_days=30`` on the legacy path therefore silently gets a
+    30-state grid rather than a 30-day fill. Pass ``n_states`` instead; the
+    legacy reading still works alone, but not beside a key that only makes sense
+    under the other meaning. Roadmap P1.4.
 
     Returns (v_step, n_states, clips_per_day).
     """
@@ -850,9 +860,31 @@ def resolve_grid(params, states_key):
     v_step = float(daily_max) / cpd if daily_max is not None else float(params["v_step"])
 
     capacity = params.get("capacity_mwh")
-    n_states = int(round(float(capacity) / v_step)) if capacity is not None else int(params[states_key])
+    if capacity is not None:
+        return v_step, int(round(float(capacity) / v_step)), cpd
 
-    return v_step, n_states, cpd
+    if params.get("n_states") is not None:
+        return v_step, int(params["n_states"]), cpd
+
+    if params.get(states_key) is None:
+        raise KeyError(
+            f"resolve_grid needs the inventory grid: either capacity_mwh with daily_max, "
+            f"or v_step with n_states. ({states_key!r} is accepted as a legacy alias for "
+            f"n_states, but it also means days-to-fill elsewhere, so prefer n_states.)")
+
+    # The legacy reading, and the one contradiction worth refusing here: an
+    # explicit clip rate only makes sense when `inj_days` means days, so its
+    # presence says the caller does not mean a state count. `wdr_days` alone is
+    # left to `value_storage`, which has a more specific message for it.
+    conflicting = [k for k in ("inj_rate", "wdr_rate") if params.get(k) is not None]
+    if states_key == "inj_days" and conflicting:
+        raise ValueError(
+            f"`inj_days={params[states_key]}` would be read as the number of inventory "
+            f"states, but {', '.join(conflicting)} is also set, which only makes sense if "
+            f"`inj_days` means days to fill. The key means both things in this codebase and "
+            f"cannot mean both at once here. Pass `n_states` for the grid size, or supply "
+            f"`capacity_mwh` with `daily_max` and let the physical inputs size it.")
+    return v_step, int(params[states_key]), cpd
 
 
 def load_ratchets(source):
@@ -989,13 +1021,25 @@ def worst_ratchet_rate_loss(model):
             for side in ("injection", "withdrawal")}
 
 
-def assert_ratchet_rates_expressible(model, max_relative_loss=0.0, tolerance=1e-9):
-    """Opt-in gate on the discretisation loss above.
+#: How far a ratcheted rate may fall short of the contract's before
+#: `value_storage` refuses the grid. Chosen 2026-09-10 to sit between the
+#: reference store's 33.1 % at 240 clips (refused) and its 5.8 % at 1,920
+#: (accepted), so an obviously wrong grid fails and a defensible one does not.
+#: It is an engineering threshold, not a commercial tolerance. Override per deal
+#: with `max_ratchet_rate_loss`; pass 1.0 to study a coarse grid deliberately.
+DEFAULT_MAX_RATCHET_RATE_LOSS = 0.10
 
-    Not on by default, because tightening it is a change of answer on every
-    ratcheted deal in the repo and that belongs in a deliberate step rather than
-    in a library import. Pass `max_relative_loss=0.05` to require every ratcheted
-    rate within 5 % of the contract's.
+
+def assert_ratchet_rates_expressible(model, max_relative_loss=0.0, tolerance=1e-9):
+    """Gate the discretisation loss above.
+
+    `value_storage` applies this at `DEFAULT_MAX_RATCHET_RATE_LOSS` whenever
+    ratchets are set. It is a *rate* gate and a leading indicator, not a
+    statement about value: on the reference store 11 % of rate loss costs about
+    0.5 % of value. The value question is convergence, which `benchmarks.py`
+    answers separately, and the two do not agree on a grid -- the rate gate
+    clears 1,920 clips and the 0.5 % value gate wants 3,840. Say which one a
+    number was accepted under.
     """
     worst = worst_ratchet_rate_loss(model)
     for side, loss in worst.items():
@@ -1237,6 +1281,12 @@ def value_storage(curve, params):
     # exp_ex/delta describe a different deal from the one priced.
     s.set_volume_states(n_states, initial_state=init_inv)
     apply_ratchets_from_params(s, params)
+    if params.get("ratchets") is not None:
+        # The zero-rate guard only catches int(rate * multiplier) == 0. Anything
+        # short of zero was rounded down in silence, and a silently slower store
+        # fills less, so the deal came out under-valued with nothing to see.
+        assert_ratchet_rates_expressible(
+            s, params.get("max_ratchet_rate_loss", DEFAULT_MAX_RATCHET_RATE_LOSS))
     # After set_volume_states, which resets the tunnel arrays.
     inventory_bounds = apply_inventory_bounds(s, params)
     s.t_p_curve = np.full(s.n_op + 2, -1e9)

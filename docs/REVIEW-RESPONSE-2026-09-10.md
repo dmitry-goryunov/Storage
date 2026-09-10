@@ -207,7 +207,7 @@ yet.
 
 Ranked by how wrong the answer is today, not by how interesting the work is.
 
-### 1. Ratchet discretisation *(review §3; absorbs P1.4)* — **INSTRUMENTED**
+### 1. Ratchet discretisation *(review §3; absorbs P1.4)* — **DONE**
 
 The shipped notebook understates its own deal by ≥2.5 % and is still moving; the test suite
 understates the harsher profile by 70 %; and three written claims are false. Not merely
@@ -259,6 +259,30 @@ The homogeneity reduction removes the storage rationale entirely. What survives:
   roadmap items collapse into one.
 - A second factor may still be needed for **struck swings**, where homogeneity fails. That
   is one experiment, and it should precede any lattice work.
+
+> **Done, later the same evening** — [`two_factor_probe.py`](../two_factor_probe.py). Four
+> contracts, the long factor varied with the short factor held fixed:
+>
+> | contract | homogeneous | gain from the long factor |
+> |---|---|---:|
+> | zero-fee store | yes | **0.0000 %** at any `sigma_xi`, to ten decimals |
+> | unstruck swing | yes | **0.0000 %** |
+> | store, EUR 2/MWh each leg | no | 13.72 % at `sigma_xi` 0.8 |
+> | call swing, strike 20 | no | 74.91 % at `sigma_xi` 0.8, **1.3 %** at 0.1 |
+>
+> The reduction is exactly a statement about homogeneity, not about storage, and the storage
+> rationale does not come back. The case for a second factor is real on struck and
+> fee-bearing contracts — but at a plausible `sigma_xi` of 0.1 against a short factor of 0.6
+> it is worth about **1.3 %**, roughly flat in kappa. An order of magnitude less than the
+> design note implied, and it belongs to swings rather than to storage.
+>
+> One methodological note, because the first version of this got it wrong. A
+> **variance-matched** comparison does *not* isolate the factor: cutting `sigma_chi` to hold
+> total terminal variance fixed moves the store too, by up to 5.09 %, and that is entirely
+> the reduced short factor rather than the added long one — section 1 of the probe shows the
+> store does not depend on `sigma_xi` at all. The two factors have different variance term
+> structures, so no single matching horizon holds both fixed. Hold the short factor fixed
+> instead, and the contrast is clean.
 - If a two-factor engine is built anyway, the review's §8 acceptance gates replace the
   design's — analytic moments, joint transition validity, hard feasibility, controlled
   one-factor and zero-volatility limits, convergence in both factor and inventory grids.

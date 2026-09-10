@@ -59,7 +59,7 @@ def monthly_curve(monthly=None, start="2026-01-01", end="2029-06-30"):
 
 
 def storage_params(n_states, ratchets=None, curve=None, n_p=25, rate=0.10,
-                   run_intrinsic=True, **extra):
+                   run_intrinsic=True, max_ratchet_rate_loss=1.0, **extra):
     """A 30/60 store at a chosen inventory clip, physical deal held fixed.
 
     `n_states` changes only the resolution: capacity and both MWh/day rates are
@@ -79,6 +79,9 @@ def storage_params(n_states, ratchets=None, curve=None, n_p=25, rate=0.10,
         inj_cost=0.0, wdr_cost=0.0, fuel_loss=0.0,
         vol=0.50, sMR=1.0, n_p_full=n_p, run_intrinsic=run_intrinsic,
         discount_rate=rate,
+        # These fixtures exist to STUDY coarse grids, so the library's rate
+        # gate is lifted here and the loss is reported instead.
+        max_ratchet_rate_loss=max_ratchet_rate_loss,
         daily_curve=monthly_curve() if curve is None else curve)
     if ratchets is not None:
         params["ratchets"] = pd.DataFrame(ratchets)

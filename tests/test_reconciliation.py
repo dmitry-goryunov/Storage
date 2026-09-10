@@ -2313,7 +2313,8 @@ def _ratcheted_storage(n_states, ratchets=None):
                   clips_per_day=inj_rate, inj_rate=inj_rate, wdr_rate=wdr_rate,
                   initial_inv_clips=0, terminal_inv_clips=0, inj_cost=0.0,
                   wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=15, run_intrinsic=False,
-                  discount_rate=0.10, daily_curve=curve)
+                  discount_rate=0.10, daily_curve=curve,
+                  max_ratchet_rate_loss=1.0)   # studying the grid, not trusting it
     if ratchets is not None:
         params["ratchets"] = pd.DataFrame(ratchets)
     model, _ = sm.run_valuation(None, params)
@@ -2411,7 +2412,8 @@ def _exit_ratcheted_store(n_states, ratcheted=True, **extra):
                   clips_per_day=inj_rate, inj_rate=inj_rate, wdr_rate=wdr_rate,
                   initial_inv_clips=0, terminal_inv_clips=0, inj_cost=0.0,
                   wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=0, run_intrinsic=False,
-                  discount_rate=0.10, daily_curve=curve)
+                  discount_rate=0.10, daily_curve=curve,
+                  max_ratchet_rate_loss=1.0)   # studying the grid, not trusting it
     if ratcheted:
         params["ratchets"] = profile
     params.update(extra)
@@ -2693,3 +2695,68 @@ def test_the_model_spread_volatility_is_not_monotone_in_mean_reversion():
     assert got["model_log_ratio_vol"] == pytest.approx(0.119326, abs=1e-6)
     assert 3.0 < got["ratio_raw"] < 3.3, got            # about 3.1x, not nine
     assert 3.0 < got["ratio_excluding_rolls"] < 3.3, got
+
+
+# ── P4.1: what a common long factor is and is not worth ───────────────────────
+
+def test_a_common_long_factor_is_worth_nothing_to_a_homogeneous_contract():
+    """The result that removed P4.1's storage rationale, pinned.
+
+    Zero-fee storage cashflows are homogeneous of degree one in price and the
+    admissible set does not depend on price, so the optimal policy is
+    scale-invariant, `V_t = L_t * W_t` for the long factor's own martingale `L`,
+    and `L_0 = 1`. The factor integrates out. At a FIXED short factor the value
+    is therefore independent of the long factor's volatility -- not approximately,
+    exactly -- and an unstruck swing behaves the same way for the same reason.
+    """
+    import two_factor_probe as probe
+
+    for kappa in (0.2, 1.0, 4.0):
+        for value_of in (lambda s: probe.value_store(kappa, s),
+                         lambda s: probe.value_swing(kappa, s, strike=0.0)):
+            base = value_of(0.0)
+            for sig_xi in (0.1, 0.8):
+                assert value_of(sig_xi) == pytest.approx(base, rel=1e-12), (kappa, sig_xi)
+
+
+def test_a_strike_or_a_cash_fee_restores_the_case_for_a_long_factor():
+    """And it is a real case, but a small one at plausible parameters.
+
+    `S - K` is not homogeneous, so scale invariance breaks, the policy starts
+    depending on the price level, and the long factor has something to say. At a
+    modest sigma_xi of 0.1 against a short factor of 0.6 a struck swing gains
+    about 1.3 %, roughly flat in mean reversion -- not the order-of-magnitude
+    effect the September design note implied for storage.
+    """
+    import two_factor_probe as probe
+
+    for kappa in (0.2, 1.0, 4.0):
+        struck = probe.value_swing(kappa, 0.1, strike=20.0)
+        plain = probe.value_swing(kappa, 0.0, strike=20.0)
+        assert 0.005 < (struck - plain) / plain < 0.05, (kappa, plain, struck)
+
+        fee_two = probe.value_store(kappa, 0.1, fee=2.0)
+        fee_one = probe.value_store(kappa, 0.0, fee=2.0)
+        assert fee_two > fee_one * 1.001, (kappa, fee_one, fee_two)
+
+
+def test_the_probe_would_catch_its_own_lattice_going_wrong():
+    """An absorbing long-factor boundary breaks the martingale and fakes a gain.
+
+    It did: the first run of this probe reported about 1e-5 of spurious storage
+    gain, which is the size of a real effect worth looking for. The default
+    half-width is past anything reachable in N_T steps; a deliberately narrow one
+    must therefore produce a difference where the correct lattice produces none.
+    """
+    import two_factor_probe as probe
+
+    narrow = probe._walk_lattice(0.8, half=4)
+    real = probe._walk_lattice(0.8)
+    assert narrow[0].size < real[0].size
+    # Mass reaches the narrow edge, so exp(xi) stops being a martingale there.
+    row = np.zeros(narrow[0].size)
+    row[narrow[0].size // 2] = 1.0
+    for _ in range(probe.N_T - 1):
+        row = row @ narrow[1]
+    drifted = float((row * np.exp(narrow[0])).sum())
+    assert drifted < np.cosh(0.8 * np.sqrt(probe.DT)) ** (probe.N_T - 1) - 1e-6, drifted
