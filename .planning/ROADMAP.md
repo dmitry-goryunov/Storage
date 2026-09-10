@@ -92,6 +92,57 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 4. Review the 0.9 default annualised volatility and document or change it with
    calibration evidence (remaining part of finding 16).
 
+## Priority 4: model capability
+
+Not defects. The model computes what it claims and 91 tests say so. These are things it
+cannot currently represent at all, found 2026-09-10 while pricing a 30/60 store, and ordered
+by what they are worth against what they cost.
+
+1. **A second factor, so the seasonal spread can move.** This is one-factor: every forward is
+   driven by a single state variable, so any two forwards are correlated **exactly 1.000**
+   and the summer/winter spread can only move as a fixed multiple of spot. Measured at
+   sVol 0.5, sMR 1.0, from June 2026: Jul-27 carries log-vol 0.170 and Dec-27 0.112, giving
+   the spread a log-vol of `|0.340 - 0.223| x 0.354 = 0.0412` -- about **1.03 EUR/MWh** of
+   uncertainty on a spread 12.00 EUR/MWh wide.
+
+   The consequence is visible in any storage valuation: extrinsic 0.465 against intrinsic
+   10.533, a 4.2 % share. And it moves the wrong way with mean reversion --
+
+   | sMR | intrinsic | extrinsic | share |
+   |---:|---:|---:|---:|
+   | 0.2 | 10.5333 | 0.1189 | 1.1 % |
+   | 1.0 | 10.5333 | 0.4651 | 4.2 % |
+   | 4.0 | 10.5333 | 1.2324 | 10.5 % |
+
+   -- which shows what the extrinsic is actually measuring: short-term spot wiggle to cycle
+   against, not seasonal spread optionality. Faster reversion gives more intra-month churn
+   and does nothing for the spread. So the model prices a fast-cycling store competently and
+   structurally cannot price the piece that dominates a seasonal one.
+
+   The fix is a Schwartz-Smith style short-term deviation plus long-term equilibrium level.
+   The cost is real: the DP gains a state dimension, from (time x price x inventory) to
+   (time x short x long x inventory). **Cheaper interim** if that is too much: keep one
+   factor but calibrate it to the *spread's* volatility rather than spot's, and say so in the
+   outputs -- the wrong model with the right sensitivity, which is defensible only when
+   documented.
+
+2. **Volumetric fuel loss.** Not modelled at all. `value_storage` reads `inj_cost` and
+   `wdr_cost` in EUR/MWh and nothing volumetric, so injecting 100 MWh always makes 100 MWh
+   available to withdraw. Real storage retains 1-2 % of injected gas as fuel. On a 600,000
+   MWh deal at ~25 EUR/MWh that is 150,000-300,000 EUR -- comparable to the entire extrinsic
+   value of 282,000 EUR on the same deal, so it is first-order for storage and currently
+   absent. Much cheaper than item 1: scale the volume that arrives in inventory against the
+   volume injected, in the transition.
+
+3. **Calibrate at what the product is sensitive to.** Related to P3.4 but sharper than it. A
+   vol fitted to front-month spot returns is calibrated to the wrong quantity for a spread
+   product, and the table above shows the answer swinging tenfold across plausible `sMR`.
+   Whatever is estimated, record the target alongside the estimate.
+
+Two smaller items already listed above were both hit in practice on 2026-09-10 and are worth
+re-reading in that light: integer clip rates (P1.4 -- a 30/65 deal needs a 390-state grid to
+be expressible at all) and the absolute `1e-6` tie threshold (P2.2).
+
 ## Release discipline
 
 - GitHub is the only writable source tree.
