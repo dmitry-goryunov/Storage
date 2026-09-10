@@ -936,6 +936,82 @@ def assert_ratchets_expressible(model):
         )
 
 
+def describe_ratchet_rates(model):
+    """The contract's MWh/day against what the inventory grid can express.
+
+    The DP moves whole clips, so the kernel takes ``int(rate * multiplier)`` and
+    the remainder is thrown away. `assert_ratchets_expressible` catches only the
+    case where that reaches zero; everything short of zero passed silently, and
+    a silently slower store fills less, so the deal was under-valued with no
+    indication. On the reference 240-clip store a contractual 3,800 MWh/day at
+    10 % full is delivered as 2,500 -- a **34 % shortfall** that the guard,
+    the tests and the notebook all cleared.
+
+    Returns one row per inventory state: fullness, the rate the contract grants
+    at that fullness, the rate the grid actually gives, and the loss in both
+    MWh/day and per cent. Levels where the move is physically impossible anyway
+    (withdrawing from empty, injecting into a full store) are reported with a
+    null loss rather than a spurious 100 %.
+
+    Roadmap P1.4. Read `worst_ratchet_rate_loss()` for the single number.
+    """
+    n_states = model.n_op - 1
+    levels = np.arange(model.n_op)
+    fullness = levels / max(n_states, 1)
+    out = {"clips": levels, "fullness": fullness}
+
+    for side, curve, ratch in (("injection", model.i_curve, model.i_ratch),
+                               ("withdrawal", model.w_curve, model.w_ratch)):
+        curve = np.asarray(curve, dtype=float)
+        base = float(curve.max()) if curve.size else 0.0        # the active-day rate
+        mult = np.asarray(ratch, dtype=float)
+        contract = base * mult * model.v_step
+        grid = np.floor(base * mult) * model.v_step
+        # Headroom, not discretisation: a full store cannot inject and an empty
+        # one cannot withdraw however fine the clip is.
+        possible = (levels < n_states) if side == "injection" else (levels > 0)
+        loss = np.where(possible & (contract > 0.0), contract - grid, np.nan)
+        relative = np.where(possible & (contract > 0.0), 1.0 - grid / np.where(
+            contract > 0.0, contract, 1.0), np.nan)
+        out[f"{side} contract MWh/day"] = contract
+        out[f"{side} grid MWh/day"] = grid
+        out[f"{side} loss MWh/day"] = loss
+        out[f"{side} loss"] = relative
+
+    return pd.DataFrame(out)
+
+
+def worst_ratchet_rate_loss(model):
+    """Largest relative rate loss the grid imposes, per side. 0.0 when exact."""
+    table = describe_ratchet_rates(model)
+    return {side: float(np.nanmax(np.concatenate([
+                table[f"{side} loss"].to_numpy(dtype=float), [0.0]])))
+            for side in ("injection", "withdrawal")}
+
+
+def assert_ratchet_rates_expressible(model, max_relative_loss=0.0, tolerance=1e-9):
+    """Opt-in gate on the discretisation loss above.
+
+    Not on by default, because tightening it is a change of answer on every
+    ratcheted deal in the repo and that belongs in a deliberate step rather than
+    in a library import. Pass `max_relative_loss=0.05` to require every ratcheted
+    rate within 5 % of the contract's.
+    """
+    worst = worst_ratchet_rate_loss(model)
+    for side, loss in worst.items():
+        if loss > max_relative_loss + tolerance:
+            table = describe_ratchet_rates(model)
+            at = int(table[f"{side} loss"].idxmax())
+            raise ValueError(
+                f"the {side} rate is understated by {loss:.1%} at {table['fullness'][at]:.0%} "
+                f"full: the contract grants {table[f'{side} contract MWh/day'][at]:,.0f} "
+                f"MWh/day and a {model.n_op - 1}-clip grid delivers "
+                f"{table[f'{side} grid MWh/day'][at]:,.0f}, against a limit of "
+                f"{max_relative_loss:.1%}. The rates are whole clips, so refine the clip: "
+                f"halving v_step halves this loss. See describe_ratchet_rates().")
+    return worst
+
+
 def apply_ratchets_from_params(model, params):
     """Apply ratchets to a model if params['ratchets'] is set (path, DataFrame,
     or a pre-loaded (fullness, inj, wdr) tuple). Call after set_volume_states."""

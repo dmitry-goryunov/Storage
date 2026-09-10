@@ -20,6 +20,7 @@ change of answer to the review.
 """
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -195,21 +196,216 @@ def describe_environment():
 def run_case(name):
     """Value one named case; returns the result dict with its peak inventory."""
     model, res = sm.run_valuation(None, CASES[name]())
+    return model, _summarise(model, res)
+
+
+def _summarise(model, res):
     n = model.n_t
     levels = np.arange(model.n_op) * model.v_step
     opening = (model.prob[:n].sum(axis=1) * levels).sum(axis=1)
     out = dict(res)
     out["peak_opening_fraction"] = float(opening.max()) / CAPACITY
-    return model, out
+    # Equal-value policy switches move the hedge without moving the value, so
+    # the hedge is reported beside it rather than inferred from it.
+    out["net_hedge_mwh"] = float(np.sum(model.delta))
+    out["gross_hedge_mwh"] = float(np.sum(np.abs(model.delta)))
+    out["worst_rate_loss"] = sm.worst_ratchet_rate_loss(model)
+    return out
+
+
+# ── Convergence ladders ───────────────────────────────────────────────────────
+
+# Proposed engineering thresholds, not achieved results and not commercial
+# tolerances: total AND intrinsic within this over each of two successive grid
+# doublings, on a benchmark whose value is material.
+CONVERGENCE_TOLERANCE = 0.005
+CONVERGENCE_ABS_EUR = 1_000.0       # for cases whose value is at or near zero
+
+
+def inventory_grid_ladder(ladder=(240, 480, 960, 1920, 3840), **case):
+    """Refine the inventory clip with the PHYSICAL deal held fixed.
+
+    Capacity and both MWh/day rates are preserved; only the resolution changes.
+    Reports value, intrinsic, peak inventory, the hedge and the runtime, because
+    the answer to "is this converged" is not only about the value.
+    """
+    rows = []
+    for n_states in ladder:
+        started = time.perf_counter()
+        try:
+            model, res = sm.run_valuation(None, storage_params(n_states, **case))
+        except ValueError as exc:
+            rows.append({"n_states": n_states, "v_step": CAPACITY / n_states,
+                         "refused": str(exc)[:60]})
+            continue
+        summary = _summarise(model, res)
+        rows.append({
+            "n_states": n_states, "v_step": CAPACITY / n_states,
+            "inj clips/day": int(np.max(model.i_curve)),
+            "wdr clips/day": int(np.max(model.w_curve)),
+            "total_eur": summary["total_eur"],
+            "intrinsic_eur": summary["intrinsic_eur"],
+            "extrinsic_eur": summary["extrinsic_eur"],
+            "peak": summary["peak_opening_fraction"],
+            "net hedge MWh": summary["net_hedge_mwh"],
+            "worst wdr rate loss": summary["worst_rate_loss"]["withdrawal"],
+            "seconds": time.perf_counter() - started,
+            "refused": None,
+        })
+    return pd.DataFrame(rows)
+
+
+def price_grid_ladder(ladder=(10, 15, 20, 25, 30), n_states=240, **case):
+    """Refine the PRICE tree instead, at a fixed inventory grid.
+
+    Its own check, so that inventory refinement cannot conceal price
+    discretisation error -- or be blamed for it.
+    """
+    rows = []
+    for n_p in ladder:
+        started = time.perf_counter()
+        model, res = sm.run_valuation(None, storage_params(n_states, n_p=n_p, **case))
+        rows.append({"n_p": n_p, "total_eur": res["total_eur"],
+                     "extrinsic_eur": res["extrinsic_eur"],
+                     "seconds": time.perf_counter() - started})
+    return pd.DataFrame(rows)
+
+
+def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
+                        abs_eur=CONVERGENCE_ABS_EUR, columns=("total_eur", "intrinsic_eur")):
+    """Did the last two refinements each move every tracked column by < tolerance?
+
+    Returns (bool, DataFrame of step-by-step moves). A step is inside the gate if
+    it is within `tolerance` relatively OR within `abs_eur` absolutely, so a
+    benchmark that prices near zero is not held to a meaningless ratio.
+    """
+    live = table[table["refused"].isna()] if "refused" in table else table
+    steps, ok = [], True
+    for a, b in zip(live.index[:-1], live.index[1:]):
+        row = {"from": live.loc[a, "n_states"], "to": live.loc[b, "n_states"]}
+        for col in columns:
+            lo, hi = float(live.loc[a, col]), float(live.loc[b, col])
+            moved = abs(hi - lo)
+            rel = moved / abs(lo) if abs(lo) > 0 else np.inf
+            row[col] = rel
+            row[col + "_eur"] = moved
+        steps.append(row)
+    frame = pd.DataFrame(steps)
+    if len(frame) < 2:
+        return False, frame
+    for _, row in frame.tail(2).iterrows():
+        for col in columns:
+            if row[col] > tolerance and row[col + "_eur"] > abs_eur:
+                ok = False
+    return ok, frame
+
+
+# ── Market statistics: the spread comparison, made executable ─────────────────
+
+# The comparison the "nine times too little" claim rested on, with every choice
+# stated. It was reconstructible from no recorded calculation, which is the
+# reason this section exists.
+#
+#   return definition   daily differences of log mid prices, positive prices only
+#   spread definition   d(log F_i) - d(log F_j): the volatility of changes in the
+#                       log price RATIO. NOT the log of a monetary spread (which
+#                       can cross zero) and NOT the EUR/MWh volatility of F_j - F_i
+#   observation horizon one trading day
+#   annualisation       sqrt(252)
+#   estimation window   2015-01-01 onward, stated per call
+#   delivery periods    APPROXIMATED by point maturities tau_i = i/12 years. A
+#                       real contract delivers over a month, which lowers its
+#                       volatility; the model side of the comparison is therefore
+#                       an upper bound and the ratio below is not a calibration
+#                       result
+#   rolls               continuous rank c6 refers to a different delivery month
+#                       after a roll, so month-change observations are optionally
+#                       excluded
+WORKBOOK = "ttf q.parquet"
+SPREAD_PAIRS = ((1, 3), (1, 6), (6, 12), (1, 12), (12, 24), (1, 24))
+TRADING_DAYS = 252.0
+
+
+def forward_panel(path=WORKBOOK, since="2015-01-01"):
+    df = pd.read_parquet(path).sort_values("quote_date").reset_index(drop=True)
+    return df[df["quote_date"] >= pd.Timestamp(since)]
+
+
+def spread_statistics(pairs=SPREAD_PAIRS, since="2015-01-01", exclude_rolls=False,
+                      path=WORKBOOK):
+    """Realised correlation and annualised log-ratio volatility, by maturity pair."""
+    panel = forward_panel(path, since)
+    rows = []
+    for a, b in pairs:
+        ca, cb = f"TTFc{a}", f"TTFc{b}"
+        s = panel[["quote_date", ca, cb]].dropna()
+        s = s[(s[ca] > 0) & (s[cb] > 0)].reset_index(drop=True)
+        ra = np.diff(np.log(s[ca].to_numpy()))
+        rb = np.diff(np.log(s[cb].to_numpy()))
+        keep = np.ones(ra.shape, dtype=bool)
+        if exclude_rolls:
+            months = s["quote_date"].dt.to_period("M").to_numpy()
+            keep = months[1:] == months[:-1]
+        ra, rb = ra[keep], rb[keep]
+        rows.append({"pair": f"c{a}/c{b}", "observations": int(ra.size),
+                     "correlation": float(np.corrcoef(ra, rb)[0, 1]),
+                     "log_ratio_vol": float(np.std(ra - rb, ddof=0) * np.sqrt(TRADING_DAYS))})
+    return pd.DataFrame(rows)
+
+
+def model_log_ratio_vol(sigma, kappa, tau_1, tau_2):
+    """The one-factor model's annualised volatility of daily log-ratio changes.
+
+    Under `d log F(t,T) = drift dt + sigma * exp(-kappa*(T-t)) dW`, the log ratio
+    of two forwards has diffusion `sigma * |a_1 - a_2|` with `a_i = exp(-kappa*tau_i)`.
+
+    This is the quantity comparable with `spread_statistics()`. The September
+    design note instead used `sigma * |a_1 - a_2| / sqrt(2*kappa)`, which is the
+    stationary standard deviation of the LEVEL of the log ratio -- a different
+    object with different units of time. Note the result is NOT monotone in
+    kappa: both loadings tend to 1 as kappa -> 0 and to 0 as kappa -> infinity,
+    so it peaks in between (near kappa = 1.385 at these maturities). A proposed
+    acceptance gate requiring the sign to flip with mean reversion would fail a
+    correct model.
+    """
+    a_1, a_2 = np.exp(-kappa * tau_1), np.exp(-kappa * tau_2)
+    return float(sigma * abs(a_1 - a_2))
+
+
+def spread_comparison(sigma=0.50, kappa=1.0, pair=(6, 12), since="2015-01-01",
+                      path=WORKBOOK):
+    """Model against realised for one pair, with the maturity approximation stated."""
+    tau_1, tau_2 = pair[0] / 12.0, pair[1] / 12.0
+    model = model_log_ratio_vol(sigma, kappa, tau_1, tau_2)
+    stats = spread_statistics((pair,), since=since, path=path)
+    no_roll = spread_statistics((pair,), since=since, exclude_rolls=True, path=path)
+    realised = float(stats["log_ratio_vol"][0])
+    realised_no_roll = float(no_roll["log_ratio_vol"][0])
+    return {
+        "pair": f"c{pair[0]}/c{pair[1]}", "sigma": sigma, "kappa": kappa,
+        "tau_years": (tau_1, tau_2), "model_log_ratio_vol": model,
+        "realised_raw": realised, "realised_excluding_rolls": realised_no_roll,
+        "ratio_raw": realised / model,
+        "ratio_excluding_rolls": realised_no_roll / model,
+        "caveat": ("point maturities, one pair, one window -- illustrative, not a "
+                   "calibrated shortfall. One spread observation is one equation in "
+                   "two unknowns and pins a curve of (sigma, kappa), not a point."),
+    }
+
+
+def _rule(title):
+    print()
+    print(title)
+    print("-" * max(len(title), 60))
 
 
 def main():
     env = describe_environment()
     print(" ".join(f"{k}={v}" for k, v in env.items()))
-    print()
+
+    _rule("Named cases")
     print(f"{'case':>34} {'total EUR':>13} {'intrinsic':>13} {'extrinsic':>12} "
           f"{'share':>7} {'peak':>7}")
-    print("-" * 92)
     for name in CASES:
         try:
             _, res = run_case(name)
@@ -221,6 +417,42 @@ def main():
         print(f"{name:>34} {res['total_eur']:>13,.0f} {res['intrinsic_eur']:>13,.0f} "
               f"{res['extrinsic_eur']:>12,.0f} {share:>6.2%} "
               f"{res['peak_opening_fraction']:>6.2%}")
+
+    _rule("Deliverability the grid actually gives, shipped 30/60 at 240 clips")
+    model, _ = sm.run_valuation(None, CASES["shipped-30-60"]())
+    rates = sm.describe_ratchet_rates(model)
+    show = rates.nlargest(6, "withdrawal loss")
+    print(show[["fullness", "withdrawal contract MWh/day", "withdrawal grid MWh/day",
+                "withdrawal loss MWh/day", "withdrawal loss"]].to_string(
+        index=False, float_format=lambda v: f"{v:,.3f}"))
+    worst = sm.worst_ratchet_rate_loss(model)
+    print(f"worst loss  injection {worst['injection']:.1%}   "
+          f"withdrawal {worst['withdrawal']:.1%}")
+    print("The loss is a sawtooth: it is zero wherever rate x multiplier lands on an")
+    print("integer and worst just below one. A mild ratchet is not a safe ratchet.")
+
+    _rule("Inventory-grid convergence, shipped 30/60 "
+          f"(gate: < {CONVERGENCE_TOLERANCE:.1%} over each of the last two doublings)")
+    ladder = inventory_grid_ladder(
+        ratchets=SOFT_RATCHETS, min_inventory={"2027-10-01": 0.70})
+    print(ladder.drop(columns=["refused"]).to_string(
+        index=False, float_format=lambda v: f"{v:,.4f}"))
+    passed, steps = convergence_verdict(ladder)
+    print(steps.to_string(index=False, float_format=lambda v: f"{v:,.5f}"))
+    print(f"VERDICT: {'converged' if passed else 'NOT CONVERGED'}")
+
+    _rule("Price-grid convergence at a fixed inventory grid")
+    print(price_grid_ladder(ratchets=SOFT_RATCHETS,
+                            min_inventory={"2027-10-01": 0.70}).to_string(
+        index=False, float_format=lambda v: f"{v:,.4f}"))
+
+    _rule("Realised forward statistics, 2015 onward")
+    print(spread_statistics().to_string(index=False,
+                                        float_format=lambda v: f"{v:,.6f}"))
+
+    _rule("The spread comparison, with its assumptions stated")
+    for key, value in spread_comparison().items():
+        print(f"  {key:>24}: {value}")
 
 
 if __name__ == "__main__":

@@ -2558,3 +2558,138 @@ def test_the_repricing_identity_survives_fuel_loss():
         reprice = float(np.dot(model.d_curve[:n] * np.asarray(model.delta[:n]),
                                np.asarray(model.fwd)[:n]))
         assert abs(reprice - value) / max(abs(value), 1.0) < 1e-9, (loss, reprice, value)
+
+
+# ── P1.4: the discretisation loss, made visible and gated ─────────────────────
+
+def test_the_zero_rate_guard_is_not_an_accuracy_certificate():
+    """`assert_ratchets_expressible` passes while the rate is a third too slow.
+
+    It catches only `int(rate * multiplier) == 0`. Everything short of zero was
+    rounded down in silence, and a silently slower store fills less, so the deal
+    was under-valued with no indication anywhere. On the SHIPPED notebook profile
+    -- the mild one, chosen so the ratchets and the 70 % floor could coexist --
+    the worst withdrawal level loses about a third of its contractual rate.
+    """
+    import benchmarks
+
+    model, _ = sm.run_valuation(None, benchmarks.CASES["shipped-30-60"]())
+    sm.assert_ratchets_expressible(model)                 # passes: nothing floors to zero
+
+    worst = sm.worst_ratchet_rate_loss(model)
+    assert worst["withdrawal"] > 0.30, worst
+    assert worst["injection"] > 0.30, worst
+
+    table = sm.describe_ratchet_rates(model)
+    at = int(table["withdrawal loss"].idxmax())
+    contract = table["withdrawal contract MWh/day"][at]
+    grid = table["withdrawal grid MWh/day"][at]
+    assert grid < contract
+    assert grid == pytest.approx(np.floor(contract / model.v_step) * model.v_step)
+
+    # The loss is a sawtooth, not a bias: exactly zero wherever rate x multiplier
+    # lands on an integer. A profile can therefore look fine at one fullness and
+    # be badly wrong at the next.
+    assert float(np.nanmin(table["withdrawal loss"].to_numpy())) == pytest.approx(0.0)
+
+    # And the opt-in gate fires where the default does not.
+    with pytest.raises(ValueError, match="understated by"):
+        sm.assert_ratchet_rates_expressible(model, max_relative_loss=0.05)
+
+
+def test_refining_the_clip_is_free_only_when_the_rates_are_already_exact():
+    """The claim held in the one case that was checked, and nowhere else."""
+    import benchmarks
+
+    exact = benchmarks.inventory_grid_ladder(ladder=(60, 240), n_p=8)
+    assert exact["total_eur"].nunique() == 1, exact["total_eur"].tolist()
+    assert float(exact["worst wdr rate loss"].max()) == pytest.approx(0.0)
+
+    ratcheted = benchmarks.inventory_grid_ladder(
+        ladder=(240, 480), ratchets=benchmarks.SOFT_RATCHETS, n_p=8)
+    lo, hi = ratcheted["total_eur"].tolist()
+    assert hi > lo * 1.005, (lo, hi)
+    assert ratcheted["worst wdr rate loss"].iloc[1] < ratcheted["worst wdr rate loss"].iloc[0]
+
+
+def test_the_convergence_gate_fails_the_grid_it_should():
+    """A gate that passes everything is not a gate.
+
+    The declared threshold is a proposed engineering one, not an achieved result
+    and not a commercial tolerance: total AND intrinsic within 0.5 % over each of
+    two successive doublings.
+    """
+    import benchmarks
+
+    exact = benchmarks.inventory_grid_ladder(ladder=(60, 120, 240, 480), n_p=8)
+    passed, steps = benchmarks.convergence_verdict(exact)
+    assert passed, steps
+    assert float(steps["total_eur"].max()) == pytest.approx(0.0, abs=1e-12)
+
+    coarse = benchmarks.inventory_grid_ladder(
+        ladder=(240, 480, 960), ratchets=benchmarks.SOFT_RATCHETS, n_p=8)
+    passed, steps = benchmarks.convergence_verdict(coarse)
+    assert not passed, steps
+
+    # Two points cannot show two successive doublings, so the verdict is "no",
+    # not "yes by default".
+    assert not benchmarks.convergence_verdict(coarse.head(2))[0]
+
+
+def test_the_price_grid_is_checked_separately_from_the_inventory_grid():
+    """So that refining one cannot conceal error in the other, or be blamed for it."""
+    import benchmarks
+
+    table = benchmarks.price_grid_ladder(
+        ladder=(15, 20, 25), n_states=240, ratchets=benchmarks.SOFT_RATCHETS)
+    values = table["total_eur"].to_numpy()
+    spread = (values.max() - values.min()) / abs(values.mean())
+    assert spread < 0.005, table          # converged in n_p at the shipped width
+
+
+# ── The spread comparison, executable rather than quoted ──────────────────────
+
+def test_the_realised_forward_statistics_reproduce():
+    """The correlations the P4.1 case rests on, from named inputs.
+
+    These reproduce an independent review's figures to six decimals, on different
+    NumPy/pandas/Numba versions. The magnitudes built on them did not, which is
+    why the calculation now lives in `benchmarks.py` instead of in prose.
+    """
+    import benchmarks
+
+    stats = benchmarks.spread_statistics().set_index("pair")
+    expected = {"c1/c3": 0.917095, "c1/c6": 0.801426, "c6/c12": 0.770636,
+                "c1/c12": 0.742070, "c12/c24": 0.802850, "c1/c24": 0.632737}
+    for pair, corr in expected.items():
+        assert stats.loc[pair, "correlation"] == pytest.approx(corr, abs=5e-7), pair
+    assert stats.loc["c6/c12", "log_ratio_vol"] == pytest.approx(0.373101, abs=5e-6)
+
+    # A one-factor model forces every one of these to 1.000, which is the finding
+    # that survived. Excluding rolls does not remove the mismatch.
+    no_roll = benchmarks.spread_statistics(exclude_rolls=True).set_index("pair")
+    assert no_roll.loc["c6/c12", "correlation"] < 0.80
+    assert no_roll.loc["c6/c12", "observations"] < stats.loc["c6/c12", "observations"]
+
+
+def test_the_model_spread_volatility_is_not_monotone_in_mean_reversion():
+    """Which is why a sign flip cannot be an acceptance test.
+
+    `sigma * |exp(-k t1) - exp(-k t2)|` tends to zero at both ends -- the loadings
+    meet at 1 as k -> 0 and at 0 as k -> infinity -- so it peaks in between. The
+    P4.1 design proposed "extrinsic must fall with mean reversion" as the gate for
+    the whole item; it would reject a correct model.
+    """
+    import benchmarks
+
+    grid = np.linspace(0.01, 20.0, 2000)
+    vols = np.array([benchmarks.model_log_ratio_vol(0.5, k, 0.5, 1.0) for k in grid])
+    peak = float(grid[int(vols.argmax())])
+    assert 1.0 < peak < 2.0, peak
+    assert vols[0] < vols.max() and vols[-1] < vols.max()
+
+    # The published comparison, with its assumptions attached.
+    got = benchmarks.spread_comparison(sigma=0.50, kappa=1.0, pair=(6, 12))
+    assert got["model_log_ratio_vol"] == pytest.approx(0.119326, abs=1e-6)
+    assert 3.0 < got["ratio_raw"] < 3.3, got            # about 3.1x, not nine
+    assert 3.0 < got["ratio_excluding_rolls"] < 3.3, got

@@ -2,8 +2,9 @@
 
 **As of 2026-09-10 (evening).** An independent review of the storage day landed, overturned
 two results recorded as established — the ratchet cap and the case for a second factor — and
-was itself replied to with an implementation plan. **The inventory-bound repair is done**;
-the ratchet discretisation is not. Read
+was itself replied to with an implementation plan. **The inventory-bound repair is done, and the ratchet
+discretisation is now measured, gated and reported** — though the shipped notebook still
+chooses a grid 0.53 % short of the gate, deliberately and in print. Read
 [REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md) and
 [REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md)
 together. Update this file when that changes — a status document that lags is worse than none.
@@ -12,7 +13,7 @@ together. Update this file when that changes — a status document that lags is 
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **105 passed** |
+| Tests | `python -m pytest -q` → **111 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it |
 
@@ -171,7 +172,7 @@ the document to argue with.
 | ~~P1.1~~ | ~~Tunnel semantics — hard vs soft, before/after action~~ | **Done 2026-09-10 (evening).** Hard, on the opening balance. Three defects repaired: nearest rounding relaxed both sides, the balance was rebuilt without its opening inventory, and the check compared an expectation. The terminal condition was hardened with it — a `-1e9` penalty is purchasable too |
 | P1.2 | Curve-shape acceptance criteria | `main` already reprices its input contracts; the knot solve is now a refinement, worth doing only against stated criteria |
 | P1.3 | Production discount-curve source, purpose and settlement timing | `discount_rate` now prices time value; where a *real* market curve comes from, whether a rate is market/funding/hurdle, and the contractual settlement dates remain open |
-| **P1.4** | **Withdrawal capacity, remaining half — NOW THE TOP ITEM** | `int(rate × multiplier)` understates a ratcheted withdrawal rate by up to 34 %, and the shipped 30/60 notebook is not grid-converged (+2.5 % at 960 clips, still moving). Needs a discretisation policy and a convergence gate, not just a finer grid. Also `inj_days` still means two things |
+| **P1.4** | **Withdrawal capacity — instrumented, not closed** | The loss is now visible: `describe_ratchet_rates()` reports contract against grid MWh/day per inventory level, and it is a **sawtooth** — zero where `rate × multiplier` lands on an integer, 33 % just below one, even on the *mild* shipped profile. `benchmarks.py` carries the convergence ladder and its verdict; the shipped deal converges at **3,840 clips** and the notebook ships 960 with its 0.53 % residual printed. Remaining: whether to pay ~8 s a valuation for the converged grid by default, fractional-volume actions if not, and `inj_days` still meaning two things |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | ~~P2.2~~ | ~~Scale-aware exercise tie threshold~~ | **Considered and declined 2026-09-10.** It cannot misprice a deal — nominal cash is identical to nine decimals whether the store turns once or twice — but it can double the reported hedge, and only at a rate near 1e-9 with a hundredfold size contrast. Left as is |
 | P3.4 | Justify or change the 0.9 default vol | Part of calibration |

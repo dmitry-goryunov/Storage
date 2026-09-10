@@ -207,7 +207,7 @@ yet.
 
 Ranked by how wrong the answer is today, not by how interesting the work is.
 
-### 1. Ratchet discretisation *(review §3; absorbs P1.4)*
+### 1. Ratchet discretisation *(review §3; absorbs P1.4)* — **INSTRUMENTED**
 
 The shipped notebook understates its own deal by ≥2.5 % and is still moving; the test suite
 understates the harsher profile by 70 %; and three written claims are false. Not merely
@@ -215,6 +215,17 @@ understates the harsher profile by 70 %; and three written claims are false. Not
 inventory level, and gate on value and feasibility convergence at fixed physical inputs.
 Retain the zero-rate guard as an early check. Retract the notebook prose, the FINDINGS
 bullets, and replace the test.
+
+> **Done, later the same evening**, except the last decision. `describe_ratchet_rates()`
+> reports contract against grid MWh/day per inventory level, and the loss turns out to be a
+> **sawtooth** — exactly zero where `rate × multiplier` lands on an integer, **33 % just
+> below one** — on the *mild* shipped profile, not the harsh one. A mild ratchet is not a
+> safe ratchet. `benchmarks.py` carries the inventory ladder, a separate price-grid ladder
+> and the convergence verdict (< 0.5 % on total *and* intrinsic over each of two successive
+> doublings, with an absolute EUR floor). The shipped deal converges at **3,840 clips** at
+> 3,032,172 EUR; the notebook now ships 960 behind a `REFINEMENT` knob and prints that it is
+> **0.53 % low**. Still open: whether to pay ~8 s a valuation for the converged grid by
+> default, fractional-volume actions if not, and `inj_days` meaning two things.
 
 ### 2. The three inventory-bound defects *(review §2; settles P1.1)* — **DONE**
 
