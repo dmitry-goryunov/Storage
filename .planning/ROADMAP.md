@@ -14,6 +14,23 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 
 1. Define hard versus soft tunnel semantics, including whether constraints apply
    before action, after action, or at both points. Then implement and test finding 13.
+
+   PARTLY ADDRESSED 2026-09-10, and the earlier note that "the tunnels cannot bind
+   as built" was wrong. They bind exactly: a 70 % floor on 1 April holds at 42.00 of
+   60 clips, and a 30 % ceiling on 1 October at 18.00. What was missing was a way to
+   reach them -- `value_storage` read no such parameter and `set_volume_states`
+   resets the arrays -- so `min_inventory`/`max_inventory` now carry date to
+   fraction through `run_valuation`, and the convention is documented: the bound
+   applies to the balance the day OPENS with. Reported on the closing balance the
+   same schedule looks a clip short, which is the ambiguity this item is really
+   about.
+
+   Two things still open. The choice of convention is documented, not decided --
+   a contract may mean either balance. And the constraint remains a penalty of
+   `1000 * v_step` per clip, so a large enough deal can pay it and breach the
+   bound; `value_storage` now re-checks each bound on the built policy and raises
+   rather than reporting a valuation of a different contract, but that is a
+   detector, not a fix. The arbitrary scale is still arbitrary.
 2. Define curve-shape acceptance criteria for continuity, overshoot, positivity and
    valuation stability before reconsidering the exact knot solve.
 3. PARTLY ADDRESSED: `discount_rate` now builds `d_curve` (annual, continuously

@@ -305,6 +305,34 @@ the level and the call sells 4.395 above it. In log terms that is −0.1104 agai
 tail turns a smaller log move into a larger euro move. The gap widens with vol (0.078 at
 30 %, 0.215 at 50 %). A symmetric result in euros would be the bug.
 
+## Dated inventory bounds
+
+A storage contract that says "1 October inventory at least 70 %" is expressed as
+
+    params["min_inventory"] = {"2027-10-01": 0.70}
+    params["max_inventory"] = {"2027-04-01": 0.30}
+
+date to **fraction of working volume** — what the contract says, and it survives a change of
+clip size. Several dates may be given; each constrains that day only.
+
+**The bound applies to the balance the day opens with**, before that day's injection or
+withdrawal. That is where the model's penalty attaches, and it is what most contracts intend,
+but it is not the only reading: the same schedule reported on the *closing* balance shows the
+day's move already applied and can look a clip short. A 70 % floor on 1 April binds at
+exactly 42.00 of 60 clips on the opening balance and 41 on the closing one. Roadmap P1.1
+covers promoting this from documented to chosen.
+
+**It is a penalty, not a hard constraint** — `1000 * v_step` per clip out of bounds. Large
+against an ordinary deal, but a number rather than a guarantee, so a big enough contract can
+pay it and breach the bound. `value_storage` therefore re-checks every bound on the built
+policy and raises if one did not hold, rather than returning a valuation of a contract nobody
+asked for. A floor that is physically unreachable — 100 % by 15 January on a 30-day fill from
+empty — fails there.
+
+Bounds are set after `set_volume_states`, which resets the tunnel arrays. A date outside the
+model's grid raises rather than being ignored, as does a fraction outside [0, 1] and a floor
+above its ceiling on the same day.
+
 ## The master invariant
 
     sum_i  d_curve[i] * delta[i] * fwd[i]  ==  v[0, n_p, n_op_start]

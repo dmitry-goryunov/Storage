@@ -644,6 +644,91 @@ def intrinsic_components(model, strike=0.0):
             attribution["settlement_timing"] + attribution["interaction"] + 0.0)
 
 
+def apply_inventory_bounds(model, params):
+    """Set dated inventory floors and ceilings from `min_inventory`/`max_inventory`.
+
+    Both are mappings of date -> fraction of working volume, so a term sheet
+    reading "1 October inventory at least 70 %" becomes
+    ``{"2027-10-01": 0.70}``. A fraction is used rather than MWh because it is
+    what the contract says and it survives a change of clip size.
+
+    **The bound applies to the balance the day OPENS with**, before that day's
+    injection or withdrawal. That is the model's own convention -- the penalty
+    attaches to the state at time `i` -- and it is the reading most storage
+    contracts intend, but it is not the only one: a report of the closing
+    balance will show the day's move already applied and can look a clip short.
+    Roadmap P1.1 covers making the choice explicit rather than implied.
+
+    Call after `set_volume_states`, which resets the tunnel arrays. The bound is
+    enforced by a penalty rather than a hard constraint, so
+    `assert_inventory_bounds` re-checks it on the built policy.
+    """
+    n_states = model.n_op - 1
+    bounds = []
+    for key, kind in (("min_inventory", "min"), ("max_inventory", "max")):
+        spec = params.get(key)
+        if not spec:
+            continue
+        for when, fraction in dict(spec).items():
+            stamp = pd.Timestamp(when)
+            fraction = float(fraction)
+            if not 0.0 <= fraction <= 1.0:
+                raise ValueError(
+                    f"{key}[{when}] is {fraction}, but it is a fraction of working volume "
+                    f"and must lie in [0, 1]. For 70 % pass 0.70.")
+            index = (stamp - model.valDate).days
+            if not 0 <= index < model.n_t:
+                raise ValueError(
+                    f"{key}[{when}] falls outside the model's grid, which runs "
+                    f"{model.valDate:%Y-%m-%d} to {model.backStop:%Y-%m-%d}. A bound the "
+                    f"model cannot see would be silently ignored.")
+            bounds.append((index, kind, stamp, fraction, int(round(fraction * n_states))))
+
+    for index, kind, stamp, fraction, clips in bounds:
+        if kind == "min":
+            model.mintunnel[index] = clips
+        else:
+            model.max_tunnel[index] = clips
+    for index, _, stamp, _, _ in bounds:
+        if model.mintunnel[index] > model.max_tunnel[index]:
+            raise ValueError(
+                f"inventory bounds cross on {stamp:%Y-%m-%d}: floor "
+                f"{model.mintunnel[index]} clips above ceiling {model.max_tunnel[index]}.")
+    return bounds
+
+
+def assert_inventory_bounds(model, bounds, tolerance_clips=1e-6):
+    """Verify dated inventory bounds held on the built policy.
+
+    The tunnel is a **penalty**, not a hard constraint: `1000 * v_step` per clip
+    out of bounds. That is large against an ordinary deal but it is a number, not
+    a guarantee, so a big enough contract can pay it and breach the bound. This
+    turns that into a failure rather than a quietly wrong schedule.
+
+    Checked on the opening balance, matching `apply_inventory_bounds`.
+    """
+    if not bounds:
+        return
+    n = model.n_t
+    moved = model.prob[:n] * model.strat[:n] * model.v_step
+    net = moved.sum(axis=(1, 2))
+    closing = np.cumsum(net)
+    opening = np.concatenate([[float(model.initial_state) * model.v_step], closing[:-1]])
+
+    for index, kind, stamp, fraction, clips in bounds:
+        held = opening[index] / model.v_step
+        if kind == "min" and held < clips - tolerance_clips:
+            raise ValueError(
+                f"the {fraction:.0%} floor on {stamp:%Y-%m-%d} was not met: the day opens "
+                f"with {held:.2f} clips against {clips}. The tunnel is a penalty of "
+                f"1000*v_step per clip, and this deal was worth more than that -- raise the "
+                f"penalty or impose the bound as a hard constraint.")
+        if kind == "max" and held > clips + tolerance_clips:
+            raise ValueError(
+                f"the {fraction:.0%} ceiling on {stamp:%Y-%m-%d} was breached: the day opens "
+                f"with {held:.2f} clips against {clips}. See the note above on the penalty.")
+
+
 def resolve_grid(params, states_key):
     """Map physical inputs to the model's (clip size, #states, clips/day).
 
@@ -926,6 +1011,8 @@ def value_storage(curve, params):
     # exp_ex/delta describe a different deal from the one priced.
     s.set_volume_states(n_states, initial_state=init_inv)
     apply_ratchets_from_params(s, params)
+    # After set_volume_states, which resets the tunnel arrays.
+    inventory_bounds = apply_inventory_bounds(s, params)
     s.t_p_curve = np.full(s.n_op + 2, -1e9)
     s.t_p_curve[term_inv] = 0.0
 
@@ -940,6 +1027,8 @@ def value_storage(curve, params):
 
     s.n_p = params["n_p_full"]
     s.build()
+    # The tunnel is a penalty, not a hard constraint, so verify rather than assume.
+    assert_inventory_bounds(s, inventory_bounds)
     total_eur = s.v[0, s.n_p, init_inv]
     extrinsic_eur = total_eur - intrinsic_eur if params["run_intrinsic"] else np.nan
     extrinsic_profile_raw = np.array(s.exp_ex)

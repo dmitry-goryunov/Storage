@@ -2077,3 +2077,87 @@ def test_the_intrinsic_hedge_is_the_intrinsic_schedule():
     extrinsic_delta = total_delta - intrinsic_delta
     np.testing.assert_allclose(extrinsic_delta.sum(), total_delta.sum(),
                                rtol=0, atol=1e-9 * scale)
+
+
+def _dated_storage(**extra):
+    """A 30/60 store on a two-level curve, with optional dated inventory bounds."""
+    months = {1: 30.0, 2: 30.0, 3: 25.0, 4: 25.0, 5: 25.0, 6: 25.0,
+              7: 25.0, 8: 25.0, 9: 25.0, 10: 30.0, 11: 30.0, 12: 30.0}
+    span = pd.date_range("2026-01-01", "2029-06-30", freq="D")
+    curve = pd.Series([months[d.month] for d in span], index=span)
+    params = dict(product_type="storage", valDate="2026-06-01",
+                  storageStart="2027-01-01", storageEnd="2027-12-31",
+                  capacity_mwh=600_000.0, daily_max=20_000.0, clips_per_day=2,
+                  inj_rate=2, wdr_rate=1, initial_inv_clips=0, terminal_inv_clips=0,
+                  inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=0,
+                  run_intrinsic=False, discount_rate=0.10, daily_curve=curve)
+    params.update(extra)
+    model, _ = sm.run_valuation(None, params)
+    n = model.n_t
+    closing = np.cumsum((model.prob[:n] * model.strat[:n] * model.v_step).sum(axis=(1, 2)))
+    opening = np.concatenate([[0.0], closing[:-1]])
+    dates = pd.DatetimeIndex(model.date_span)[:n]
+    return model, pd.Series(opening, index=dates), pd.Series(closing, index=dates)
+
+
+def test_dated_inventory_bounds_bind_on_the_opening_balance():
+    """"1 October inventory at least 70 %" is now a parameter, and it binds.
+
+    The mechanism existed -- `mintunnel`/`max_tunnel` with a `1000*v_step` per
+    clip penalty -- but nothing reached it: `value_storage` read no such param
+    and `set_volume_states` resets the arrays, so a bound could only be set by
+    building a `Storage` by hand. `min_inventory`/`max_inventory` now carry
+    date -> fraction through `run_valuation`.
+
+    The bound applies to the balance the day **opens** with, before that day's
+    move. Reported on the closing balance the same schedule looks a clip short,
+    which is the ambiguity roadmap P1.1 names; the convention is now documented
+    rather than implied.
+    """
+    capacity = 600_000.0
+    _, free_open, _ = _dated_storage()
+    assert free_open["2027-04-01"] < 0.01 * capacity, free_open["2027-04-01"]
+
+    _, open_floor, close_floor = _dated_storage(min_inventory={"2027-04-01": 0.70})
+    assert open_floor["2027-04-01"] == pytest.approx(0.70 * capacity, rel=1e-9)
+    # The same day's closing balance is a move lower -- both are legitimate
+    # readings of "1 April inventory", which is exactly why it must be stated.
+    assert close_floor["2027-04-01"] < open_floor["2027-04-01"]
+
+    _, open_ceiling, _ = _dated_storage(max_inventory={"2027-10-01": 0.30})
+    assert open_ceiling["2027-10-01"] == pytest.approx(0.30 * capacity, rel=1e-9)
+
+    # Several at once, and a bound that does not bind changes nothing.
+    _, several, _ = _dated_storage(min_inventory={"2027-04-01": 0.70},
+                                   max_inventory={"2027-12-15": 0.10})
+    assert several["2027-04-01"] == pytest.approx(0.70 * capacity, rel=1e-9)
+    assert several["2027-12-15"] <= 0.10 * capacity + 1e-6
+
+    model_free, _, _ = _dated_storage()
+    model_slack, _, _ = _dated_storage(min_inventory={"2027-10-01": 0.70})
+    assert float(model_slack.v[0, model_slack.n_p, model_slack.initial_state]) == pytest.approx(
+        float(model_free.v[0, model_free.n_p, model_free.initial_state]), rel=1e-12), (
+        "a bound the schedule already satisfies must not change the value")
+
+
+def test_inventory_bounds_refuse_what_they_cannot_honour():
+    """Each refusal replaces a silent wrong answer, not a working configuration."""
+    with pytest.raises(ValueError, match="fraction of working volume"):
+        _dated_storage(min_inventory={"2027-04-01": 70})          # 70, meaning 70 %
+    with pytest.raises(ValueError, match="outside the model's grid"):
+        _dated_storage(min_inventory={"2030-01-01": 0.5})         # never seen by the DP
+    with pytest.raises(ValueError, match="bounds cross"):
+        _dated_storage(min_inventory={"2027-04-01": 0.8},
+                       max_inventory={"2027-04-01": 0.3})
+
+
+def test_an_unmeetable_inventory_floor_fails_rather_than_being_approximated():
+    """The tunnel is a penalty, so a bound can be breached. Say so, do not hide it.
+
+    A floor above what the injection rate can reach by that date is physically
+    impossible. The optimiser pays the penalty and gets as close as it can, which
+    would otherwise be reported as a valuation of the contract asked for.
+    """
+    # 30 days to fill, so 100 % by 15 January is unreachable from empty on 1 January.
+    with pytest.raises(ValueError, match="floor on 2027-01-15 was not met"):
+        _dated_storage(min_inventory={"2027-01-15": 1.0})
