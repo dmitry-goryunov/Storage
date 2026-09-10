@@ -1203,9 +1203,21 @@ def params_for_run_valuation(prm):
     visible in the notebook). The clip size is ``v_step = capacity_mwh / n_states``
     and the daily rate is the base inject rate ``round(n_states / inj_days)``.
 
-    NOTE: this uses the SYMMETRIC library grid — a single daily clip rate shared
-    by injection and withdrawal. Asymmetric rates (``inj_days != wdr_days``) are
-    not supported by ``value_storage`` yet; use ``forward.ipynb`` for those.
+    Asymmetric rates ARE supported for storage: this function derives
+    ``inj_rate = max(1, round(n_states / inj_days))`` and ``wdr_rate`` likewise,
+    and ``value_storage`` reads both. A "30 in, 60 out" deal comes out as
+    ``inj_rate=2, wdr_rate=1`` on a 60-state grid.
+
+    **The grid has to be able to express the rates.** They are whole clips per
+    day, so days-to-fill is ``n_states / inj_rate`` and the rounding collapses on
+    a grid that is too coarse: 30/60 needs ``n_states`` to be a multiple of 60,
+    because at ``n_states=30`` the withdrawal side rounds to 1 and silently takes
+    the injection rate, pricing 30/30. Check the derived rates rather than
+    assuming the days you asked for survived.
+
+    ``clips_per_day`` here stays the symmetric injection rate, which is what
+    ``resolve_grid`` uses to size the clip; the asymmetry lives in
+    ``inj_rate``/``wdr_rate``.
     """
     p = dict(prm)
     n_states = int(p["n_states"])

@@ -15,6 +15,7 @@ import sys
 from unittest import SkipTest
 
 import numpy as np
+import pytest
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -60,6 +61,25 @@ def test_profiled_central_node_nonzero_at_np30():
     s.build()
     assert s.profiled() > 0.0
     assert s.v[0, 0, s.n_op_start] == 0.0   # the old (buggy) boundary read
+
+
+def test_profiled_raises_for_zero_net_exercise_volume():
+    """Value per net exercised MWh is undefined at zero net volume, not zero.
+
+    Returning 0.0 would report "this contract is worth nothing per MWh" for a
+    cycling strategy that may be worth a great deal, and would do it silently.
+    Nothing in the library calls `profiled()` on a two-sided deal -- every caller
+    is a swing path, and `intrinsic_attribution` guards before dividing -- so the
+    raise blocks no legitimate use.
+    """
+    curve = _curve_csv()
+    s = sm.Storage("2026-01-01", "2026-04-01", "2026-09-30", curve=curve,
+                   n_p=0, v_step=1000, sVol=0.6, sMR=1.0)
+    s.build()
+    s.exp_ex[:] = [0.0] * len(s.exp_ex)
+
+    with pytest.raises(ValueError, match="zero-net-volume"):
+        s.profiled()
 
 
 def test_readme_example_decomposition_nonnegative():

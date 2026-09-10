@@ -40,6 +40,14 @@ absent field. The app treasury scenario is exercised end to end, and every code 
    inexpressible on the current grid. "30 in, 90 out" is silently priced as
    "30 in, 30 out".
 
+   ASYMMETRIC RATES WORK, and the docstring that said otherwise is fixed
+   (2026-09-10). `params_for_run_valuation` derives inj_rate and wdr_rate from
+   inj_days/wdr_days and `value_storage` reads both, so "30 in, 60 out" prices
+   correctly as inj_rate=2, wdr_rate=1 on a 60-state grid, with the schedule
+   honouring the 20,000 and 10,000 MWh/day caps. What remains open is the
+   rounding: rates are whole clips per day, so 30/60 needs n_states to be a
+   multiple of 60, and a coarser grid silently prices 30/30. Covered by a test.
+
    PARTLY ADDRESSED: `value_storage` now rejects `wdr_days` without `wdr_rate`
    rather than dropping it, so the mis-specification cannot pass silently. No
    valuation changed -- the legacy path (no `wdr_days`) and the workbook path

@@ -1779,3 +1779,64 @@ def test_no_notebook_carries_stray_control_characters():
                         f"{os.path.basename(path)} cell {index} ({cell.get('cell_type')}): "
                         f"{hex(ord(char))} in {source[max(0, position - 25):position + 10]!r}")
     assert not offenders, "stray control characters:\n" + "\n".join(offenders)
+
+
+def test_asymmetric_storage_rates_survive_the_days_to_rate_conversion():
+    """"30 in, 60 out" works, but only on a grid that can express it.
+
+    `params_for_run_valuation` derives `rate = max(1, round(n_states / days))`
+    for both directions and `value_storage` reads both, so asymmetric storage is
+    supported -- its docstring said otherwise until 2026-09-10 and sent readers
+    to `forward.ipynb`.
+
+    The catch is the rounding. Rates are whole clips per day, so 30/60 needs
+    `n_states` to be a multiple of 60: at 30 states the withdrawal side rounds to
+    1 and silently takes the injection rate, pricing 30/30 while reporting
+    nothing. That is the same class of failure as `wdr_days` being dropped, and
+    it is why the derived rates are worth checking rather than assuming.
+    """
+    for n_states, expect in ((30, (1, 1)), (45, (2, 1)), (60, (2, 1)), (120, (4, 2))):
+        params = sm.params_for_run_valuation(dict(
+            product_type="storage", n_states=n_states, capacity_mwh=n_states * 10_000.0,
+            inj_days=30, wdr_days=60,
+            initial_storage_mwh=0.0, terminal_storage_mwh=0.0))
+        assert (params["inj_rate"], params["wdr_rate"]) == expect, (n_states, params)
+
+    # 30 states cannot express it: both sides come out at one clip a day.
+    assert sm.params_for_run_valuation(dict(
+        product_type="storage", n_states=30, capacity_mwh=300_000.0, inj_days=30,
+        wdr_days=60, initial_storage_mwh=0.0,
+        terminal_storage_mwh=0.0))["wdr_rate"] == 1
+
+    # 60 states does, and the physical schedule honours it.
+    index = pd.date_range("2026-01-01", "2028-12-31", freq="D")
+    doy = index.dayofyear.values
+    curve = pd.Series(25.0 + 6.0 * np.cos(2 * np.pi * (doy - 15) / 365.25), index=index)
+    capacity, inject, withdraw = 600_000.0, 20_000.0, 10_000.0
+
+    model, _ = sm.run_valuation(None, dict(
+        product_type="storage", valDate="2026-06-01",
+        storageStart="2027-01-01", storageEnd="2027-12-31",
+        capacity_mwh=capacity, daily_max=inject, clips_per_day=2,
+        inj_rate=2, wdr_rate=1, initial_inv_clips=0, terminal_inv_clips=0,
+        inj_cost=0.0, wdr_cost=0.0, vol=0.5, sMR=1.0, n_p_full=0,
+        run_intrinsic=False, discount_rate=0.0, daily_curve=curve))
+
+    assert model.v_step == withdraw, model.v_step
+    assert model.n_states == 60, model.n_states
+
+    n = model.n_t
+    moved = model.prob[:n] * model.strat[:n] * model.v_step
+    injected = np.clip(moved, 0, None).sum(axis=(1, 2))
+    withdrawn = -np.clip(moved, None, 0).sum(axis=(1, 2))
+
+    assert injected.max() <= inject + 1e-6, injected.max()
+    assert withdrawn.max() <= withdraw + 1e-6, withdrawn.max()
+    # The withdrawal cap has to actually bind, or the test proves nothing.
+    assert withdrawn.max() > 0.9 * withdraw, withdrawn.max()
+    assert injected.max() > 1.5 * withdraw, (
+        f"injection should run faster than withdrawal: {injected.max():,.0f}")
+
+    inventory = np.cumsum(injected - withdrawn)
+    assert inventory.max() <= capacity + 1e-6, inventory.max()
+    assert abs(inventory[-1]) < 1e-6, f"must end empty, at {inventory[-1]:,.1f}"
