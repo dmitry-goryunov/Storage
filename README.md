@@ -26,7 +26,7 @@ pip install -r requirements.txt
 # 3. Launch an interactive valuation app
 streamlit run portfolio_app.py      # portfolio Mark-to-Market of the deals in quotes_2.csv
 # or
-streamlit run streamlit_app.py      # value a single swing / storage deal
+streamlit run streamlit_app.py      # complete single-contract swing / storage pricer
 ```
 
 > **First run compiles the Numba kernels (~20–40 s).** This happens once; the
@@ -48,9 +48,10 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 | `quote_data.py`, `delivery_model.py` | Auditable fixed-delivery panel, matched returns, data manifest and monthly-delivery observation functions |
 | `calibration.py`, `calibration-config.json` | Reproducible P-measure one- versus two-factor comparison with frozen training/holdout windows, multi-start fitting and identification gates |
 | `docs/CALIBRATION-SPECIFICATION-2026-09-11.md` | Current S6/S7 method, results, limitations and next course of action |
-| `streamlit_app.py` | Streamlit app — value a single swing/storage deal interactively |
+| `streamlit_app.py` | Unified single-contract app — term-sheet entry, valuation, diagnostics and downloads |
+| `pricing_app_core.py` | Streamlit-independent validation and export boundary for the unified app |
 | `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |
-| `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal; the most feature-complete path (per-deal `sMR`, deal-independent daily curve, asymmetric inject/withdraw rates) |
+| `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal in editable code |
 | `portfolio.ipynb` | Portfolio Mark-to-Market notebook — the scriptable version of `portfolio_app.py` |
 | `Swing_new.ipynb` | *Legacy* driver — original 6-product intrinsic/extrinsic loop over `curve.csv` + `quotes.csv` |
 | `pricing.ipynb` | *Legacy* `run_valuation` driver (no `sMR` / deal-independent-curve support) |
@@ -70,14 +71,50 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 
 | I want to… | Use | Notes |
 |---|---|---|
-| Value a single swing/storage deal, no coding | `streamlit run streamlit_app.py` | Sidebar inputs → MtM + exercise/delta charts |
+| Value a single swing/storage deal, no coding | `streamlit run streamlit_app.py` | Complete term sheet → exact effective grid → PV, schedules, hedge tables and downloads |
 | Mark a whole portfolio of trades to market | `streamlit run portfolio_app.py` | Reads `quotes_2.csv` → per-deal MtM + monthly exposures |
 | Do the same portfolio work in editable code | `portfolio.ipynb` | The notebook `portfolio_app.py` is built from |
-| Build/inspect a daily forward curve, or value storage with **asymmetric** inject/withdraw rates | `forward.ipynb` | The most feature-complete notebook |
+| Build/inspect a daily forward curve in editable code | `forward.ipynb` | Notebook route for experimentation and inspection |
 | Call the model from your own Python | `import storage_model` | Start with `run_valuation()` or the `Storage` class — see [API Reference](#api-reference) |
 | Value products defined in a workbook | `products.xlsx` → `load_product_params()` → `params_for_run_valuation()` → `run_valuation()` | See [Valuing a product from `products.xlsx`](#valuing-a-product-from-productsxlsx) |
 
 **Legacy notebooks** (kept for reference, not the recommended path): `Swing_new.ipynb` (the original 6-product driver over `curve.csv` + `quotes.csv`) and `pricing.ipynb` (an earlier `run_valuation` driver without `sMR` or the deal-independent daily curve).
+
+---
+
+## Single-contract app workflow
+
+1. Select **Put swing**, **Call swing** or **Storage**.
+2. Select the bundled direct curve, upload a direct curve, or use a bundled/uploaded
+   TTF quote matrix. Uploaded direct curves need `contractStart`, `contractEnd` and
+   `value`; quote matrices need a date in the first column and `TTFc1`, `TTFc2`, ...
+   contract columns.
+3. Enter the commercial terms and model assumptions. Select **Run valuation**.
+4. Check **Effective contract** before using the result. Physical quantities are
+   represented exactly on the grid or the valuation is refused with a corrective
+   grid suggestion.
+5. Review contract PV, value decomposition, expected exercise, physical forward
+   delta and PV-tailed futures delta. Download the JSON audit record and the curve,
+   daily schedule and monthly hedge CSV files.
+
+| Input group | Swing | Storage |
+|---|---|---|
+| Dates | valuation, curve, start, end | valuation, curve, start, end |
+| Quantity | maximum total and daily MWh; numerical clips/day | working capacity, grid states, days to fill and days to empty |
+| Boundary state | put: empty-to-full; call: full-to-empty or optional residual | opening and terminal inventory in MWh |
+| Economics | strike; market rate or an explicit one-direction treasury scenario | injection/withdrawal variable cost, injection fuel loss, one market rate |
+| Constraints | mandatory quantity; optional quantity for a call | inventory-dependent injection/withdrawal ratchets and dated inventory floors/ceilings |
+| Stochastic model | volatility, mean reversion, tree half-width, intrinsic toggle | volatility, mean reversion, tree half-width, intrinsic toggle |
+
+The app does not silently round a term sheet to a convenient inventory grid. For
+example, a 600,000 MWh store that fills in 30 days, empties in 60 days and uses
+60 grid states becomes a 10,000 MWh clip with exact rates of two and one clips/day.
+An incompatible 30-state grid for a 30/90-day store is refused and recommends the
+smallest compatible state count.
+
+Volatility and mean reversion remain explicit scenario inputs. The historical S7
+comparison does not identify risk-neutral valuation parameters, so the app does not
+claim that its defaults are market calibrated.
 
 ---
 
@@ -146,7 +183,7 @@ Returns `v` (optimal values) and `strat` (**signed clip count moved** per state)
 | `v_step` | MWh per inventory state (the "clip" size) |
 | `clips_per_day` | max clips injected/withdrawn per active day (the daily rate) |
 | `strat` | signed clip count moved per state (neg = withdraw, pos = inject, 0 = idle) |
-| `exp_ex` / `delta` | expected daily physical exercise / discounted forward-price sensitivity (PV-equivalent MWh) |
+| `exp_ex` / `delta` / `delta_pv` | expected daily physical exercise / physical matching-settlement forward sensitivity / discount-factor-tailed futures sensitivity |
 | `t_p_curve` | terminal inventory payoff/penalty by state (`-1e9` forbids a state) |
 | `i_ratch` / `w_ratch` | per-inventory-level inject/withdraw rate multipliers (ratchets) |
 
