@@ -31,12 +31,18 @@ absent field. The app treasury scenario is exercised end to end, and every code 
    same schedule looks a clip short, which is the ambiguity this item is really
    about.
 
-   Two things still open. The choice of convention is documented, not decided --
-   a contract may mean either balance. And the constraint remains a penalty of
-   `1000 * v_step` per clip, so a large enough deal can pay it and breach the
-   bound; `value_storage` now re-checks each bound on the built policy and raises
-   rather than reporting a valuation of a different contract, but that is a
-   detector, not a fix. The arbitrary scale is still arbitrary.
+   One thing still open: the choice of convention is documented, not decided -- a contract
+   may mean either balance.
+
+   RESOLVED 2026-09-10 (evening): the constraint used to be a penalty of `1000 * v_step` per
+   clip, so a large enough deal could pay it and breach the bound -- at a high enough price
+   level, 19.5 % of paths opened a floored day empty while the checker (which compared an
+   *expectation* to the bound, not the state distribution) accepted every one. A dated bound
+   is now `FORBIDDEN` in the DP itself, inadmissible at any price, with the infeasibility
+   propagating back through every state that could reach it; `value_storage` still re-checks
+   each bound directly against the built policy and raises if the contract turns out
+   infeasible. See `docs/MODEL-CONVENTIONS.md`'s "Dated inventory bounds" and "Kernel
+   constants" sections for the current constants.
 2. Define curve-shape acceptance criteria for continuity, overshoot, positivity and
    valuation stability before reconsidering the exact knot solve.
 3. PARTLY ADDRESSED: `discount_rate` now builds `d_curve` (annual, continuously
@@ -157,10 +163,15 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 recording because the data for them is already in the repository.
 
 `ttf q.xlsx` carries 4,117 day-ahead prints alongside the forward curves, 2010-03-12 to
-2026-03-06, with no gap over three days. So for any historical quote date there is both the
-curve to price a deal on and the realised path to score it against, and all fourteen mid-year
-dates from 2011 to 2024 have a full year of realised prices after them. A rolling backtest is
-therefore a matter of writing the harness, not of finding data.
+2026-03-06. CORRECTED 2026-09-10: the date *index* itself has only one- and three-day gaps
+(weekends), which is not the same as the DA observations — the longest gap between numeric DA
+prints is **five calendar days**, with **34 intervals longer than three days**, and some
+far-forward columns carry hundreds of missing entries, so 55 columns present somewhere does
+not mean a complete panel throughout the history. So for any historical quote date there is
+both the curve to price a deal on and the realised path to score it against, and all fourteen
+mid-year dates from 2011 to 2024 have a full year of realised prices after them. A rolling
+backtest is therefore mostly a matter of writing the harness, not of finding data, but the
+harness still has to handle the gaps rather than assume a clean three-day cadence.
 
 That matters because the two are one job. `sVol` 0.9 and `sMR` 1.0 have no provenance, and
 the same file gives 0.409, 1.083 and 0.549 across three regimes — a judgement about which
@@ -177,10 +188,19 @@ by what they are worth against what they cost.
 
 1. **A second factor, so the seasonal spread can move.** Step-by-step plan, the
    lattice-versus-LSMC fork and the effort estimate are in
-   `docs/DESIGN-P4.1-two-factor.md`. The case is now measured against market data
-   rather than argued from the model: realised correlations since 2015 are 0.801 for
-   c1/c6, 0.771 for c6/c12 and 0.633 for c1/c24, and the c6/c12 spread realises 0.373
-   of annualised vol where this model gives it 0.041 — nine times too little.
+   `docs/DESIGN-P4.1-two-factor.md` — **read its 2026-09-10 (evening) correction notice
+   first**: three of this item's original arguments were found wrong, and the two tables
+   below predate that correction. Realised correlations since 2015 reproduce exactly: 0.801
+   for c1/c6, 0.771 for c6/c12, 0.633 for c1/c24.
+
+   CORRECTED 2026-09-10: the original "nine times too little" comparison for the c6/c12
+   spread — 0.373 realised against 0.041 from the model — is **withdrawn**. It divided by
+   `sqrt(2*kappa)`, which converts a stationary *level* standard deviation, not the annualised
+   volatility of daily log-ratio changes the comparison needs. The corrected point-maturity
+   figure is **about 3.1x**, not nine (0.11933 model against 0.373 pooled-raw or 0.37776
+   no-roll realised, at sigma 0.5, kappa 1) — and even that is illustrative only, one
+   point-maturity comparison, not an established replacement: delivery averaging, observation
+   alignment, estimation window and parameter provenance are all still unspecified.
 
    This is one-factor: every forward is
    driven by a single state variable, so any two forwards are correlated **exactly 1.000**
@@ -197,6 +217,11 @@ by what they are worth against what they cost.
    | 0.2 | 10.5333 | 0.1189 | 1.1 % |
    | 1.0 | 10.5333 | 0.4651 | 4.2 % |
    | 4.0 | 10.5333 | 1.2324 | 10.5 % |
+
+   DISPUTED 2026-09-10 (evening): this table's own correction notice in
+   `docs/DESIGN-P4.1-two-factor.md` reports these three figures "match no recorded
+   configuration" and the shipped notebook instead gives 19.62 %, with 1.91 %/36.86 % across
+   the same kappa range. Not reconciled here — read the notice before citing this table.
 
    -- which shows what the extrinsic is actually measuring: short-term spot wiggle to cycle
    against, not seasonal spread optionality. Faster reversion gives more intra-month churn

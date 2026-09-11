@@ -335,6 +335,36 @@ closes**. `sum_i DF_i · delta_i · F_i == V0` holds at 1.8e-15 for every loss t
 and the reported hedge would no longer have repriced the deal, which is the test that told
 us which convention was right.
 
+## Physical inputs are requested quantities, not grid quantities
+
+A term sheet speaks in MWh and days: capacity, days to fill, days to empty, opening and
+terminal inventory. The DP speaks in whole clips of a grid sized by `n_states`. Until
+2026-09-11 the conversion between them was `max(1, round(n_states / days))`, which always
+returned *something* and never checked whether that something was the rate asked for: a
+30-fill/90-empty contract on a 30-state grid silently rounded withdrawal up to the *injection*
+rate, pricing EUR 131,369 (5.51 %) above the requested contract, and a 5,000 MWh opening
+inventory on a 10,000 MWh clip rounded down to zero — "start half full" became "start empty"
+— both with no error.
+
+`normalise_storage_contract()` replaces that rounding with an exact-or-refused check. It takes
+the requested `capacity_mwh`, `n_states`, `inj_days`/`wdr_days`, and optional
+`initial_storage_mwh`/`terminal_storage_mwh`, and returns the grid quantities
+(`v_step`, `inj_rate`, `wdr_rate`, `initial_inv_clips`, `terminal_inv_clips`) only when every
+one of them reproduces the request to within `GRID_TOLERANCE_MWH` (1e-7 MWh absolute) or
+`GRID_TOLERANCE_RELATIVE` (1e-10 relative) — genuine floating-point slack, not a rounding
+allowance. Otherwise it raises, naming the requested quantity, the nearest whole-clip
+alternative the grid actually offers, and — when `inj_days`/`wdr_days` are whole numbers — the
+smallest `n_states` that would express both exactly. If both an MWh field and its matching
+clip field are given, they must agree or the request is refused rather than one silently
+winning. Every production caller (the library, `benchmarks.py`, the API path, `forward.ipynb`
+and `Storage_30_65.ipynb`) now goes through this one function; there is deliberately no second
+implementation of the conversion left to drift from it.
+
+This is a stricter sibling of the dated-bound rounding below: a bound may be rounded
+*conservatively* because a tighter constraint is still a valid (if more restrictive) reading
+of the contract, but a rate or a boundary inventory has no direction in which rounding is
+conservative, so it is refused instead.
+
 ## Ratchets, and the grid they need
 
 `ratchets` takes a table of fullness to rate multiplier, and the daily rate at inventory
@@ -373,22 +403,30 @@ date to **fraction of working volume** — what the contract says, and it surviv
 clip size. Several dates may be given; each constrains that day only.
 
 **The bound applies to the balance the day opens with**, before that day's injection or
-withdrawal. That is where the model's penalty attaches, and it is what most contracts intend,
-but it is not the only reading: the same schedule reported on the *closing* balance shows the
-day's move already applied and can look a clip short. A 70 % floor on 1 April binds at
-exactly 42.00 of 60 clips on the opening balance and 41 on the closing one. Roadmap P1.1
+withdrawal. That is where the model's constraint attaches, and it is what most contracts
+intend, but it is not the only reading: the same schedule reported on the *closing* balance
+shows the day's move already applied and can look a clip short. A 70 % floor on 1 April binds
+at exactly 42.00 of 60 clips on the opening balance and 41 on the closing one. Roadmap P1.1
 covers promoting this from documented to chosen.
 
-**It is a penalty, not a hard constraint** — `1000 * v_step` per clip out of bounds. Large
-against an ordinary deal, but a number rather than a guarantee, so a big enough contract can
-pay it and breach the bound. `value_storage` therefore re-checks every bound on the built
-policy and raises if one did not hold, rather than returning a valuation of a contract nobody
-asked for. A floor that is physically unreachable — 100 % by 15 January on a 30-day fill from
-empty — fails there.
+**It is a hard constraint, not a penalty.** Until 2026-09-10 it was `1000 * v_step` per clip
+out of bounds — large against an ordinary deal, but a number rather than a guarantee, so a
+big enough contract could pay it and breach the bound; at a high enough price level, 19.5 %
+of paths opened a floored day empty while the checker (which compared an *expectation* to the
+bound) accepted every one. A state outside a dated bound is now `FORBIDDEN` in the DP itself
+(see the kernel constants below): inadmissible at any price, with the infeasibility
+propagating back through every state that could reach it. `value_storage` still re-checks
+every bound directly against the built policy's state distribution (`prob[t, :, l]`, not an
+expectation of it) and raises if the contract turns out infeasible rather than returning a
+valuation nobody asked for. A floor that is physically unreachable — 100 % by 15 January on a
+30-day fill from empty — now fails as "no admissible policy exists," not as a breached
+penalty.
 
 Bounds are set after `set_volume_states`, which resets the tunnel arrays. A date outside the
 model's grid raises rather than being ignored, as does a fraction outside [0, 1] and a floor
-above its ceiling on the same day.
+above its ceiling on the same day — and, since 2026-09-10, rounding a requested fraction to a
+grid state rounds *conservatively* (a floor up, a ceiling down) rather than to the nearest
+state, so the enforced bound is never weaker than the one asked for.
 
 ## The master invariant
 
@@ -427,12 +465,15 @@ recovered from the wrong legs.
 
 ## Kernel constants
 
-| Constant | Meaning |
-|---|---|
-| `-1e9` | A forbidden terminal inventory state in `t_p_curve` |
-| `1e10` | An infeasible transition inside `run_model` (`bigdummy`) — a different quantity from the above |
-| `1000 * v_step` | Penalty per clip outside a tunnel. Arbitrary; scale is on the roadmap |
-| `1e-6` | An exercise whose gain over idling is smaller is snapped to idle. Absolute, not scale-aware; on the roadmap |
+Rewritten 2026-09-10, when the dated inventory bound stopped being a penalty. All four live in
+`storage_kernels.py`.
+
+| Constant | Value | Meaning |
+|---|---:|---|
+| `TERMINAL_FORBIDDEN` | `-1e9` | A disallowed terminal inventory state in `t_p_curve`. Read as a prohibition, not a price: a state at or below this is `FORBIDDEN` outright, not merely a bad value a large enough deal could pay to reach |
+| `FORBIDDEN` | `-1e30` | An inventory state outside a hard dated bound (or reached only through one), at any price. Cannot be entered by the DP; the infeasibility propagates back through every state that could reach it |
+| `INFEASIBLE_VALUE` | `-1e20` | The threshold `assert_contract_feasible` compares the reported value against. Anything at or below it means infeasibility propagated to the top, not a very bad deal — real deal values are millions |
+| `1e-6` | — | An exercise whose gain over idling is smaller is snapped to idle. Absolute, not scale-aware; measured and declined as P2.2 — it cannot misprice a deal at realistic rates (checked across seven orders of magnitude), but it can double the reported hedge at r ≈ 1e-9 with a hundredfold size contrast |
 
 ## Calibration — not established
 

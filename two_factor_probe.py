@@ -14,6 +14,17 @@ needs a second factor when all it was given was a bigger number. **A jointly
 calibrated two-factor model fits the same observed volatility with both factors,
 so `sigma_chi` comes down.** Section 2 does that instead.
 
+"Calibrated" here is narrower than it sounds: mean reversion is FIXED (not
+jointly estimated) and the two factors are held INDEPENDENT, then sigma_chi is
+solved algebraically to hold one scalar variance anchor at its one-factor
+value. That is a variance-ALLOCATION scenario, not a fit to any market
+observation, and the direction it moves sigma_chi is conditional on those two
+choices -- introduce a negative short/long correlation and the algebra can
+require sigma_chi to go UP instead of down for the same target variance (see
+docs/PROJECT-REVIEW-2026-09-10-evening.md finding 3 for a worked
+counterexample). Treat every percentage below as "what this scalar scenario
+gives", not as "what an estimated two-factor model would price a store at."
+
 It changes the answer, including its sign, and it changes the answer for STORAGE
 too -- which section 1 alone would tell you is unaffected. The reply to the
 review put it exactly right: a joint calibration can move the short-factor
@@ -342,8 +353,10 @@ def main():
     print("\n  It is stated at a fixed sigma_chi, and on its own it misleads.")
 
     print("\n" + "=" * 92)
-    print("2. The fair comparison: a CALIBRATED second factor takes volatility out of")
-    print("   the short factor rather than adding it on top")
+    print("2. The fair comparison: a variance-allocation scenario that takes volatility")
+    print("   out of the short factor rather than adding it on top -- at FIXED kappa and")
+    print("   INDEPENDENT factors, not a fit to any market observation. Correlation could")
+    print("   move sigma_chi the other way; see PROJECT-REVIEW-2026-09-10-evening.md #3")
     print("=" * 92)
     _print_anchored(
         f"Anchor: instantaneous spot variance, sigma_chi^2 + sigma_xi^2 held at "

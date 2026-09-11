@@ -441,10 +441,18 @@ def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
 #   annualisation       sqrt(252)
 #   estimation window   2015-01-01 onward, stated per call
 #   delivery periods    APPROXIMATED by point maturities tau_i = i/12 years. A
-#                       real contract delivers over a month, which lowers its
-#                       volatility; the model side of the comparison is therefore
-#                       an upper bound and the ratio below is not a calibration
-#                       result
+#                       real contract delivers over a month, and CORRECTED
+#                       2026-09-10 (evening): that does NOT necessarily lower
+#                       the comparison -- the point-maturity figure is not a
+#                       reliable upper bound on the delivery-averaged one. For
+#                       equal one-month periods ending 0.5y/1y at kappa=1,
+#                       sigma=0.5, the flat-forward delivery-average log-ratio
+#                       vol is 0.12443854, ABOVE the month-end point value
+#                       0.11932561 -- a direct counterexample. The ratio below
+#                       is a point-maturity illustration only, not a
+#                       calibration result either way; see
+#                       IMPLEMENTATION-GUIDE-2026-09-11.md item 20 for the
+#                       actual delivery-weighted observation function
 #   rolls               continuous rank c6 refers to a different delivery month
 #                       after a roll, so month-change observations are optionally
 #                       excluded

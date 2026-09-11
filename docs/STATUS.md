@@ -1,5 +1,10 @@
 # Project status
 
+**As of 2026-09-11 (later still).** S1–S5 and now **S8** (documentation reconciliation) are
+done. What remains is S6/S7, the calibration and model-comparison work proper — data-limited
+by the workbook's 6 March 2026 endpoint, not by further engineering. See the day-by-day
+account below.
+
 **As of 2026-09-11 (later).** [IMPLEMENTATION-GUIDE-2026-09-11.md](IMPLEMENTATION-GUIDE-2026-09-11.md)'s S1–S5 are all done — every one of its acceptance pack's 31 checks now passes, up from 9 when the guide landed. What remains is S6/S7, the calibration and model-comparison work proper, blocked on TTF data past the workbook's 6 March 2026 endpoint regardless of further engineering. See the day-by-day account below.
 
 **As of 2026-09-10 (evening).** An independent review of the storage day landed, overturned
@@ -35,11 +40,15 @@ Fixing the transition law surfaced a second, previously-latent defect: with the 
 
 The qualitative findings are unchanged — a calibrated second factor still costs a store value at every kappa above 0.2 (now 4.97 % at kappa 4, spot anchor, down from a previously reported ~8 %), and the struck swing's answer still flips sign between anchors (+0.81 % spot vs −7.76 % terminal, down from +0.58 %/−10.23 %) — only the specific percentages moved, uniformly smaller, since Euler had been overstating how sharply mean reversion departs from a random walk at this step size. Update this file when that changes — a status document that lags is worse than none.
 
+**S8 done — documentation reconciliation, against [`docs/IMPLEMENTATION-GUIDE-2026-09-11.md`](IMPLEMENTATION-GUIDE-2026-09-11.md) §11's own table, not just this file's own paraphrase of it.** Every current document that still described the dated-bound penalty, the "nine times too little" spread shortfall or the "no gap over three days" DA-observation claim as live now carries the fix or a correction link: [`MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) (the penalty paragraph, the kernel-constants table, and a new section on `normalise_storage_contract`'s requested-versus-effective distinction), [`.planning/ROADMAP.md`](../.planning/ROADMAP.md) (the same penalty language in P1.1, the DA-gap and ninefold claims in P4.1, and a flag on that item's still-unreconciled extrinsic-by-kappa table), and `Storage_30_60.ipynb` (cells 3 and 10). [`REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md)'s provenance section now dates its 34-file/101-test claim to the exact pre-repair commit (`1a01848`, verified against the archive's own recorded `storage_model.py` hash) rather than leaving it looking current, and links [`PROJECT-REVIEW-2026-09-10-evening.md`](PROJECT-REVIEW-2026-09-10-evening.md) — the second, 37-file review this guide itself was built from. `benchmarks.py`'s delivery-averaging comment no longer claims point maturities are a volatility *upper bound*; that direction was disproved by a counterexample (0.12444 delivery-averaged against 0.11933 point, same kappa and sigma), so the comment now says so, and [`FINDINGS-2026-09-10-evening.md`](FINDINGS-2026-09-10-evening.md) carries a correction link where it repeated the same assumption. `two_factor_probe.py`'s narrative and printed "Reading" section now say plainly that its section 2 is a variance-*allocation* scenario at fixed mean reversion and independent factors, not a fit to any market observation, and that correlation could move `sigma_chi` the other way.
+
+One row of the guide's table is deliberately not fully closed: `DESIGN-P4.1-two-factor.md` already carries its 2026-09-10 correction notice, but the "link a new current calibration specification" half of that row has nothing to link to yet — that specification is S7's own deliverable, not something S8 can produce ahead of it. Revisit once S7 lands. All 154 tests still pass; this slice changed no valuation code, so the acceptance pack (last confirmed 31/31 after S5) was not rerun.
+
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **154 passed** |
+| Tests | `python -m pytest -q` → **154 passed** as of `362f526` (S5, the last of this pass's commits). Rerun for the current count; a passed-count claim does not outlive the next commit |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 
@@ -88,9 +97,17 @@ workbook.
 
 ## Where it stands in one line
 
-**Verified, not validated.** The code now computes what it claims, and the claims are
-pinned by tests. Nothing yet establishes that the claims are the right ones for a traded
-price — no calibration, no parameter provenance. Treat every number as exploratory.
+**Verified, not validated.** Two independent reviews (2026-09-10 and its evening follow-up)
+each found real defects in how physical inputs were converted to grid quantities, in the
+inventory-bound checker, in the workbook cache, and in the convergence gate — not
+hypothetical ones, reproduced against `main`. [IMPLEMENTATION-GUIDE-2026-09-11.md](IMPLEMENTATION-GUIDE-2026-09-11.md)'s
+S1–S5 closed all of them: physical capacity/rate/boundary-inventory conversion now refuses an
+incompatible request rather than silently rounding it (S1), the ratchet diagnostic checks
+every distinct rate rather than only the fastest (S2), the quote cache is content-addressed
+so two different sources can never collide (S3), and the convergence gate can actually fail
+(S4). What remains unresolved is calibration, not code: `sVol`/`sMR` have no estimation
+window or provenance, and no market data past the workbook's 6 March 2026 endpoint has been
+brought in to fit them (S6/S7). Treat every valuation as exploratory until that lands.
 
 ## How it got here
 
@@ -217,7 +234,7 @@ is never the row selected for pricing, but it is wrong for any backtest.
 ## Running it
 
 ```bash
-python -m pytest -q                  # 115 tests, ~90 s
+python -m pytest -q                  # 154 tests as of 362f526, ~90 s
 streamlit run streamlit_app.py       # single-deal valuation
 streamlit run portfolio_app.py       # portfolio mark-to-market
 jupyter lab                          # notebooks below

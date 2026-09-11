@@ -150,9 +150,13 @@ answer rather than merely confirming it was needed:
    `sVol = 0.9` was ever anchored to spot volatility, the one-factor model attributes all of
    that variance to the mean-reverting factor — the one storage monetises. The probe says a
    calibrated second factor takes up to 8 % off. That is a hypothesis about our own numbers.
-3. **Delivery-aware returns.** `benchmarks.py` uses point maturities `tau = i/12`, flagged as
-   an upper bound on the model side. Monthly delivery lowers it, so 3.1× is not yet
-   like-for-like.
+3. **Delivery-aware returns.** `benchmarks.py` uses point maturities `tau = i/12`, flagged
+   here as an upper bound on the model side, on the assumption that monthly delivery lowers
+   it. CORRECTED — that assumption is wrong: see
+   [`PROJECT-REVIEW-2026-09-10-evening.md`](PROJECT-REVIEW-2026-09-10-evening.md) finding 6,
+   a direct counterexample where delivery averaging *raises* the comparison. 3.1× remains not
+   yet like-for-like, but not because of a known-direction bound — `benchmarks.py` carries
+   the corrected comment.
 
 Two obstacles: **`ttf q.xlsx` ends 6 March 2026**, so it cannot support a current calibration
 without newer data; and the review's §5 **exploratory covariance fit and PCA** are the one

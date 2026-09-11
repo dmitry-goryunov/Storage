@@ -17,11 +17,20 @@ ratchet discretisation, is still open.**
 
 ## Provenance
 
-The review ships an evidence archive with SHA-256 hashes of every file it inspected. All
-**34 match this working copy byte for byte** — library, kernels, both test modules, all four
-storage/swing notebooks, the workbook and every doc. It is a review of exactly this
-snapshot, so nothing below can be explained away as drift. Its own suite run agrees with
-ours: 101 passed.
+**Pre-repair evidence, as of commit `1a01848`** (verified: the archive's recorded
+`storage_model.py` hash matches that commit's blob exactly). The review ships an evidence archive with
+SHA-256 hashes of every file it inspected. All **34 match this working copy byte for byte** —
+library, kernels, both test modules, all four storage/swing notebooks, the workbook and every
+doc. It is a review of exactly that snapshot, so nothing below could be explained away as
+drift at the time. Its own suite run agrees with ours: 101 passed.
+
+Source has since changed. A second independent review,
+[`PROJECT-REVIEW-2026-09-10-evening.md`](PROJECT-REVIEW-2026-09-10-evening.md), matched **37**
+files against commit `b66d0a4` after the bound/fuel/hedge repairs below landed, and current CI
+runs against `main` on every push — see
+[`STATUS.md`](STATUS.md) for the commit the test count was last tied to. Neither the 34-file
+nor the 37-file hash set is the present tree; both are dated snapshots, not a claim about
+what is on `main` now.
 
 Each claim was reproduced from the review's **prose**, not by running its scripts, so
 agreement is independent evidence rather than a re-execution. Where a number below matches
