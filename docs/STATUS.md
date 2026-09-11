@@ -1,9 +1,41 @@
 # Project status
 
-**As of 2026-09-11 (later still).** S1–S5 and now **S8** (documentation reconciliation) are
-done. What remains is S6/S7, the calibration and model-comparison work proper — data-limited
-by the workbook's 6 March 2026 endpoint, not by further engineering. See the day-by-day
-account below.
+**As of 2026-09-11 (later still).** S1–S5 and S8 (documentation reconciliation) are done and
+pushed. **S6 is scoped but not started in code** — no file has been edited for it yet. S7 has
+not been scoped at all. See the day-by-day account below, and the note directly under this one
+for exactly where S6 stands.
+
+**S6 plan, recorded before writing any code.** Checklist items 19–20 (data manifest and the
+delivery-averaged observation function). `storage_model.py` already has the canonical
+month/front-month convention (`month_start`, `month_end`, `front_month_start`,
+`monthly_curve_from_quote` at lines 355–384) — `forward.ipynb` cell 4 independently
+reimplements the identical logic inline (`_month_start`/`_month_end`/`_front_month_start`),
+a pre-existing duplication this pass did not create and is not in scope to fix. The plan is to
+build on the library functions, not add a third copy:
+
+- `quote_data.py`: `build_delivery_panel(quotes, source_hash, columns=None)` — long-format
+  panel (`quote_date, contract_identifier, delivery_start, delivery_end, price_eur_mwh,
+  source_column, source_hash, validity_flag`) with `contract_identifier` keyed on the
+  *delivery month* (via `storage_model.front_month_start`), not the column name, so a
+  continuous-rank roll (TTFc2 on one date, TTFc1 on the next, same delivery month) is
+  recognised as the same contract and a rank that rolls *off* (front month entering delivery)
+  correctly stops rather than being bridged to the new front month. Plus `build_returns(panel)`
+  (aligned log-returns per contract, with actual elapsed calendar days recorded, non-positive
+  prices excluded and counted, no silent bridging across a missing quote) and
+  `build_data_manifest(quotes, provenance)` (source fingerprint, quote-date range, column
+  definitions, cleaning version, duplicates, missing-observation count, filters).
+- New `delivery_model.py`: `flat_forward_delivery_loading(kappa, t, A, B)` — the closed form
+  from guide §9.3, with the `kappa -> 0` limit (`= 1`) handled explicitly rather than dividing
+  by zero — and `delivery_averaged_loading(kappa, t, dates, forward_prices)`, the discrete
+  price-weighted sum for a non-flat curve. Test against the guide's own analytic pair
+  (month-end point 0.11932561 vs flat-forward delivery average 0.12443854, sigma 0.5, kappa 1,
+  equal one-month periods ending 0.5y/1y) and against a synthetic panel with a month-end roll,
+  a weekend, one missing quote and two delivery identifiers, expected returns worked by hand.
+
+Not yet decided: whether to also point `forward.ipynb` at the new panel builder while touching
+it. Revisit after the above is implemented and tested — do not let that decision block S6's
+own completion bar (guide §9: traceable source/delivery identity, matched-interval returns,
+delivery weighting reproduced on synthetic examples).
 
 **As of 2026-09-11 (later).** [IMPLEMENTATION-GUIDE-2026-09-11.md](IMPLEMENTATION-GUIDE-2026-09-11.md)'s S1–S5 are all done — every one of its acceptance pack's 31 checks now passes, up from 9 when the guide landed. What remains is S6/S7, the calibration and model-comparison work proper, blocked on TTF data past the workbook's 6 March 2026 endpoint regardless of further engineering. See the day-by-day account below.
 
