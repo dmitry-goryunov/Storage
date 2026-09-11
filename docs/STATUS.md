@@ -4,10 +4,12 @@
 two results recorded as established — the ratchet cap and the case for a second factor — and
 was itself replied to with an implementation plan. **The inventory-bound repair is done, and the ratchet
 discretisation is now measured, gated and reported** — though the shipped notebook still
-chooses a grid 0.53 % short of the gate, deliberately and in print. Read
+chooses a grid 0.19 % short of the 3,840-clip gate, deliberately and in print. Read
 [REVIEW-RESPONSE-2026-09-10.md](REVIEW-RESPONSE-2026-09-10.md) and
 [REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md)
-together. Update this file when that changes — a status document that lags is worse than none.
+together.
+
+**2026-09-11.** A second independent review of the evening's work and an [implementation guide](IMPLEMENTATION-GUIDE-2026-09-11.md) built on it landed. Every claim in both was verified before acting (guide §14): **five P1 items are open**, three of them in code written the previous evening — the workbook cache, the convergence gate and the notebook's hard-coded convergence status — and one, the days-to-rate conversion, that silently prices a 30/90 store as 30/30 through the workbook and API routes. Its acceptance pack scores **9 of 31** on this tree. The next code task is S1, strict physical-to-grid conversion. Update this file when that changes — a status document that lags is worse than none.
 
 | | |
 |---|---|
@@ -217,6 +219,8 @@ charts. The other committed outputs are unchanged by this review.
 
 | | |
 |---|---|
+| [`docs/IMPLEMENTATION-GUIDE-2026-09-11.md`](IMPLEMENTATION-GUIDE-2026-09-11.md) | **The current plan.** Eight delivery slices from strict physical conversion to a calibration decision, with an acceptance pack; §14 is the project's verification of it |
+| [`docs/PROJECT-REVIEW-2026-09-10-evening.md`](PROJECT-REVIEW-2026-09-10-evening.md) | Second independent review, of the evening's repairs — credits the bound work on 48 exhaustive cases and finds five P1 items, all reproduced |
 | [`docs/FINDINGS-2026-09-10-evening.md`](FINDINGS-2026-09-10-evening.md) | **Start here for the evening.** What was done, what was discovered doing it, and what is left — including three claims of mine that were wrong |
 | [`docs/REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md`](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md) | The reply to the response: three qualifications, and the delivery order the repairs followed |
 | [`docs/REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md) | What survived the independent review, what did not, and the outstanding work ranked |
