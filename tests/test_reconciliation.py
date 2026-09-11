@@ -2819,3 +2819,194 @@ def test_the_fixtures_depend_only_on_files_the_repository_carries():
     # The cache is legitimate, but only as a cache: the workbook must be enough.
     assert not benchmarks.WORKBOOK.endswith(".parquet"), benchmarks.WORKBOOK
     assert os.path.exists(benchmarks.WORKBOOK), benchmarks.WORKBOOK
+
+
+# ── S1: the physical contract must survive grid conversion, or be refused ─────
+#
+# Guide: docs/IMPLEMENTATION-GUIDE-2026-09-11.md, checklist item 1. These use the
+# ORIGINAL PHYSICAL INPUTS as the oracle -- capacity, MWh/day, MWh -- not the
+# rounded clip output, which is exactly the mistake the test this section will
+# eventually replace makes (test_asymmetric_storage_rates_survive_the_days_to_
+# rate_conversion asserts wdr_rate == 1 at N=30, i.e. that 30/60 silently prices
+# 30/30, as correct). That replacement is checklist item 3 and depends on the
+# normaliser in item 2; these tests are written first and are expected to FAIL
+# against the current conversion code.
+#
+# They are marked `xfail(strict=True)` rather than left to fail outright, so
+# that CI stays green at this step while the defect is still demonstrably
+# caught: an XPASS under `strict=True` is itself reported as a failure, so the
+# mark cannot be forgotten once item 2 lands -- either the fix removes it, or
+# the suite turns red and says so. The five R-compatible/V-exact cases below
+# are NOT marked: they pass today and are the regression guard that the
+# normaliser must not break the grids that already work.
+
+_S1_XFAIL = pytest.mark.xfail(
+    strict=True, reason="storage_model.params_for_run_valuation/resolve_grid "
+    "silently reprice an incompatible request instead of refusing it -- "
+    "IMPLEMENTATION-GUIDE-2026-09-11.md checklist item 2. Remove this mark "
+    "when the normaliser lands; an unexpected pass here means it did.")
+
+_GRID_TOL_MWH = 1e-7
+
+
+def _physical_storage_params(n_states, inj_days=30, wdr_days=60, **overrides):
+    """A storage contract stated the way a term sheet states it: capacity, days
+    to fill/empty, opening/terminal MWh. `n_states` is the ONLY numerical knob;
+    everything else is what the deal actually says."""
+    params = dict(product_type="storage", n_states=n_states, capacity_mwh=600_000.0,
+                  inj_days=inj_days, wdr_days=wdr_days,
+                  initial_storage_mwh=0.0, terminal_storage_mwh=0.0)
+    params.update(overrides)
+    return params
+
+
+def _close(actual, requested, tol=_GRID_TOL_MWH):
+    return math.isfinite(actual) and abs(actual - requested) <= tol + 1e-10 * abs(requested)
+
+
+def _preserves_or_refuses(params):
+    """Run the physical contract through `params_for_run_valuation`.
+
+    Returns (ok, detail). `ok` is True if the function either (a) raises --
+    refusing a request the grid cannot express is an acceptable outcome -- or
+    (b) returns rates and boundary inventory that reproduce the REQUESTED
+    physical quantities exactly. `ok` is False only for the one behaviour that
+    must not survive: silently returning a DIFFERENT contract with no error.
+    """
+    try:
+        out = sm.params_for_run_valuation(params)
+    except ValueError as exc:
+        return True, {"outcome": "refused", "message": str(exc)}
+
+    v_step = float(out["v_step"])
+    requested = {
+        "capacity_mwh": params["capacity_mwh"],
+        "injection_mwh_day": params["capacity_mwh"] / params["inj_days"],
+        "withdrawal_mwh_day": params["capacity_mwh"] / params["wdr_days"],
+        "opening_mwh": params["initial_storage_mwh"],
+        "terminal_mwh": params["terminal_storage_mwh"],
+    }
+    effective = {
+        "capacity_mwh": v_step * int(out["n_states"]),
+        "injection_mwh_day": v_step * float(out["inj_rate"]),
+        "withdrawal_mwh_day": v_step * float(out["wdr_rate"]),
+        "opening_mwh": v_step * float(out["initial_inv_clips"]),
+        "terminal_mwh": v_step * float(out["terminal_inv_clips"]),
+    }
+    ok = all(_close(effective[k], requested[k]) for k in requested)
+    return ok, {"outcome": "accepted", "requested": requested, "effective": effective}
+
+
+@pytest.mark.parametrize("n_states,inj_days,wdr_days", [
+    (60, 30, 60), (90, 30, 90), (390, 30, 65), (780, 30, 65), (2190, 30, 365),
+])
+def test_a_grid_that_can_express_the_rates_does(n_states, inj_days, wdr_days):
+    """The control. `lcm(inj_days, wdr_days)`-compatible grids already work
+    today -- if this fails, something else broke, not the conversion defect."""
+    ok, detail = _preserves_or_refuses(
+        _physical_storage_params(n_states, inj_days, wdr_days))
+    assert ok, detail
+
+
+@_S1_XFAIL
+@pytest.mark.parametrize("n_states,inj_days,wdr_days", [
+    (30, 30, 90), (60, 30, 65), (45, 30, 60), (90, 30, 65), (30, 30, 365),
+])
+def test_a_grid_that_cannot_express_the_rates_is_refused_not_guessed(
+        n_states, inj_days, wdr_days):
+    """`max(1, round(n_states/days))` has no failure mode: it always returns
+    something, and that something is a different, unstated contract.
+
+    30/90 at N=30 is the sharpest example: withdrawal rounds from a requested
+    6,666.67 MWh/day to 20,000.00 -- the FULL injection rate, three times over
+    -- and prices EUR 131,369 (5.51 %) above the 30/90 contract that was asked
+    for, with no error and no diagnostic that fires.
+    """
+    ok, detail = _preserves_or_refuses(
+        _physical_storage_params(n_states, inj_days, wdr_days))
+    assert ok, (
+        f"N={n_states} for {inj_days}/{wdr_days} silently priced a different "
+        f"contract instead of refusing it: {detail}")
+
+
+@pytest.mark.parametrize("field,mwh", [
+    ("initial_storage_mwh", 20_000.0),                          # exact -- passes today
+    ("terminal_storage_mwh", 30_000.0),                         # exact -- passes today
+    pytest.param("initial_storage_mwh", 5_000.0, marks=_S1_XFAIL),   # half a clip
+    pytest.param("terminal_storage_mwh", 5_000.0, marks=_S1_XFAIL),  # half a clip
+])
+def test_boundary_inventory_is_preserved_or_refused_not_rounded_to_a_clip(field, mwh):
+    """5,000 MWh opening inventory in a 600,000 MWh / 60-clip store is half a
+    clip. `round(0.5)` on Python's banker's rounding gives 0, so a term sheet's
+    "start half-full of a clip" becomes "start EMPTY" with no error -- the same
+    class of silent contract change as the day-rate rounding above, on the
+    quantity the deal actually opens and closes with.
+
+    Correct behaviour is the SAME for every row: either the requested MWh
+    survives exactly, or the request is refused. There is no third row where
+    silently rounding to a different quantity is acceptable -- so the
+    parametrised expectation is `ok` in every case, not `ok` for the values
+    that happen to round cleanly today.
+    """
+    ok, detail = _preserves_or_refuses(_physical_storage_params(60, **{field: mwh}))
+    assert ok, (field, mwh, detail)
+
+
+@_S1_XFAIL
+@pytest.mark.parametrize("physical_field,clip_field,clip_value", [
+    ("initial_storage_mwh", "initial_inv_clips", 1),     # 20,000 MWh vs 1 clip = 10,000
+    ("terminal_storage_mwh", "terminal_inv_clips", 2),   # 30,000 MWh vs 2 clips = 20,000
+])
+def test_an_explicit_clip_count_disagreeing_with_its_own_mwh_field_is_refused(
+        physical_field, clip_field, clip_value):
+    """Supplying both `initial_storage_mwh=20000` and `initial_inv_clips=1` at a
+    10,000 MWh clip is contradictory -- 20,000 MWh is 2 clips, not 1. Nothing
+    today checks the two fields against each other: `initial_inv_clips`, once
+    set, is left alone and `initial_storage_mwh` is silently ignored. An
+    explicit field is not permission to discard the other; the correct
+    behaviour is refusal, which `_preserves_or_refuses` reports as `ok` either
+    because it raised or because the two fields turned out to agree -- here
+    they do not, so today's silent, un-refused mismatch must fail this.
+    """
+    mwh = 20_000.0 if "initial" in physical_field else 30_000.0
+    params = _physical_storage_params(60, **{physical_field: mwh, clip_field: clip_value})
+    ok, detail = _preserves_or_refuses(params)
+    assert ok, (
+        f"{physical_field}={mwh} conflicts with {clip_field}={clip_value} "
+        f"(= {clip_value * 10_000.0:,.0f} MWh) and neither raised nor disagreed: {detail}")
+
+
+@_S1_XFAIL
+def test_an_explicit_grid_does_not_silently_round_the_requested_capacity():
+    """`v_step=30, clips_per_day=1` with `capacity_mwh=100` cannot land on a
+    whole number of clips -- 100/30 is not an integer. `resolve_grid` today
+    returns `round(100/30) = 3` states with no check, an effective capacity of
+    90 MWh against the 100 requested, and no error naming the 10 % that vanished.
+    """
+    try:
+        v_step, n_states, _ = sm.resolve_grid(
+            dict(capacity_mwh=100.0, v_step=30.0, clips_per_day=1), "inj_days")
+    except ValueError:
+        return                                    # refusing is an acceptable outcome
+    assert _close(v_step * n_states, 100.0), (
+        f"requested capacity 100 MWh, grid gives {v_step * n_states:,.1f} MWh "
+        f"({v_step=}, {n_states=}) with no error")
+
+
+@_S1_XFAIL
+def test_conflicting_explicit_capacity_and_state_count_are_not_silently_resolved():
+    """`capacity_mwh=600,000`, `v_step=10,000` and `n_states=90` disagree with
+    each other -- 10,000 x 90 = 900,000, not 600,000. `resolve_grid` today
+    branches on `capacity_mwh` being present and returns `round(600000/10000)
+    = 60` states, discarding the caller's explicit `n_states=90` outright
+    rather than flagging that the two inputs do not agree.
+    """
+    try:
+        v_step, n_states, _ = sm.resolve_grid(
+            dict(capacity_mwh=600_000.0, v_step=10_000.0, n_states=90,
+                clips_per_day=2), "inj_days")
+    except ValueError:
+        return
+    assert n_states == 90, (
+        f"caller explicitly requested n_states=90; resolve_grid silently "
+        f"substituted {n_states} derived from capacity_mwh instead, with no error")
