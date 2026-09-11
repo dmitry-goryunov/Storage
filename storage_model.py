@@ -38,7 +38,7 @@ idle (treated as no-trade). The tunnel was a 1000*v_step per-clip penalty until
 2026-09-10 — see `apply_inventory_bounds`.
 """
 import numpy as np
-from math import sqrt
+from math import sqrt, isfinite, lcm
 import re
 from scipy.interpolate import CubicHermiteSpline, PchipInterpolator
 import pandas as pd
@@ -829,6 +829,47 @@ def assert_contract_feasible(model, label="contract"):
         f"contract is physically impossible (roadmap P1.4).")
 
 
+# Engineering tolerance for "is this physical quantity an exact whole number of
+# clips at this grid" -- an absolute floor plus a relative term, in MWh (or
+# MWh/day, which is the same unit family). IMPLEMENTATION-GUIDE-2026-09-11.md
+# §4.2. This is floating-point slack, not a commercial allowance: a genuine
+# half-clip mismatch is many orders of magnitude larger than this and must
+# still be refused.
+GRID_TOLERANCE_MWH = 1e-7
+GRID_TOLERANCE_RELATIVE = 1e-10
+
+
+def _grid_representable(requested_mwh, v_step):
+    """Is `requested_mwh` a whole number of `v_step`-sized clips, at tolerance?
+
+    Returns `(clips, achieved_mwh, ok)`. `clips` is the NEAREST integer clip
+    count regardless of `ok` -- round only after checking representability, per
+    the guide; callers must not use `clips` when `ok` is False.
+    """
+    clips = int(round(requested_mwh / v_step))
+    achieved = clips * v_step
+    tolerance = GRID_TOLERANCE_MWH + GRID_TOLERANCE_RELATIVE * abs(requested_mwh)
+    return clips, achieved, abs(achieved - requested_mwh) <= tolerance
+
+
+def _compatible_n_states_hint(n_states, inj_days, wdr_days):
+    """The smallest multiple of `lcm(inj_days, wdr_days)` at or above
+    `n_states`, when both day counts are (nearly) whole numbers. `None` when no
+    simple suggestion applies -- e.g. a fractional day count, where the
+    "smallest compatible grid" question does not have a clean answer.
+    """
+    def _as_int(value):
+        rounded = round(value)
+        return rounded if abs(value - rounded) < 1e-9 else None
+
+    di, dw = _as_int(inj_days), _as_int(wdr_days)
+    if di is None or dw is None or di <= 0 or dw <= 0:
+        return None
+    base = lcm(di, dw)
+    multiple = base * max(1, -(-n_states // base))          # ceil(n_states / base)
+    return base, multiple
+
+
 def resolve_grid(params, states_key):
     """Map physical inputs to the model's (clip size, #states, clips/day).
 
@@ -852,6 +893,13 @@ def resolve_grid(params, states_key):
     legacy reading still works alone, but not beside a key that only makes sense
     under the other meaning. Roadmap P1.4.
 
+    **When ``capacity_mwh`` is given, it must be an exact whole number of
+    clips, and an explicit ``n_states`` must agree with it.** Both used to be
+    silently overridden: a ``v_step`` that does not divide ``capacity_mwh``
+    evenly rounded away the remainder with no error, and an explicit
+    ``n_states`` alongside ``capacity_mwh`` was discarded outright rather than
+    checked. IMPLEMENTATION-GUIDE-2026-09-11.md §4.2/§4.3.
+
     Returns (v_step, n_states, clips_per_day).
     """
     cpd = int(params.get("clips_per_day", 3))
@@ -861,7 +909,26 @@ def resolve_grid(params, states_key):
 
     capacity = params.get("capacity_mwh")
     if capacity is not None:
-        return v_step, int(round(float(capacity) / v_step)), cpd
+        capacity = float(capacity)
+        n_states, achieved, ok = _grid_representable(capacity, v_step)
+        if not ok:
+            raise ValueError(
+                f"capacity_mwh={capacity:,.4f} is not a whole number of clips at "
+                f"v_step={v_step:,.6f} (from clips_per_day={cpd} on daily_max, or "
+                f"v_step directly): the nearest grid gives {achieved:,.4f} MWh at "
+                f"{n_states} states, {achieved - capacity:+,.4f} MWh away. Choose a "
+                f"v_step/clips_per_day that divides the capacity evenly, or state "
+                f"n_states directly and let it define v_step instead.")
+        explicit_n = params.get("n_states")
+        if explicit_n is not None and int(explicit_n) != n_states:
+            raise ValueError(
+                f"capacity_mwh={capacity:,.0f} and v_step={v_step:,.4f} imply "
+                f"{n_states} states, but n_states={int(explicit_n)} was also given and "
+                f"disagrees ({int(explicit_n)} states would need "
+                f"{int(explicit_n) * v_step:,.0f} MWh of capacity, not {capacity:,.0f}). "
+                f"Supply capacity_mwh with daily_max/v_step, OR v_step with n_states -- "
+                f"not a mismatched mix of all three.")
+        return v_step, n_states, cpd
 
     if params.get("n_states") is not None:
         return v_step, int(params["n_states"]), cpd
@@ -1569,6 +1636,116 @@ def load_product_params(path="products.xlsx", product=None):
     return params
 
 
+def normalise_storage_contract(params):
+    """Convert a storage term sheet (capacity, days, opening/terminal MWh) into
+    exact grid quantities, or refuse the request.
+
+    IMPLEMENTATION-GUIDE-2026-09-11.md §4.2. Until 2026-09-11 this step used
+    ``max(1, round(n_states / days))`` with no check: 30/90 at ``n_states=30``
+    silently rounded withdrawal to the FULL injection rate -- 20,000 MWh/day
+    against a requested 6,666.67 -- and priced EUR 131,369 (5.51 %) above the
+    contract asked for, with no error anywhere. A 5,000 MWh opening inventory
+    on a 10,000 MWh clip rounded to zero the same way: "start half full of a
+    clip" became "start empty".
+
+    A pure function -- no Numba, no I/O, no plotting -- so a bad contract fails
+    before any grid is allocated. Required keys: ``capacity_mwh`` (finite,
+    positive), ``n_states`` (positive integer -- the ONLY numerical knob;
+    nothing here chooses it for you), ``inj_days``/``wdr_days`` (finite,
+    positive days to fill/empty; a zero or infinite day count cannot express a
+    rate through this field, so it is refused rather than read as "closed").
+    Optional: ``initial_storage_mwh``/``terminal_storage_mwh`` (default 0.0),
+    and ``initial_inv_clips``/``terminal_inv_clips`` -- if either clip field is
+    ALSO given, it must agree with its MWh field to within the grid tolerance,
+    or the request is refused rather than one field silently winning.
+
+    Returns ``{"v_step", "inj_rate", "wdr_rate", "initial_inv_clips",
+    "terminal_inv_clips"}``, each an exact reproduction of what was requested.
+    Raises ``ValueError`` naming the requested quantity, what the grid actually
+    gives, and -- when ``inj_days``/``wdr_days`` are whole numbers -- the
+    smallest compatible ``n_states`` to ask for instead.
+    """
+    capacity = params.get("capacity_mwh")
+    if capacity is None or not isfinite(float(capacity)) or float(capacity) <= 0.0:
+        raise ValueError(f"capacity_mwh must be a finite positive number, got {capacity!r}.")
+    capacity = float(capacity)
+
+    if params.get("n_states") is None:
+        raise ValueError(
+            "normalise_storage_contract needs n_states, the inventory-grid resolution "
+            "-- it is the one numerical input this function does not derive.")
+    n_states = int(params["n_states"])
+    if n_states <= 0:
+        raise ValueError(f"n_states must be a positive integer, got {n_states}.")
+    v_step = capacity / n_states
+
+    def _days(key):
+        value = params.get(key)
+        if value is None:
+            raise ValueError(f"normalise_storage_contract needs {key} (days to fill/empty).")
+        value = float(value)
+        if not isfinite(value) or value <= 0.0:
+            raise ValueError(
+                f"{key} must be a finite positive number of days, got {value!r}. A "
+                f"deliberately closed rate belongs in a direct rate schedule, not a "
+                f"zero or infinite day count here.")
+        return value
+
+    inj_days, wdr_days = _days("inj_days"), _days("wdr_days")
+    hint = _compatible_n_states_hint(n_states, inj_days, wdr_days)
+    suggestion = (f" The smallest grid expressing both rates exactly is "
+                  f"n_states={hint[1]} (a multiple of lcm({inj_days:g}, {wdr_days:g}) "
+                  f"= {hint[0]})." if hint else "")
+
+    rates = {}
+    for label, key, days in (("injection", "inj_rate", inj_days),
+                             ("withdrawal", "wdr_rate", wdr_days)):
+        requested_mwh_day = capacity / days
+        clips, achieved, ok = _grid_representable(requested_mwh_day, v_step)
+        if not ok:
+            raise ValueError(
+                f"the {n_states}-state grid (clip {v_step:,.4f} MWh) cannot express "
+                f"{capacity:,.0f} MWh over {days:g} {label} days: requested rate "
+                f"{requested_mwh_day:,.4f} MWh/day, nearest whole-clip rate "
+                f"{achieved:,.4f} MWh/day ({clips} clip(s)/day), a "
+                f"{(achieved - requested_mwh_day) / requested_mwh_day:+.2%} difference."
+                f"{suggestion}")
+        rates[key] = clips
+
+    boundary = {}
+    for label, mwh_key, clip_key in (("opening", "initial_storage_mwh", "initial_inv_clips"),
+                                     ("terminal", "terminal_storage_mwh", "terminal_inv_clips")):
+        requested_mwh = float(params.get(mwh_key, 0.0) or 0.0)
+        if not 0.0 <= requested_mwh <= capacity + GRID_TOLERANCE_MWH:
+            raise ValueError(
+                f"{mwh_key}={requested_mwh:,.4f} is outside the working volume "
+                f"0..{capacity:,.0f} MWh.")
+        explicit_clips = params.get(clip_key)
+        if explicit_clips is not None:
+            explicit_clips = int(explicit_clips)
+            achieved = explicit_clips * v_step
+            if abs(achieved - requested_mwh) > GRID_TOLERANCE_MWH + (
+                    GRID_TOLERANCE_RELATIVE * abs(requested_mwh)):
+                raise ValueError(
+                    f"{mwh_key}={requested_mwh:,.4f} and {clip_key}={explicit_clips} "
+                    f"(= {achieved:,.4f} MWh at this grid) disagree. Supply one, or "
+                    f"make them agree.")
+            boundary[clip_key] = explicit_clips
+        else:
+            clips, achieved, ok = _grid_representable(requested_mwh, v_step)
+            if not ok:
+                raise ValueError(
+                    f"{mwh_key}={requested_mwh:,.4f} is not a whole number of clips "
+                    f"at v_step={v_step:,.4f}: the nearest grid gives "
+                    f"{achieved:,.4f} MWh ({clips} clip(s)), "
+                    f"{achieved - requested_mwh:+,.4f} MWh away.{suggestion}")
+            boundary[clip_key] = clips
+
+    return {"v_step": v_step, "inj_rate": rates["inj_rate"], "wdr_rate": rates["wdr_rate"],
+            "initial_inv_clips": boundary["initial_inv_clips"],
+            "terminal_inv_clips": boundary["terminal_inv_clips"]}
+
+
 def params_for_run_valuation(prm):
     """Augment a ``load_product_params()`` dict with the derived grid fields that
     ``run_valuation()`` / ``value_*`` need, so the two documented entry points can
@@ -1579,24 +1756,21 @@ def params_for_run_valuation(prm):
 
     Without this step ``run_valuation`` raises ``KeyError: 'v_step'`` because
     ``load_product_params`` deliberately leaves the grid derivation out (it stays
-    visible in the notebook). The clip size is ``v_step = capacity_mwh / n_states``
-    and the daily rate is the base inject rate ``round(n_states / inj_days)``.
+    visible in the notebook). The clip size is ``v_step = capacity_mwh / n_states``.
 
-    Asymmetric rates ARE supported for storage: this function derives
-    ``inj_rate = max(1, round(n_states / inj_days))`` and ``wdr_rate`` likewise,
-    and ``value_storage`` reads both. A "30 in, 60 out" deal comes out as
-    ``inj_rate=2, wdr_rate=1`` on a 60-state grid.
+    For storage, asymmetric rates and boundary inventory are resolved by
+    ``normalise_storage_contract()``: it preserves the requested MWh/day and MWh
+    exactly, or raises rather than silently pricing a different contract. A
+    "30 in, 60 out" deal on a 60-state grid comes out as ``inj_rate=2,
+    wdr_rate=1``; on a grid that cannot express both exactly, this raises
+    instead of guessing. See that function for what "cannot express" means and
+    what the error names.
 
-    **The grid has to be able to express the rates.** They are whole clips per
-    day, so days-to-fill is ``n_states / inj_rate`` and the rounding collapses on
-    a grid that is too coarse: 30/60 needs ``n_states`` to be a multiple of 60,
-    because at ``n_states=30`` the withdrawal side rounds to 1 and silently takes
-    the injection rate, pricing 30/30. Check the derived rates rather than
-    assuming the days you asked for survived.
-
-    ``clips_per_day`` here stays the symmetric injection rate, which is what
-    ``resolve_grid`` uses to size the clip; the asymmetry lives in
-    ``inj_rate``/``wdr_rate``.
+    ``clips_per_day`` here stays a swing-only symmetric rate (``round(n_states /
+    inj_days)``, unchanged) -- storage's own asymmetric rates come from
+    ``normalise_storage_contract`` and overwrite it below. Migrating swings onto
+    the same strict check is IMPLEMENTATION-GUIDE-2026-09-11.md §5.1, item 6,
+    not this step.
     """
     p = dict(prm)
     n_states = int(p["n_states"])
@@ -1613,10 +1787,9 @@ def params_for_run_valuation(prm):
     # their own defaults — forcing initial_inv_clips=0 on a call swing would start
     # it empty, leaving nothing to sell and yielding 0/0 = NaN.
     if p.get("product_type") == "storage":
-        p["inj_rate"] = max(1, int(round(n_states / int(p["inj_days"]))))
-        p["wdr_rate"] = max(1, int(round(n_states / int(p["wdr_days"]))))
-        if p.get("initial_inv_clips") is None:
-            p["initial_inv_clips"] = int(round(float(p.get("initial_storage_mwh", 0.0)) / v_step))
-        if p.get("terminal_inv_clips") is None:
-            p["terminal_inv_clips"] = int(round(float(p.get("terminal_storage_mwh", 0.0)) / v_step))
+        contract = normalise_storage_contract(p)
+        p["inj_rate"] = contract["inj_rate"]
+        p["wdr_rate"] = contract["wdr_rate"]
+        p["initial_inv_clips"] = contract["initial_inv_clips"]
+        p["terminal_inv_clips"] = contract["terminal_inv_clips"]
     return p
