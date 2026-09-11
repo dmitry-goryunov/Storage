@@ -7,6 +7,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -3078,3 +3079,187 @@ def test_conflicting_explicit_capacity_and_state_count_are_not_silently_resolved
     assert n_states == 90, (
         f"caller explicitly requested n_states=90; resolve_grid silently "
         f"substituted {n_states} derived from capacity_mwh instead, with no error")
+
+
+# ── S3: the quote-cache identity defect ────────────────────────────────────────
+#
+# IMPLEMENTATION-GUIDE-2026-09-11.md checklist items 7-9. Same defect class as
+# S1's grid conversion: a lookup trusting something OTHER than the content it
+# is supposed to represent -- there, a path string and max(1, round(...)); here,
+# a path string and a modification time. `quote_data.py` fixes it by addressing
+# the cache with a SHA-256 of the actual bytes, so two different files cannot
+# collide on one cache entry and a byte-identical re-read always finds its own.
+
+def test_a_different_workbook_at_the_same_cache_dir_is_not_confused_with_the_default():
+    """Until 2026-09-11, `benchmarks.load_quote_matrix` checked a SINGLE fixed
+    parquet path regardless of what was actually requested. A synthetic
+    one-row workbook with TTFc1=999, given an older modification time than the
+    repository's own cache, returned the repository's 4,171 rows with
+    TTFc1=10 instead -- a request for a different dataset silently analysed
+    the original one.
+    """
+    import quote_data as qd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shared_cache_dir = os.path.join(tmp, "cache")
+        os.makedirs(shared_cache_dir)
+
+        default_wb = os.path.join(tmp, "default.xlsx")
+        pd.DataFrame({"quote_date": pd.date_range("2020-01-01", periods=10),
+                     "TTFc1": range(10)}).to_excel(default_wb, index=False)
+        warm, _ = qd.load_quote_matrix(default_wb, cache_dir=shared_cache_dir)
+        assert len(warm) == 10
+
+        other_wb = os.path.join(tmp, "other.xlsx")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [999.0]}).to_excel(other_wb, index=False)
+        old = pd.Timestamp("2000-01-01").timestamp()
+        os.utime(other_wb, (old, old))          # older than the "default" cache entry
+
+        got, provenance = qd.load_quote_matrix(other_wb, cache_dir=shared_cache_dir)
+        assert len(got) == 1, (
+            f"requested a 1-row workbook and got {len(got)} rows -- "
+            f"the cache substituted a different source")
+        assert got["TTFc1"].iloc[0] == 999.0
+        assert provenance["cache"] == "rebuilt"
+        assert provenance["source_sha256"] == qd.source_fingerprint(other_wb)
+
+
+def test_editing_a_workbook_in_place_invalidates_its_cache_even_with_mtime_restored():
+    """Modification time is not identity. A same-path edit with its mtime
+    restored -- routine after some editor saves, and after certain
+    version-control checkouts -- stayed silently stale under the old policy.
+    """
+    import quote_data as qd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wb = os.path.join(tmp, "mine.xlsx")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [10.0]}).to_excel(wb, index=False)
+        first, prov_first = qd.load_quote_matrix(wb)
+        assert first["TTFc1"].iloc[0] == 10.0
+        assert prov_first["cache"] == "rebuilt"
+
+        stat_before = os.stat(wb)
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [999.0]}).to_excel(wb, index=False)
+        os.utime(wb, (stat_before.st_atime, stat_before.st_mtime))
+
+        second, prov_second = qd.load_quote_matrix(wb)
+        assert second["TTFc1"].iloc[0] == 999.0, (
+            "same path, restored mtime, changed content -- got stale data")
+        assert prov_second["source_sha256"] != prov_first["source_sha256"]
+
+        # And re-reading the FIRST content again (a third distinct file, same
+        # bytes as the original) correctly hits the cache entry THAT content
+        # made, not the second one -- content addressing means both coexist.
+        again_wb = os.path.join(tmp, "again.xlsx")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [10.0]}).to_excel(again_wb, index=False)
+        third, prov_third = qd.load_quote_matrix(again_wb, cache_dir=os.path.dirname(wb))
+        assert third["TTFc1"].iloc[0] == 10.0
+        assert prov_third["cache"] == "hit", "identical bytes should hit the first cache entry"
+
+
+def test_cache_enabled_and_disabled_give_equivalent_data():
+    """`use_cache=False` is the reproducible-comparison escape hatch: same
+    source, same cleaner, same answer, whether or not caching is involved."""
+    import quote_data as qd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wb = os.path.join(tmp, "ttf q.xlsx")
+        pd.DataFrame({"quote_date": pd.date_range("2020-01-01", periods=5),
+                     "TTFc1": [1.0, 2.0, "Retrieving...", 4.0, 4.0]}
+                    ).to_excel(wb, index=False)
+
+        cached, prov_cached = qd.load_quote_matrix(wb, use_cache=True)
+        assert prov_cached["cache"] == "rebuilt"
+        assert os.listdir(tmp), "use_cache=True should have written a cache file"
+
+        uncached_dir = os.path.join(tmp, "no_cache_dir")
+        uncached, prov_uncached = qd.load_quote_matrix(
+            wb, cache_dir=uncached_dir, use_cache=False)
+        assert not os.path.exists(uncached_dir), "use_cache=False must not write anything"
+
+        pd.testing.assert_frame_equal(cached, uncached)
+        # "Retrieving..." is the rejected-cell case; the stats say so rather
+        # than silently vanishing.
+        assert prov_cached["rejected_cells"] == 1
+        assert prov_cached["duplicate_dates"] == 0
+
+
+def test_a_parquet_source_is_a_source_not_a_cache_of_something_else():
+    """Explicitly requesting a `.parquet` file reads it directly and
+    fingerprints ITS OWN bytes -- it is a dataset in its own right, not
+    silently treated as a cache entry for some other workbook."""
+    import quote_data as qd
+
+    with tempfile.TemporaryDirectory() as tmp:
+        direct = os.path.join(tmp, "standalone.parquet")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [42.0]}).to_parquet(direct)
+        quotes, provenance = qd.load_quote_matrix(direct)
+        assert quotes["TTFc1"].iloc[0] == 42.0
+        assert provenance["format"] == "parquet"
+        assert provenance["source_sha256"] == qd.source_fingerprint(direct)
+        assert "n/a" in provenance["cache"]
+
+
+def test_streamlit_in_memory_cache_observes_a_content_change_at_the_same_path():
+    """The other half of the defect: even with `quote_data`'s on-disk cache
+    fixed, Streamlit's OWN `@st.cache_data` sat in front of it -- and until
+    2026-09-11 `portfolio_app.load_quote_matrix_local` was keyed only on a
+    path STRING, which `@st.cache_data` hashes as an unchanged argument no
+    matter what the file's bytes do. It now also takes the fingerprint as an
+    explicit (non-underscore-prefixed) argument, so Streamlit's own hash
+    changes when the content does.
+
+    Exercises Streamlit's actual caching decorator directly, not
+    `AppTest.from_file` (which never reaches this code path -- it is gated
+    behind the form's submit button and does not click it).
+    """
+    import streamlit as st
+    import quote_data as qd
+
+    @st.cache_data(show_spinner=False)
+    def load_quote_matrix_local(xlsx_path, source_fingerprint):
+        quotes, _ = qd.load_quote_matrix(xlsx_path)
+        return quotes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wb = os.path.join(tmp, "ttf q.xlsx")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [10.0]}).to_excel(wb, index=False)
+        first = load_quote_matrix_local(wb, qd.source_fingerprint(wb))
+        assert first["TTFc1"].iloc[0] == 10.0
+
+        stat_before = os.stat(wb)
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [999.0]}).to_excel(wb, index=False)
+        os.utime(wb, (stat_before.st_atime, stat_before.st_mtime))
+
+        second = load_quote_matrix_local(wb, qd.source_fingerprint(wb))
+        assert second["TTFc1"].iloc[0] == 999.0, (
+            "Streamlit's in-memory cache returned stale data for a changed file "
+            "at an unchanged path")
+
+    # Negative control: the pre-fix single-argument signature IS stale on this
+    # exact scenario, so the assertion above is not vacuously true.
+    @st.cache_data(show_spinner=False)
+    def load_quote_matrix_local_pre_fix(xlsx_path):
+        quotes, _ = qd.load_quote_matrix(xlsx_path)
+        return quotes
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wb = os.path.join(tmp, "ttf q.xlsx")
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [10.0]}).to_excel(wb, index=False)
+        first = load_quote_matrix_local_pre_fix(wb)
+        stat_before = os.stat(wb)
+        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
+                     "TTFc1": [999.0]}).to_excel(wb, index=False)
+        os.utime(wb, (stat_before.st_atime, stat_before.st_mtime))
+        second = load_quote_matrix_local_pre_fix(wb)
+        assert second["TTFc1"].iloc[0] == 10.0, (
+            "the negative control did not reproduce the staleness it is meant "
+            "to demonstrate -- something about the test scenario changed")

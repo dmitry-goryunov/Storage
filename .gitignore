@@ -5,5 +5,9 @@ __pycache__/
 .ipynb_checkpoints/
 ttf q.parquet
 
+# quote_data.py's content-addressed quote-matrix cache (replaces the single
+# "ttf q.parquet" above as of 2026-09-11) -- one file per distinct source seen.
+quote_matrix_v*.parquet
+
 # Excel lock files, created whenever a workbook here is open
 ~$*

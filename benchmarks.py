@@ -26,6 +26,7 @@ import time
 import numpy as np
 import pandas as pd
 
+import quote_data as qd
 import storage_model as sm
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -342,38 +343,30 @@ def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
 # derived from it, so pointing here at the cache made these numbers reproducible
 # on one machine and nowhere else. CI caught it on the first push.
 WORKBOOK = os.path.join(_ROOT, "ttf q.xlsx")
-_PARQUET_CACHE = os.path.join(_ROOT, "ttf q.parquet")
 SPREAD_PAIRS = ((1, 3), (1, 6), (6, 12), (1, 12), (12, 24), (1, 24))
 TRADING_DAYS = 252.0
 
 
-def load_quote_matrix(path=None):
-    """The TTF quote matrix, cleaned the way the rest of the project cleans it.
+def load_quote_matrix(path=None, cache_dir=None, use_cache=True):
+    """The TTF quote matrix, via `quote_data.load_quote_matrix` -- the shared
+    cache-identity policy also used by `portfolio_app.py`.
 
-    Reads the parquet cache when it is at least as fresh as the workbook, and
-    rebuilds it from the workbook otherwise -- the same policy as
-    `portfolio_app.load_quote_matrix_local`, and the same cleaning, so the cache
-    and the workbook cannot disagree. Writing the cache is best effort: a
-    read-only checkout should still be able to read the data.
+    Until 2026-09-11 this checked a SINGLE fixed parquet cache path regardless
+    of what `path` was actually requested, validated only by modification
+    time: an explicit request for a different workbook could silently return
+    the repository's cached default, and a same-path edit with its mtime
+    restored stayed stale. Content-addressed caching in `quote_data` makes
+    both impossible by construction -- see its docstring. `cache_dir` and
+    `use_cache` pass straight through, so an isolated cache location (a
+    temporary directory in a test, for instance) or a no-cache reproducible
+    read are both available without reaching into module internals.
+
+    Returns the DataFrame only, dropping the provenance record this module's
+    own callers do not (yet) consume; call `quote_data.load_quote_matrix`
+    directly for that.
     """
     path = WORKBOOK if path is None else path
-    if str(path).endswith(".parquet"):
-        return pd.read_parquet(path)
-    if (os.path.exists(_PARQUET_CACHE)
-            and os.path.getmtime(_PARQUET_CACHE) >= os.path.getmtime(path)):
-        return pd.read_parquet(_PARQUET_CACHE)
-
-    quotes = pd.read_excel(path)
-    quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"})
-    quotes = quotes.dropna(subset=["quote_date"]).copy()
-    quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
-    for column in quotes.columns[1:]:               # "Retrieving..." and friends
-        quotes[column] = pd.to_numeric(quotes[column], errors="coerce")
-    quotes = quotes.sort_values("quote_date").reset_index(drop=True)
-    try:
-        quotes.to_parquet(_PARQUET_CACHE)
-    except Exception:
-        pass
+    quotes, _provenance = qd.load_quote_matrix(path, cache_dir=cache_dir, use_cache=use_cache)
     return quotes
 
 

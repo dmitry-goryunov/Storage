@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import quote_data as qd
 import storage_model
 
 st.set_page_config(page_title="Portfolio Mark-to-Market", layout="wide")
@@ -32,40 +33,32 @@ def warm_numba_kernels():
 # ── Data loading helpers ───────────────────────────────────────────────────────
 
 @st.cache_data(show_spinner=False)
-def load_quote_matrix_local(xlsx_path: str, parquet_path: str):
-    """Load the TTF quote matrix from xlsx, caching as parquet when fresher."""
-    p_xlsx = Path(xlsx_path)
-    p_parq = Path(parquet_path)
-    if p_parq.exists() and p_parq.stat().st_mtime >= p_xlsx.stat().st_mtime:
-        quotes = pd.read_parquet(p_parq)
-    else:
-        quotes = pd.read_excel(p_xlsx)
-        quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"})
-        quotes = quotes.dropna(subset=["quote_date"]).copy()
-        quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
-        # Coerce junk strings (e.g. "Retrieving...") to NaN.
-        for c in quotes.columns[1:]:
-            quotes[c] = pd.to_numeric(quotes[c], errors="coerce")
-        quotes = quotes.sort_values("quote_date").reset_index(drop=True)
-        quotes.to_parquet(p_parq)
+def load_quote_matrix_local(xlsx_path: str, source_fingerprint: str):
+    """Load+clean the TTF quote matrix from `xlsx_path`, via
+    `quote_data.load_quote_matrix`'s content-addressed cache.
+
+    `source_fingerprint` is a cache-KEY argument, not a value this function
+    reads -- `@st.cache_data` decides whether to reuse a previous in-memory
+    result by hashing the CALL ARGUMENTS, and `xlsx_path` alone is a path
+    STRING, unchanged by an edit to the file's actual bytes. Until
+    2026-09-11 this cached on `(xlsx_path, parquet_path)`, both path strings:
+    editing `ttf q.xlsx` while the app was running and re-running the same
+    valuation returned the STALE cached DataFrame, because nothing Streamlit
+    was hashing had changed. Pass `quote_data.source_fingerprint(xlsx_path)`,
+    computed OUTSIDE this function on every call (see the call site below) --
+    do not give it a leading underscore, which would exclude it from
+    Streamlit's hash and silently reintroduce the same staleness.
+    """
+    quotes, _provenance = qd.load_quote_matrix(xlsx_path)
     return quotes
 
 
 @st.cache_data(show_spinner=False)
 def load_quote_matrix_upload(uploaded_bytes: bytes, file_name: str):
-    """Parse an uploaded quote matrix file."""
-    import io
-    buf = io.BytesIO(uploaded_bytes)
-    if file_name.lower().endswith(".csv"):
-        quotes = pd.read_csv(buf)
-    else:
-        quotes = pd.read_excel(buf)
-    quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"})
-    quotes = quotes.dropna(subset=["quote_date"]).copy()
-    quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
-    for c in quotes.columns[1:]:
-        quotes[c] = pd.to_numeric(quotes[c], errors="coerce")
-    quotes = quotes.sort_values("quote_date").reset_index(drop=True)
+    """Parse an uploaded quote matrix file. Cache-correct already: the bytes
+    themselves are the hashed argument, so a re-upload of different content
+    is a cache miss regardless of the file name."""
+    quotes, _stats = qd.parse_quote_bytes(uploaded_bytes, file_name)
     return quotes
 
 
@@ -321,8 +314,7 @@ try:
         )
     else:
         xlsx_path = str(Path("ttf q.xlsx").resolve())
-        parquet_path = str(Path("ttf q.parquet").resolve())
-        quotes = load_quote_matrix_local(xlsx_path, parquet_path)
+        quotes = load_quote_matrix_local(xlsx_path, qd.source_fingerprint(xlsx_path))
 
     daily_curve, quote_date = build_daily_curve(
         quotes, str(val_date.date()), min_strip_months
