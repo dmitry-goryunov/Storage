@@ -9,13 +9,15 @@ chooses a grid 0.19 % short of the 3,840-clip gate, deliberately and in print. R
 [REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md](REVIEW-REPLY-AND-ACTION-PLAN-2026-09-10.md)
 together.
 
-**2026-09-11.** A second independent review of the evening's work and an [implementation guide](IMPLEMENTATION-GUIDE-2026-09-11.md) built on it landed. Every claim in both was verified before acting (guide §14): **five P1 items are open**, three of them in code written the previous evening — the workbook cache, the convergence gate and the notebook's hard-coded convergence status — and one, the days-to-rate conversion, that silently prices a 30/90 store as 30/30 through the workbook and API routes. Its acceptance pack scores **9 of 31** on this tree. The next code task is S1, strict physical-to-grid conversion. Update this file when that changes — a status document that lags is worse than none.
+**2026-09-11.** A second independent review of the evening's work and an [implementation guide](IMPLEMENTATION-GUIDE-2026-09-11.md) built on it landed. Every claim in both was verified before acting (guide §14): **five P1 items are open**, three of them in code written the previous evening — the workbook cache, the convergence gate and the notebook's hard-coded convergence status — and one, the days-to-rate conversion, that silently prices a 30/90 store as 30/30 through the workbook and API routes. Its acceptance pack scores **9 of 31** on this tree.
+
+**S1, step 1 done (checklist item 1).** Eleven counterexamples for the conversion defect, using the *requested* physical capacity/MWh-day/MWh as the oracle rather than the rounded clip output. Marked `xfail(strict=True)` so CI stays green while the defect is provably caught — the mark itself fails the moment step 2's normaliser makes the case pass, so it cannot be forgotten. **Next: checklist item 2**, `normalise_storage_contract()`, then item 3 replaces the old test that currently asserts the wrong contract as correct. Update this file when that changes — a status document that lags is worse than none.
 
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **116 passed** |
+| Tests | `python -m pytest -q` → **123 passed, 11 xfailed** (the xfails are the pinned S1 conversion defect, expected until checklist item 2 lands) |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 
