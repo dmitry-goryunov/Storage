@@ -1,342 +1,636 @@
-from pathlib import Path
-import re
-import time
+"""Unified Streamlit interface for swing and gas-storage valuation."""
 
-import matplotlib.pyplot as plt
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+from pricing_app_core import (
+    build_output_tables,
+    build_pricing_params,
+    parse_inventory_bounds,
+    parse_ratchet_table,
+    prepare_direct_curve,
+    prepare_quote_matrix,
+    read_uploaded_table,
+)
 from storage_model import (
+    apply_inventory_bounds,
     curve_df_for_storage,
-    normalise_rate_parameters,
+    describe_inventory_bounds,
+    describe_ratchet_rates,
     quote_row_for_fd_date,
     run_valuation,
     warm_numba_kernels as model_warm_numba_kernels,
 )
 
 
-st.set_page_config(page_title="Swing / Storage Valuation", layout="wide")
+ROOT = Path(__file__).resolve().parent
+DIRECT_CURVE_PATH = ROOT / "curve.csv"
+QUOTE_MATRIX_PATH = ROOT / "ttf q.xlsx"
+
+st.set_page_config(page_title="Swing & Storage Pricer", page_icon="⚡", layout="wide")
 
 
-@st.cache_resource(show_spinner="Preparing Numba kernels...")
+@st.cache_resource(show_spinner="Preparing valuation kernels...")
 def warm_numba_kernels():
     return model_warm_numba_kernels()
 
 
 @st.cache_data(show_spinner=False)
-def load_quote_matrix(source):
-    if source is None:
-        path = Path("ttf q.xlsx")
-        if not path.exists():
-            raise FileNotFoundError("Could not find local 'ttf q.xlsx'. Upload a forward curve file instead.")
-        quotes = pd.read_excel(path)
-    else:
-        name = source.name.lower()
-        if name.endswith(".csv"):
-            quotes = pd.read_csv(source)
-        else:
-            quotes = pd.read_excel(source)
-
-    quotes = quotes.rename(columns={quotes.columns[0]: "quote_date"})
-    quotes = quotes.dropna(subset=["quote_date"]).copy()
-    quotes["quote_date"] = pd.to_datetime(quotes["quote_date"], format="mixed")
-    quotes = quotes.sort_values("quote_date").reset_index(drop=True)
-    contract_columns = sorted(
-        [c for c in quotes.columns if re.fullmatch(r"TTFc\d+", str(c))],
-        key=lambda c: int(re.search(r"\d+", str(c)).group()),
-    )
-    return quotes, contract_columns
+def load_uploaded_direct_curve(raw_bytes, file_name):
+    return prepare_direct_curve(read_uploaded_table(raw_bytes, file_name))
 
 
 @st.cache_data(show_spinner=False)
-def load_direct_curve(source):
-    if source is None:
-        path = Path("curve.csv")
-        if not path.exists():
-            raise FileNotFoundError("Could not find local 'curve.csv'. Upload a curve file instead.")
-        curve = pd.read_csv(path)
-    else:
-        name = source.name.lower()
-        if name.endswith(".csv"):
-            curve = pd.read_csv(source)
-        else:
-            curve = pd.read_excel(source)
-
-    required = {"contractStart", "contractEnd", "value"}
-    missing = required.difference(curve.columns)
-    if missing:
-        raise ValueError(f"Direct curve file is missing columns: {', '.join(sorted(missing))}")
-    curve = curve[["contractStart", "contractEnd", "value"]].copy()
-    curve["contractStart"] = pd.to_datetime(curve["contractStart"], format="mixed")
-    curve["contractEnd"] = pd.to_datetime(curve["contractEnd"], format="mixed")
-    curve["value"] = pd.to_numeric(curve["value"])
-    return curve.sort_values("contractStart").reset_index(drop=True)
+def load_uploaded_quote_matrix(raw_bytes, file_name):
+    return prepare_quote_matrix(raw_bytes, file_name)
 
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def cached_run_valuation(curve, params):
-    """Run the valuation but cache only what the UI needs.
-
-    Returning the full Storage object would make st.cache_data pickle the
-    v/strat/prob state cubes (8-130+ MB per parameter set) on every store and
-    copy them on every retrieval. The payload below is < 1 MB.
-    """
-    s, result = run_valuation(curve, params)
+    """Run the model while caching only compact, user-facing outputs."""
+    model, result = run_valuation(curve, params)
+    allowed_terminal = np.flatnonzero(
+        np.asarray(model.t_p_curve[:model.n_op]) > -1e9
+    )
     payload = {
-        "date_span": s.date_span,
-        "Dt": s.Dt,
-        "active": s._active,
-        "n_t": s.n_t,
-        "price_curve": np.asarray(s.price_curve, dtype=float),
-        "delta": np.asarray(s.delta, dtype=float),
-        "discount_rate": float(s.discount_rate),
+        "date_span": model.date_span,
+        "Dt": model.Dt,
+        "active": model._active,
+        "n_t": model.n_t,
+        "price_curve": np.asarray(model.price_curve, dtype=float),
+        "physical_delta": np.asarray(model.delta, dtype=float),
+        "pv_tailed_delta": np.asarray(model.delta_pv, dtype=float),
+        "discount_rate": float(model.discount_rate),
+        "contract_pv_eur": float(model.v[0, model.n_p, model.initial_state]),
+        "initial_inventory_clips": int(model.initial_state),
+        "terminal_inventory_clips": (
+            int(allowed_terminal[0]) if len(allowed_terminal) == 1 else None
+        ),
     }
+    if params["product_type"] == "storage":
+        bounds = apply_inventory_bounds(model, params)
+        payload["bound_diagnostics"] = describe_inventory_bounds(model, bounds)
+        payload["ratchet_diagnostics"] = (
+            describe_ratchet_rates(model)
+            if params.get("ratchets") is not None
+            else pd.DataFrame()
+        )
+    else:
+        payload["bound_diagnostics"] = pd.DataFrame()
+        payload["ratchet_diagnostics"] = pd.DataFrame()
     return payload, result
 
 
-def format_number(x):
-    if pd.isna(x):
-        return "n/a"
-    return f"{x:,.4f}"
+def display_number(value, decimals=2):
+    return "n/a" if pd.isna(value) else f"{float(value):,.{decimals}f}"
 
 
-st.title("Swing / Storage Valuation")
-st.caption("Valuing a whole book of trades? Use the **Portfolio Mark-to-Market** app (`streamlit run portfolio_app.py`).")
+def serialisable(value):
+    if isinstance(value, (pd.Timestamp, np.datetime64)):
+        return pd.Timestamp(value).isoformat()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return serialisable(value.item())
+    if isinstance(value, tuple):
+        return [serialisable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): serialisable(item) for key, item in value.items()}
+    if isinstance(value, (list, set)):
+        return [serialisable(item) for item in value]
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
 
-with st.expander("What do these products mean?"):
+
+st.title("Swing & Storage Pricer")
+st.caption(
+    "Price one physical put swing, call swing, or gas-storage contract from a "
+    "complete term sheet. Inputs are converted to the model grid exactly or refused."
+)
+st.warning(
+    "Model-risk note: volatility and mean reversion are explicit scenario inputs. "
+    "They are not claimed to be market-calibrated parameters; the S7 evidence is a "
+    "methodology and convergence result, not a completed quote-history calibration.",
+    icon="⚠️",
+)
+with st.expander("Product and valuation conventions"):
     st.markdown(
-        "- **put_swing** — the right/obligation to **buy** gas at a strike on chosen days; the model "
-        "picks the **cheapest** days. Value rises when prices fall below the strike.\n"
-        "- **call_swing** — the right/obligation to **sell** gas at a strike on chosen days; the model "
-        "picks the **best (highest-price)** days. Value rises when prices exceed the strike.\n"
-        "- **storage** — **buy low, sell high** while carrying inventory between a start and end level, "
-        "subject to injection/withdrawal rates and costs.\n\n"
-        "Each value splits into **intrinsic** (best schedule on today's forward curve) plus "
-        "**extrinsic** (the extra worth of price optionality, driven by `vol` and `sMR`)."
+        """
+- **Put swing:** buy gas on selected days at the strike; full maximum quantity
+  is required by expiry.
+- **Call swing:** sell gas on selected days at the strike; quantity can be
+  mandatory or optional up to the maximum.
+- **Storage:** inject, hold and withdraw gas between exact opening and terminal
+  inventory levels. Injection fuel is consumed in addition to injected inventory.
+
+Intrinsic and extrinsic value are shown when **Run intrinsic decomposition** is
+enabled. Rates are annual continuously compounded. Dated bounds constrain opening
+inventory on the stated date.
+        """
     )
 
 with st.sidebar:
-    with st.form("valuation_inputs"):
-        st.header("Inputs")
-        product_type = st.selectbox("Product type", ["put_swing", "call_swing", "storage"], index=0,
-                                    help="put_swing = buy on the cheapest days; call_swing = sell on the best days; "
-                                         "storage = buy low / sell high carrying inventory. See the explainer above the sidebar.")
-
-        FDDate = pd.Timestamp(st.date_input("FDDate (forward-curve date)", pd.Timestamp("2026-01-05"),
-                                            help="Quote date whose forward curve is used; the nearest quote on or before it is selected."))
-        valDate = pd.Timestamp(st.date_input("valDate (valuation / 'today')", pd.Timestamp("2026-01-05"),
-                                             help="'Today' for the valuation — the price tree and discounting start here. "
-                                                  "Must be on or after FDDate: valuing before the quote date uses a curve "
-                                                  "that did not exist yet."))
-        storageStart = pd.Timestamp(st.date_input("storageStart (first active day)", pd.Timestamp("2026-04-01")))
-        storageEnd = pd.Timestamp(st.date_input("storageEnd (last active day)", pd.Timestamp("2027-03-30")))
-
-        days = st.number_input("Inventory states (clip count)", min_value=1, max_value=3660, value=30, step=1,
-                               help="Number of discrete inventory levels in the DP grid (working volume / clip size). Used only when daily_max = 0 and capacity_mwh = 0.")
-        vol = st.number_input("vol (annualised)", min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.2f",
-                              help="Annualised spot volatility (fraction). 0.60 = 60%/yr. Drives extrinsic value.")
-        sMR = st.number_input("sMR (mean-reversion speed)", min_value=0.0, max_value=10.0, value=1.0, step=0.1,
-                              help="Ornstein-Uhlenbeck mean-reversion speed. Higher = price pulled back to the forward curve faster, lowering optionality / extrinsic value.")
-        n_p_full = st.number_input("n_p_full", min_value=0, max_value=100, value=30, step=1,
-                                   help="Price-tree half-width (tree has 2*n_p_full+1 price states). ~30 is converged; higher is slower with no gain.")
-        run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
-
-        st.header("Rate management")
+    st.header("Valuation setup")
+    product_type = st.selectbox(
+        "Product type",
+        ["put_swing", "call_swing", "storage"],
+        format_func=lambda value: {
+            "put_swing": "Put swing",
+            "call_swing": "Call swing",
+            "storage": "Storage",
+        }[value],
+    )
+    curve_source = st.selectbox(
+        "Forward-curve source",
+        [
+            "Bundled direct curve",
+            "Upload direct curve",
+            "Bundled TTF quote matrix",
+            "Upload TTF quote matrix",
+        ],
+        help=(
+            "Direct curves need contractStart, contractEnd and value. Quote matrices "
+            "need a quote-date first column and TTFc1, TTFc2, ... columns."
+        ),
+    )
+    uses_quote_matrix = "quote matrix" in curve_source.lower()
+    if product_type == "storage":
+        rate_mode = "Market / valuation discount rate"
+        st.caption(
+            "Storage uses one valuation rate because its strategy has payments and receipts."
+        )
+    else:
         rate_mode = st.selectbox(
             "Rate mode",
             ["Market / valuation discount rate", "Treasury scenario"],
-            help="Use one market/valuation rate, or select one explicit treasury "
-                 "scenario for a one-directional swing. The treasury scenario is "
-                 "not a cash-balance-dependent asymmetric-funding valuation.",
+            help="Treasury scenarios require an explicit borrow or invest direction.",
         )
+
+    with st.form("valuation_inputs"):
+        st.subheader("Dates")
+        date_a, date_b = st.columns(2)
+        val_date = pd.Timestamp(
+            date_a.date_input("Valuation date", pd.Timestamp("2026-01-05"))
+        )
+        if uses_quote_matrix:
+            fd_date = pd.Timestamp(
+                date_b.date_input("Forward-curve date", pd.Timestamp("2026-01-05"))
+            )
+        else:
+            fd_date = val_date
+            date_b.date_input("Forward-curve date", val_date, disabled=True)
+        date_c, date_d = st.columns(2)
+        contract_start = pd.Timestamp(
+            date_c.date_input("Contract start", pd.Timestamp("2026-04-01"))
+        )
+        contract_end = pd.Timestamp(
+            date_d.date_input("Contract end", pd.Timestamp("2027-03-30"))
+        )
+
+        st.subheader("Commercial terms")
+        if product_type in ("put_swing", "call_swing"):
+            strike = st.number_input(
+                "Strike (EUR/MWh)", value=30.0, step=0.25, format="%.4f"
+            )
+            swing_a, swing_b = st.columns(2)
+            capacity_mwh = swing_a.number_input(
+                "Maximum total quantity (MWh)",
+                min_value=0.001, value=600_000.0, step=10_000.0, format="%.3f",
+            )
+            daily_max = swing_b.number_input(
+                "Maximum daily quantity (MWh/day)",
+                min_value=0.001, value=20_000.0, step=1_000.0, format="%.3f",
+            )
+            clips_per_day = st.number_input(
+                "Clips per daily maximum",
+                min_value=1, max_value=1_000, value=2, step=1,
+                help="The clip is maximum daily quantity divided by this number.",
+            )
+            if product_type == "call_swing":
+                volume_style = st.radio(
+                    "Volume obligation",
+                    ["Mandatory full quantity", "Optional up to maximum"],
+                )
+                zero_penalty = volume_style == "Optional up to maximum"
+            else:
+                zero_penalty = False
+            n_states = inj_days = wdr_days = None
+            initial_storage_mwh = terminal_storage_mwh = None
+            inj_cost = wdr_cost = fuel_loss_pct = 0.0
+        else:
+            store_a, store_b = st.columns(2)
+            capacity_mwh = store_a.number_input(
+                "Working capacity (MWh)",
+                min_value=0.001, value=600_000.0, step=10_000.0, format="%.3f",
+            )
+            n_states = store_b.number_input(
+                "Inventory grid states",
+                min_value=1, max_value=20_000, value=60, step=1,
+                help="Capacity, rates and inventory must land exactly on this grid.",
+            )
+            rate_a, rate_b = st.columns(2)
+            inj_days = rate_a.number_input(
+                "Days to fill", min_value=0.001, value=30.0, step=1.0, format="%.3f"
+            )
+            wdr_days = rate_b.number_input(
+                "Days to empty", min_value=0.001, value=60.0, step=1.0, format="%.3f"
+            )
+            inv_a, inv_b = st.columns(2)
+            initial_storage_mwh = inv_a.number_input(
+                "Opening inventory (MWh)",
+                min_value=0.0, value=0.0, step=10_000.0, format="%.3f",
+            )
+            terminal_storage_mwh = inv_b.number_input(
+                "Terminal inventory (MWh)",
+                min_value=0.0, value=0.0, step=10_000.0, format="%.3f",
+            )
+            cost_a, cost_b = st.columns(2)
+            inj_cost = cost_a.number_input(
+                "Injection variable cost (EUR/MWh)",
+                value=0.50, step=0.05, format="%.4f",
+            )
+            wdr_cost = cost_b.number_input(
+                "Withdrawal variable cost (EUR/MWh)",
+                value=0.50, step=0.05, format="%.4f",
+            )
+            fuel_loss_pct = st.number_input(
+                "Injection fuel loss (%)",
+                min_value=0.0, max_value=99.999, value=0.0, step=0.1, format="%.3f",
+            )
+            strike = 0.0
+            daily_max = clips_per_day = None
+            zero_penalty = False
+
+        st.subheader("Model")
+        model_a, model_b = st.columns(2)
+        vol = model_a.number_input(
+            "Volatility (annualised)",
+            min_value=0.0, max_value=5.0, value=0.60, step=0.01, format="%.4f",
+        )
+        mean_reversion = model_b.number_input(
+            "Mean reversion",
+            min_value=0.0, max_value=10.0, value=1.0, step=0.1, format="%.4f",
+        )
+        n_p_full = st.number_input(
+            "n_p_full", min_value=0, max_value=100, value=30, step=1,
+            help="Price-tree half-width; the full tree has 2 × n_p_full + 1 states.",
+        )
+        run_intrinsic = st.checkbox("Run intrinsic decomposition", value=True)
+
+        st.subheader("Discounting")
         if rate_mode == "Market / valuation discount rate":
             discount_rate = st.number_input(
-                "discount_rate (annual, continuous)", value=0.0, step=0.01,
-                format="%.4f", help="0.05 means 5% per year.")
+                "discount_rate (annual, continuous)",
+                value=0.0, step=0.01, format="%.4f",
+            )
             rate_inputs = {"discount_rate": float(discount_rate)}
         else:
-            borrow_rate = st.number_input(
-                "borrow_rate (annual, continuous)", value=0.05, step=0.01,
-                format="%.4f")
-            invest_rate = st.number_input(
-                "invest_rate (annual, continuous)", value=0.03, step=0.01,
-                format="%.4f")
+            treasury_a, treasury_b = st.columns(2)
+            borrow_rate = treasury_a.number_input(
+                "borrow_rate (annual, continuous)",
+                value=0.05, step=0.01, format="%.4f",
+            )
+            invest_rate = treasury_b.number_input(
+                "invest_rate (annual, continuous)",
+                value=0.03, step=0.01, format="%.4f",
+            )
             funding_direction = st.selectbox(
                 "funding_direction", ["borrow", "invest"],
-                help="Explicitly select the treasury scenario. It is not inferred "
-                     "from product type or average moneyness.")
+                help="The model does not infer direction from product or moneyness.",
+            )
             rate_inputs = {
                 "borrow_rate": float(borrow_rate),
                 "invest_rate": float(invest_rate),
                 "funding_direction": funding_direction,
             }
-        clips_per_day = st.number_input("clips_per_day", min_value=1, max_value=1000, value=3, step=1,
-                                        help="Daily granularity / max clips moved per active day. With daily_max set, clip size = daily_max / clips_per_day.")
-        daily_max = st.number_input("daily_max (MWh/day, 0 = use v_step)", min_value=0, max_value=10_000_000, value=0, step=100,
-                                    help="Max MWh injected/withdrawn per active day. If > 0, clip size v_step is derived as daily_max / clips_per_day.")
-        capacity_mwh = st.number_input("capacity_mwh (0 = use days/inj_days)", min_value=0, max_value=100_000_000, value=0, step=1000,
-                                       help="Total working volume in MWh. If > 0, the number of inventory states is capacity_mwh / clip size.")
-        v_step = st.number_input("v_step (used only when daily_max = 0)", min_value=1, max_value=1_000_000, value=1000, step=100)
 
-        st.header("Storage inputs")
-        st.caption("Injection and withdrawal share one daily rate (set by clips_per_day). "
-                   "Asymmetric inj/withdraw rates are not yet supported here — use forward.ipynb for those.")
-        inj_days = st.number_input("inj_days", min_value=1, max_value=3660, value=30, step=1,
-                                   help="Legacy inventory-state count for the storage product when capacity_mwh = 0. Does not set an asymmetric rate.")
-        inj_cost = st.number_input("inj_cost (EUR/MWh)", value=0.5, step=0.1, format="%.2f")
-        wdr_cost = st.number_input("wdr_cost (EUR/MWh)", value=0.5, step=0.1, format="%.2f")
+        ratchet_frame = None
+        bound_frame = None
+        max_ratchet_rate_loss_pct = 10.0
+        if product_type == "storage":
+            st.subheader("Storage constraints")
+            use_ratchets = st.checkbox(
+                "Use inventory ratchets",
+                value=False,
+                help="Rate multipliers are linearly interpolated by inventory fullness.",
+            )
+            if use_ratchets:
+                ratchet_frame = st.data_editor(
+                    pd.DataFrame(
+                        {
+                            "fullness": [0.0, 0.5, 1.0],
+                            "injection": [1.0, 1.0, 1.0],
+                            "withdrawal": [1.0, 1.0, 1.0],
+                        }
+                    ),
+                    num_rows="dynamic",
+                    hide_index=True,
+                    width="stretch",
+                    key="ratchet_editor",
+                )
+                max_ratchet_rate_loss_pct = st.number_input(
+                    "Maximum permitted ratchet rate loss (%)",
+                    min_value=0.0, max_value=100.0, value=10.0, step=0.5,
+                )
+            use_bounds = st.checkbox(
+                "Use dated inventory bounds",
+                value=False,
+                help="Fractions apply to opening inventory on each stated date.",
+            )
+            if use_bounds:
+                bound_frame = st.data_editor(
+                    pd.DataFrame(
+                        {
+                            "date": pd.Series(dtype="datetime64[ns]"),
+                            "minimum": pd.Series(dtype=float),
+                            "maximum": pd.Series(dtype=float),
+                        }
+                    ),
+                    num_rows="dynamic",
+                    hide_index=True,
+                    width="stretch",
+                    key="bounds_editor",
+                )
+                st.caption("Enter bounds as fractions: 0.70 means 70% of capacity.")
 
-        st.header("Forward curve")
-        use_direct_curve = st.toggle("Use direct curve", value=True)
-        curve_mode = "Direct curve" if use_direct_curve else "TTF quote matrix"
-        uploaded_curve = st.file_uploader("Upload xlsx/csv", type=["xlsx", "xls", "csv"])
-        include_da = st.checkbox("Include DA front stub", value=True, disabled=(curve_mode != "TTF quote matrix"))
+        uploaded_curve = None
+        include_da = True
+        if curve_source.startswith("Upload"):
+            st.subheader("Forward curve")
+            uploaded_curve = st.file_uploader(
+                "Curve file", type=["xlsx", "xls", "csv"]
+            )
+        if uses_quote_matrix:
+            include_da = st.checkbox("Include day-ahead front stub", value=True)
 
         run = st.form_submit_button("Run valuation", type="primary")
 
-if storageEnd < storageStart:
-    st.error("storageEnd must be on or after storageStart.")
-    st.stop()
-
-params = {
-    "product_type": product_type,
-    "FDDate": FDDate,
-    "valDate": valDate,
-    "storageStart": storageStart,
-    "storageEnd": storageEnd,
-    "days": int(days),
-    "vol": float(vol),
-    "sMR": float(sMR),
-    "n_p_full": int(n_p_full),
-    "run_intrinsic": bool(run_intrinsic),
-    "v_step": int(v_step),
-    "clips_per_day": int(clips_per_day),
-    "daily_max": int(daily_max) if daily_max > 0 else None,
-    "capacity_mwh": int(capacity_mwh) if capacity_mwh > 0 else None,
-    "inj_days": int(inj_days),
-    "inj_cost": float(inj_cost),
-    "wdr_cost": float(wdr_cost),
-}
-params.update(normalise_rate_parameters(rate_inputs))
 
 if not run:
-    st.info("Set inputs in the sidebar, then run valuation.")
+    st.info("Complete the term sheet in the sidebar and select Run valuation.")
     st.stop()
 
 try:
-    if curve_mode == "TTF quote matrix":
-        quotes, contract_columns = load_quote_matrix(uploaded_curve)
-        fd_quote = quote_row_for_fd_date(quotes, contract_columns, FDDate, exact=False)
-        curve = curve_df_for_storage(fd_quote, contract_columns, curve_start=valDate, include_da=include_da)
-        curve_note = f"Quote used: {fd_quote['quote_date']:%Y-%m-%d}"
-    else:
-        curve = load_direct_curve(uploaded_curve)
-        curve_note = "Direct curve file"
+    ratchets = parse_ratchet_table(ratchet_frame) if ratchet_frame is not None else None
+    inventory_bounds = (
+        parse_inventory_bounds(bound_frame) if bound_frame is not None else None
+    )
+    values = {
+        "product_type": product_type,
+        "FDDate": fd_date,
+        "valDate": val_date,
+        "storageStart": contract_start,
+        "storageEnd": contract_end,
+        "uses_quote_matrix": uses_quote_matrix,
+        "vol": vol,
+        "sMR": mean_reversion,
+        "n_p_full": n_p_full,
+        "run_intrinsic": run_intrinsic,
+        "capacity_mwh": capacity_mwh,
+        "strike": strike,
+        "daily_max": daily_max,
+        "clips_per_day": clips_per_day,
+        "zero_penalty": zero_penalty,
+        "n_states": n_states,
+        "inj_days": inj_days,
+        "wdr_days": wdr_days,
+        "initial_storage_mwh": initial_storage_mwh,
+        "terminal_storage_mwh": terminal_storage_mwh,
+        "inj_cost": inj_cost,
+        "wdr_cost": wdr_cost,
+        "fuel_loss": fuel_loss_pct / 100.0,
+        "max_ratchet_rate_loss": max_ratchet_rate_loss_pct / 100.0,
+        **rate_inputs,
+    }
+    params, effective = build_pricing_params(
+        values, ratchets=ratchets, inventory_bounds=inventory_bounds
+    )
 except Exception as exc:
-    st.error(str(exc))
+    st.error(f"Term sheet is not valid: {exc}")
     st.stop()
 
-st.caption(f"{curve_note}. Curve covers {curve['contractStart'].min():%Y-%m-%d} to {curve['contractEnd'].max():%Y-%m-%d}.")
+try:
+    source_metadata = {"source_name": curve_source}
+    if curve_source == "Bundled direct curve":
+        source_bytes = DIRECT_CURVE_PATH.read_bytes()
+        curve = load_uploaded_direct_curve(source_bytes, DIRECT_CURVE_PATH.name)
+        source_metadata["source_sha256"] = hashlib.sha256(source_bytes).hexdigest()
+    elif curve_source == "Upload direct curve":
+        if uploaded_curve is None:
+            raise ValueError("Upload a direct curve file before running the valuation.")
+        source_bytes = uploaded_curve.getvalue()
+        curve = load_uploaded_direct_curve(source_bytes, uploaded_curve.name)
+        source_metadata.update(
+            {
+                "file_name": uploaded_curve.name,
+                "file_size": uploaded_curve.size,
+                "source_sha256": hashlib.sha256(source_bytes).hexdigest(),
+            }
+        )
+    elif curve_source == "Bundled TTF quote matrix":
+        quotes, contract_cols, quote_stats = load_uploaded_quote_matrix(
+            QUOTE_MATRIX_PATH.read_bytes(), QUOTE_MATRIX_PATH.name
+        )
+        quote = quote_row_for_fd_date(quotes, contract_cols, fd_date, exact=False)
+        curve = curve_df_for_storage(
+            quote, contract_cols, curve_start=val_date, include_da=include_da
+        )
+        source_metadata.update(
+            quote_stats | {"quote_used": pd.Timestamp(quote["quote_date"]).isoformat()}
+        )
+    else:
+        if uploaded_curve is None:
+            raise ValueError("Upload a TTF quote-matrix file before running.")
+        quotes, contract_cols, quote_stats = load_uploaded_quote_matrix(
+            uploaded_curve.getvalue(), uploaded_curve.name
+        )
+        quote = quote_row_for_fd_date(quotes, contract_cols, fd_date, exact=False)
+        curve = curve_df_for_storage(
+            quote, contract_cols, curve_start=val_date, include_da=include_da
+        )
+        source_metadata.update(
+            quote_stats | {"quote_used": pd.Timestamp(quote["quote_date"]).isoformat()}
+        )
+except Exception as exc:
+    st.error(f"Forward curve could not be prepared: {exc}")
+    st.stop()
 
-with st.spinner("Running valuation. First run may compile Numba kernels..."):
-    t0 = time.perf_counter()
+st.caption(
+    f"Curve covers {curve['contractStart'].min():%Y-%m-%d} to "
+    f"{curve['contractEnd'].max():%Y-%m-%d}."
+)
+with st.spinner("Running valuation. The first run may compile numerical kernels..."):
+    started = time.perf_counter()
     try:
         warm_numba_kernels()
         payload, result = cached_run_valuation(curve, params)
     except Exception as exc:
-        st.exception(exc)
+        st.error(f"Valuation was refused: {exc}")
         st.stop()
-    elapsed = time.perf_counter() - t0
+    elapsed = time.perf_counter() - started
 
-st.success(f"Valuation complete in {elapsed:.1f}s")
-st.caption(f"Applied annual continuously compounded rate: {payload['discount_rate']:.4%}.")
+daily, monthly = build_output_tables(
+    payload, result, product_type, contract_start, contract_end
+)
 
-if run_intrinsic:
-    summary_metrics = ["Flat price (EUR/MWh)", "Profiled price (EUR/MWh)", "Intrinsic (EUR/MWh)", "Extrinsic (EUR/MWh)", "Total (EUR/MWh)"]
-else:
-    summary_metrics = ["Flat price (EUR/MWh)", "Profiled price (EUR/MWh)", "Intrinsic (EUR/MWh)", "Extrinsic (EUR/MWh)", "Stochastic (EUR/MWh)"]
+st.success(f"Valuation complete in {elapsed:.1f}s.")
+st.caption(
+    "Applied annual continuously compounded rate: "
+    f"{payload['discount_rate']:.4%}."
+)
 
-summary = pd.DataFrame({
-    "metric": summary_metrics,
-    "value": [
-        result["flat_metric"],
-        result["profiled_metric"],
-        result["intrinsic"],
-        result["extrinsic"],
-        result["total"],
-    ],
-})
-summary["value"] = summary["value"].map(format_number)
+metric_1, metric_2, metric_3, metric_4, metric_5 = st.columns(5)
+metric_1.metric("Contract PV (EUR)", display_number(payload["contract_pv_eur"], 0))
+metric_2.metric("Total (EUR/MWh)", display_number(result["total"], 4))
+metric_3.metric("Intrinsic (EUR/MWh)", display_number(result["intrinsic"], 4))
+metric_4.metric("Extrinsic (EUR/MWh)", display_number(result["extrinsic"], 4))
+metric_5.metric("Discount rate", f"{payload['discount_rate']:.4%}")
 
-cols = st.columns(5)
-for col, metric, value in zip(cols, summary["metric"], summary["value"]):
-    col.metric(metric, value)
+results_tab, schedule_tab, terms_tab, downloads_tab = st.tabs(
+    ["Results", "Schedule & hedge", "Effective contract", "Curve & downloads"]
+)
 
-if product_type == "storage":
+with results_tab:
+    summary = pd.DataFrame(
+        {
+            "metric": [
+                "Flat benchmark (EUR/MWh)",
+                "Profiled intrinsic metric (EUR/MWh)",
+                "Intrinsic (EUR/MWh)",
+                "Extrinsic (EUR/MWh)",
+                "Total / stochastic (EUR/MWh)",
+                "Contract PV (EUR)",
+            ],
+            "value": [
+                result["flat_metric"],
+                result["profiled_metric"],
+                result["intrinsic"],
+                result["extrinsic"],
+                result["total"],
+                payload["contract_pv_eur"],
+            ],
+        }
+    )
+    st.dataframe(summary, hide_index=True, width="stretch")
+    if product_type == "storage":
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "component": ["Intrinsic", "Extrinsic", "Total"],
+                    "EUR": [
+                        result["intrinsic_eur"],
+                        result["extrinsic_eur"],
+                        result["total_eur"],
+                    ],
+                }
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    st.caption(
+        "EUR/MWh storage values use working capacity as denominator. Swing metrics "
+        "follow the model's exercised-volume convention; Contract PV is unscaled."
+    )
+
+with schedule_tab:
+    chart_data = daily.set_index("date")[
+        [
+            "intrinsic_expected_volume_mwh",
+            "stochastic_expected_volume_mwh",
+            "physical_forward_delta_mwh",
+        ]
+    ]
+    st.subheader("Expected exercise and physical forward delta")
+    st.line_chart(chart_data)
+    st.dataframe(daily, hide_index=True, width="stretch")
+    st.subheader("Monthly hedge aggregation")
+    st.caption(
+        "Physical delta is for matching-settlement OTC forwards. PV-tailed delta "
+        "is the corresponding exposure against daily-margined futures."
+    )
+    st.dataframe(monthly, hide_index=True, width="stretch")
+
+with terms_tab:
+    st.subheader("Effective numerical contract")
+    effective_display = {
+        key: display_number(value, 6)
+        if isinstance(value, (int, float, np.integer, np.floating))
+        else str(value)
+        for key, value in effective.items()
+    }
     st.dataframe(
-        pd.DataFrame({
-            "metric": ["intrinsic_eur", "extrinsic_eur", "total_eur"],
-            "value": [result["intrinsic_eur"], result["extrinsic_eur"], result["total_eur"]],
-        }).assign(value=lambda x: x["value"].map(lambda v: "n/a" if pd.isna(v) else f"{v:,.0f}")),
+        pd.DataFrame(
+            {
+                "quantity": list(effective_display),
+                "effective value": list(effective_display.values()),
+            }
+        ),
         hide_index=True,
         width="stretch",
     )
+    if product_type == "storage" and not payload["bound_diagnostics"].empty:
+        st.subheader("Inventory-bound rounding")
+        st.dataframe(
+            payload["bound_diagnostics"], hide_index=True, width="stretch"
+        )
+    if product_type == "storage" and not payload["ratchet_diagnostics"].empty:
+        st.subheader("Ratchet rate representation")
+        st.caption(
+            "Contract rates are headroom-capped before whole-clip flooring. Loss "
+            "reports the grid effect, not the physical headroom limit."
+        )
+        st.dataframe(
+            payload["ratchet_diagnostics"], hide_index=True, width="stretch"
+        )
 
-date_span = payload["date_span"]
-exercise_dates = date_span[payload["Dt"]:payload["active"]]
-delta_dates = date_span[:payload["n_t"]]
-plot_prices = pd.Series(payload["price_curve"], index=date_span)
-intrinsic_profile = pd.Series(result["intrinsic_profile_raw"][:len(date_span)], index=date_span).loc[exercise_dates]
-extrinsic_profile = pd.Series(result["extrinsic_profile_raw"][:len(date_span)], index=date_span).loc[exercise_dates]
-extrinsic_delta_profile = pd.Series(payload["delta"][:payload["n_t"]], index=delta_dates)
-
-fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-for ax, profile, title, color in [
-    (axes[0], intrinsic_profile, f"{result['title_prefix']} intrinsic expected exercise vs forward curve", "tab:red"),
-    (axes[1], extrinsic_delta_profile, f"{result['title_prefix']} native extrinsic delta vs forward curve", "tab:purple"),
-]:
-    dates = exercise_dates if ax is axes[0] else delta_dates
-    ax_price = ax.twinx()
-    if product_type == "storage":
-        ax.bar(dates, np.where(profile.values > 0, profile.values, 0), width=1.0, color="tab:green", alpha=0.65, label="Expected sell" if ax is axes[0] else "Positive native delta")
-        ax.bar(dates, np.where(profile.values < 0, profile.values, 0), width=1.0, color="tab:red", alpha=0.65, label="Expected buy" if ax is axes[0] else "Negative native delta")
-    else:
-        ax.bar(dates, profile.values, width=1.0, color=color, alpha=0.65, label="Expected offtake" if ax is axes[0] else "Native delta")
-    ax_price.plot(dates, plot_prices.loc[dates].values, color="black", linewidth=1.6, label="Forward curve")
-    ax.set_title(title)
-    ax.set_ylabel(result["profile_label"] if ax is axes[0] else "Delta (MWh/day)")
-    ax_price.set_ylabel("Forward price")
-    ax.grid(True, alpha=0.25)
-    ax.set_xlim(storageStart, storageEnd)
-    lines, labels = ax.get_legend_handles_labels()
-    lines2, labels2 = ax_price.get_legend_handles_labels()
-    ax.legend(lines + lines2, labels + labels2, loc="upper right")
-plt.tight_layout()
-st.pyplot(fig)
-
-st.subheader("Monthly Discounted Forward Deltas")
-st.caption(
-    "Local sensitivities at the current optimal exercise policy, in PV-equivalent MWh. "
-    "Large forward-curve moves can switch exercise decisions, so scenario changes also "
-    "contain convexity and will not generally equal delta multiplied by the price move."
-)
-monthly_delta = extrinsic_delta_profile.loc[storageStart:storageEnd]
-monthly_delta_by_period = monthly_delta.resample("MS").sum()
-monthly_delta_table = pd.DataFrame({
-    "period": monthly_delta_by_period.index.strftime("%b-%y"),
-    "native_delta": monthly_delta_by_period.values,
-})
-monthly_delta_table = pd.concat([
-    monthly_delta_table,
-    pd.DataFrame([{"period": "Sum", "native_delta": monthly_delta_table["native_delta"].sum()}]),
-], ignore_index=True)
-monthly_delta_display = monthly_delta_table.copy()
-monthly_delta_display["native_delta"] = monthly_delta_display["native_delta"].map("{:,.2f}".format)
-st.dataframe(monthly_delta_display, hide_index=True, width="stretch")
-
-with st.expander("Forward curve used"):
-    curve_display = curve.copy()
-    curve_display["contractStart"] = curve_display["contractStart"].dt.strftime("%Y-%m-%d")
-    curve_display["contractEnd"] = curve_display["contractEnd"].dt.strftime("%Y-%m-%d")
-    st.dataframe(curve_display, hide_index=True, width="stretch")
+with downloads_tab:
+    st.subheader("Forward curve used")
+    st.dataframe(curve, hide_index=True, width="stretch")
+    report = {
+        "product_type": product_type,
+        "parameters": params,
+        "effective_contract": effective,
+        "curve_source": source_metadata,
+        "results": {
+            key: value
+            for key, value in result.items()
+            if key not in ("intrinsic_profile_raw", "extrinsic_profile_raw")
+        },
+        "contract_pv_eur": payload["contract_pv_eur"],
+        "discount_rate": payload["discount_rate"],
+    }
+    download_a, download_b = st.columns(2)
+    download_a.download_button(
+        "Download valuation JSON",
+        json.dumps(serialisable(report), indent=2, allow_nan=False),
+        file_name=f"{product_type}_valuation.json",
+        mime="application/json",
+    )
+    download_b.download_button(
+        "Download curve CSV",
+        curve.to_csv(index=False),
+        file_name=f"{product_type}_curve.csv",
+        mime="text/csv",
+    )
+    download_c, download_d = st.columns(2)
+    download_c.download_button(
+        "Download daily schedule CSV",
+        daily.to_csv(index=False),
+        file_name=f"{product_type}_daily_schedule.csv",
+        mime="text/csv",
+    )
+    download_d.download_button(
+        "Download monthly hedge CSV",
+        monthly.to_csv(index=False),
+        file_name=f"{product_type}_monthly_hedge.csv",
+        mime="text/csv",
+    )
