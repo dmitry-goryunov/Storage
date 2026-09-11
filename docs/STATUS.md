@@ -1,5 +1,7 @@
 # Project status
 
+**As of 2026-09-11 (later).** [IMPLEMENTATION-GUIDE-2026-09-11.md](IMPLEMENTATION-GUIDE-2026-09-11.md)'s S1–S5 are all done — every one of its acceptance pack's 31 checks now passes, up from 9 when the guide landed. What remains is S6/S7, the calibration and model-comparison work proper, blocked on TTF data past the workbook's 6 March 2026 endpoint regardless of further engineering. See the day-by-day account below.
+
 **As of 2026-09-10 (evening).** An independent review of the storage day landed, overturned
 two results recorded as established — the ratchet cap and the case for a second factor — and
 was itself replied to with an implementation plan. **The inventory-bound repair is done, and the ratchet
@@ -25,13 +27,19 @@ together.
 
 `price_grid_ladder` is relabelled rather than rebuilt: it refines the price tree's *boundary width* (`n_p`, at a fixed one-day time step) and was previously documented as testing "price discretisation" more broadly — building genuine daily-substep refinement is a materially larger feature, out of scope here, so its docstring and the report label now say precisely what it does and does not test instead.
 
-Acceptance pack: **30 of 31** — every check passes except S5's `P-terminal_anchor`. Update this file when that changes — a status document that lags is worse than none.
+Acceptance pack: **30 of 31** — every check passes except S5's `P-terminal_anchor`.
+
+**S5 done — the guide's implementation checklist is now complete, 31 of 31 on the acceptance pack.** `two_factor_probe.py`'s `_ou_lattice` built its transition *probabilities* from an Euler discretisation (`mean = (1-kappa*DT)*chi`, `var = sigma^2*DT`) instead of the OU process's own exact one-step moments (`mean = exp(-kappa*DT)*chi`, `var = sigma^2*(1-exp(-2*kappa*DT))/(2*kappa)`). At kappa 4, `DT = 1/12` (`kappa*DT = 1/3`, not small), Euler's mean-reversion factor is 0.6667 against the exact 0.7165 — a 7 % per-step error compounding over every one of the 23 steps, not just the last. Separately, `matched_sig_chi`'s "terminal" anchor defaulted its horizon to `N_T*DT` (2.0y) — one step *past* the actual last decision at `(N_T-1)*DT` (1.9167y) — so it matched a variance nothing in the probe is ever valued at. Together these produced the reviewed 8.95 % mismatch between the anchor and what the lattice actually propagated; both are now exact, and the mismatch is zero to machine precision (verified directly against the pack's own `P-terminal_anchor` formula, and independently against the closed-form OU variance at six kappa values including 0 and near-zero).
+
+Fixing the transition law surfaced a second, previously-latent defect: with the exact (smaller) per-step variance, the lattice's *spacing* — fixed at `sigma*sqrt(3*DT)`, sized for the larger Euler variance — violated the trinomial's own stability condition at high kappa, producing probabilities as negative as −0.33 at the kappa=0 boundary node. `dx` is now derived from the same exact variance the transition uses (`dx = sqrt(3*var)`), which the guide's own §8.5 sequence explicitly asks be validated at kappa 0 and near zero — a case the pack itself does not test, and one the previous implementation would have failed had anyone exercised it.
+
+The qualitative findings are unchanged — a calibrated second factor still costs a store value at every kappa above 0.2 (now 4.97 % at kappa 4, spot anchor, down from a previously reported ~8 %), and the struck swing's answer still flips sign between anchors (+0.81 % spot vs −7.76 % terminal, down from +0.58 %/−10.23 %) — only the specific percentages moved, uniformly smaller, since Euler had been overstating how sharply mean reversion departs from a random walk at this step size. Update this file when that changes — a status document that lags is worse than none.
 
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **151 passed** |
+| Tests | `python -m pytest -q` → **154 passed** |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 

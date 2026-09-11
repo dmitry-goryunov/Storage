@@ -31,6 +31,16 @@ Schwartz-Smith engine. Its long factor is independent of the short one, which is
 enough for the questions above. Run it:
 
     python two_factor_probe.py
+
+2026-09-11: the short factor's own lattice (`_ou_lattice`) was rebuilt on the
+OU process's EXACT one-step moments in place of an Euler discretisation, and
+`matched_sig_chi`'s "terminal" anchor was corrected to the actual last decision
+date rather than one step past it -- IMPLEMENTATION-GUIDE-2026-09-11.md §8.
+Together these had produced an 8.95 % gap between what the anchor matched and
+what the lattice actually propagated; the gap is now zero to machine precision.
+The qualitative story below is unchanged -- a calibrated second factor still
+costs a store value, and the struck swing's answer still flips sign between
+anchors -- only the specific percentages moved, generally smaller than before.
 """
 import numpy as np
 
@@ -40,23 +50,79 @@ CAP = 3                       # inventory levels 0..3
 SIG_CHI = 0.6                 # the one-factor model's short-factor volatility
 RATE = 0.05
 
+# The ACTUAL decision dates: 0, DT, ..., (N_T-1)*DT. Until 2026-09-11 the
+# "terminal" anchor below defaulted to N_T*DT = 2.0y -- one step PAST the last
+# decision at (N_T-1)*DT = 23/12 = 1.9167y -- and matched a variance nothing in
+# this probe is ever actually valued at. IMPLEMENTATION-GUIDE-2026-09-11.md
+# §8.2. Everything that indexes a decision date already used range(N_T)
+# correctly (F0, DF); only the anchor's own horizon was wrong.
+DECISION_TIMES = np.arange(N_T) * DT
+
 # A seasonal forward curve, so there is a spread to trade rather than only noise.
 F0 = 20.0 + 5.0 * np.cos(2 * np.pi * np.arange(N_T) / 12.0)
-DF = np.exp(-RATE * DT * np.arange(N_T))
+DF = np.exp(-RATE * DECISION_TIMES)
 
 
 # -- Lattices -----------------------------------------------------------------
 
 def _ou_lattice(kappa, sigma, half=40):
-    """Recombining trinomial for dchi = -kappa*chi*dt + sigma*dW, chi_0 = 0."""
-    dx = sigma * np.sqrt(3.0 * DT)
+    """Recombining trinomial for dchi = -kappa*chi*dt + sigma*dW, chi_0 = 0.
+
+    Built from the EXACT one-step conditional moments over an interval `DT`,
+    not an Euler discretisation:
+
+        a    = exp(-kappa*DT)                                  -- mean(t+DT) = a * chi(t)
+        var  = sigma^2 * (1 - exp(-2*kappa*DT)) / (2*kappa)     [kappa > 0]
+             = sigma^2 * DT                                     [kappa -> 0, the limit]
+
+    Until 2026-09-11 this used Euler's `(1 - kappa*DT)*c` and `sigma^2*DT`
+    instead -- first-order approximations of the two exact expressions above,
+    good only as `kappa*DT -> 0`. At kappa=4, DT=1/12 (kappa*DT = 1/3, not
+    small), Euler's mean-reversion factor is 0.6667 against the exact 0.7165:
+    a 7 % per-step error that compounds over every one of the N_T-1 steps,
+    not just the last -- which is why matching only the FINAL variance to a
+    closed-form target (the probe's original "immediate correction" option)
+    would still have left every earlier transition biased. Built once,
+    correctly, instead. `1 - exp(-2*kappa*DT)` is computed as `-expm1(...)`
+    to avoid cancellation at small `kappa*DT`.
+
+    **`dx` is derived from this same exact variance, not from `sigma^2*DT`.**
+    Mean reversion makes the exact one-step variance SMALLER than the Euler
+    proxy (`(1-exp(-2*kappa*DT))/(2*kappa) < DT` for any kappa > 0), so a `dx`
+    sized off `sigma*sqrt(3*DT)` becomes too wide for the trinomial's own
+    stability condition (`dx <= sqrt(3*var)`) once kappa is large enough --
+    confirmed by construction: at kappa=4 it produced probabilities as
+    negative as -0.0033, not a rounding-noise sliver. This is not a boundary
+    or a half-width problem, so widening `half` would not have fixed it; `dx`
+    itself has to track the variance it is meant to discretise.
+    IMPLEMENTATION-GUIDE-2026-09-11.md §8.3.
+    """
+    a = np.exp(-kappa * DT)
+    var = (sigma ** 2 * (-np.expm1(-2.0 * kappa * DT)) / (2.0 * kappa)
+          if kappa > 0.0 else sigma ** 2 * DT)
+    dx = np.sqrt(3.0 * var)
     nodes = np.arange(-half, half + 1) * dx
     n = nodes.size
+
     trans = np.zeros((n, n))
     for j, c in enumerate(nodes):
-        mean = c - kappa * c * DT
-        var = sigma ** 2 * DT
-        k = int(np.clip(round(mean / dx), -half + 1, half - 1))
+        mean = a * c
+        raw_k = round(mean / dx)
+        k = int(np.clip(raw_k, -half + 1, half - 1))
+        if k != raw_k:
+            # CLAMPED: the unrestricted target lies at or past the edge (only
+            # possible for a `j` already at or adjacent to the boundary, which
+            # is unreachable by forward propagation for a `half` this
+            # generous -- confirmed separately, not assumed). The usual
+            # eta-based split assumes |eta| is a small fraction of dx; here
+            # clamping can make it a FULL dx or more (seen concretely at
+            # kappa=0, j=0: eta = -dx exactly), which drives one of p_u/p_d/p_m
+            # negative. A deterministic jump to the clamped node sums to
+            # exactly 1 by construction, so it needs no renormalisation and
+            # cannot be negative -- and it changes nothing anyone ever
+            # computes, because this row is never visited.
+            trans[j, k + half] = 1.0
+            continue
         eta = mean - k * dx
         p_u = 0.5 * ((var + eta ** 2) / dx ** 2 + eta / dx)
         p_d = 0.5 * ((var + eta ** 2) / dx ** 2 - eta / dx)
@@ -192,9 +258,12 @@ def matched_sig_chi(sig_xi, anchor="spot", kappa=None, horizon=None):
       `sigma_chi^2 + sigma_xi^2` for independent factors. Horizon-free and
       kappa-free, and what fitting both factors to one observed spot volatility
       would give.
-    * ``"terminal"`` -- hold `Var(log S_T)` fixed at `horizon`. Depends on both
-      kappa and the horizon, because the OU factor's variance saturates at
-      `sigma^2 / (2 kappa)` while the walk's grows linearly.
+    * ``"terminal"`` -- hold `Var(log S_T)` fixed at `horizon`, which defaults
+      to `DECISION_TIMES[-1]` -- the ACTUAL last decision date, `(N_T-1)*DT`,
+      not `N_T*DT` (one step past it; the pre-2026-09-11 default, since
+      corrected). Depends on both kappa and the horizon, because the OU
+      factor's variance saturates at `sigma^2 / (2 kappa)` while the walk's
+      grows linearly.
 
     Returns nan when the long factor alone already exceeds the budget.
     """
@@ -203,7 +272,7 @@ def matched_sig_chi(sig_xi, anchor="spot", kappa=None, horizon=None):
     if anchor == "spot":
         residual = SIG_CHI ** 2 - sig_xi ** 2
     elif anchor == "terminal":
-        horizon = N_T * DT if horizon is None else horizon
+        horizon = DECISION_TIMES[-1] if horizon is None else horizon
         ou_unit = (1.0 - np.exp(-2.0 * kappa * horizon)) / (2.0 * kappa)
         residual = SIG_CHI ** 2 - (sig_xi ** 2 * horizon) / ou_unit
     else:
@@ -282,9 +351,9 @@ def main():
     # The terminal anchor runs out of budget far sooner: at kappa 4 the OU
     # factor's variance has already saturated, so the walk eats it quickly.
     _print_anchored(
-        f"Anchor: Var(log S_T) held fixed at T = {N_T * DT:.0f}y   "
-        f"(a tighter budget -- see sigma_chi below)", "terminal",
-        sig_xis=(0.0, 0.05, 0.10, 0.14))
+        f"Anchor: Var(log S_T) held fixed at T = {DECISION_TIMES[-1]:.4f}y "
+        f"(the LAST DECISION DATE -- a tighter budget, see sigma_chi below)",
+        "terminal", sig_xis=(0.0, 0.05, 0.10, 0.14))
 
     print("\n" + "=" * 92)
     print("Reading")
@@ -299,12 +368,12 @@ def main():
         print(f"  {label:<23}{by_spot:>+13.2%}{by_term:>+17.2%}")
     print()
     print("  A calibrated second factor COSTS a store value, under BOTH anchors and at")
-    print("  every kappa above 0.2: -8.0 % at sigma_xi 0.5 on the spot anchor, -9.3 % at")
-    print("  sigma_xi 0.14 on the terminal one. A store monetises short-horizon variance")
-    print("  and the long factor is where that variance went. Section 1 on its own would")
-    print("  tell you storage is unaffected. It is not -- the channel is the short-factor")
-    print("  estimate, which is exactly why market-model selection and valuation-state")
-    print("  reduction are separate decisions.")
+    print("  every kappa above 0.2: -4.97 % at sigma_xi 0.5 on the spot anchor, -5.55 % at")
+    print("  sigma_xi 0.14 on the terminal one (kappa 4 throughout). A store monetises")
+    print("  short-horizon variance and the long factor is where that variance went.")
+    print("  Section 1 on its own would tell you storage is unaffected. It is not -- the")
+    print("  channel is the short-factor estimate, which is exactly why market-model")
+    print("  selection and valuation-state reduction are separate decisions.")
     print()
     print("  The effect grows with kappa and vanishes as kappa -> 0, which is the sense")
     print("  of it: at slow mean reversion the two factors are nearly the same process,")
@@ -313,10 +382,10 @@ def main():
     print("  destroys the cycling the store lives on.")
     print()
     print("  The struck swing's answer DEPENDS ON THE ANCHOR, and so does its SIGN:")
-    print("  +0.58 % against -10.23 % at one and the same sigma_xi. Holding spot variance")
-    print("  fixed it gains, because the walk's variance keeps accumulating where the OU")
-    print("  factor's saturates, so a longer-dated option sees more terminal variance.")
-    print("  Holding terminal variance fixed removes precisely that, and it loses.")
+    print("  +0.81 % against -7.76 % at one and the same sigma_xi (0.10, kappa 4). Holding")
+    print("  spot variance fixed it gains, because the walk's variance keeps accumulating")
+    print("  where the OU factor's saturates, so a longer-dated option sees more terminal")
+    print("  variance. Holding terminal variance fixed removes precisely that, and it loses.")
     print()
     print("  So this probe cannot say what a second factor is worth, and nor can any")
     print("  single-number anchor: the two factors differ in their variance TERM")

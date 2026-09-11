@@ -2925,7 +2925,12 @@ def test_a_calibrated_second_factor_takes_volatility_out_of_the_short_one():
     """
     import two_factor_probe as probe
 
-    for kappa, floor in ((1.0, 0.004), (4.0, 0.02)):   # 0.63 % and 2.88 % measured
+    # Measured under the exact-moment OU lattice (IMPLEMENTATION-GUIDE-2026-
+    # 09-11.md §8.3): 0.50 % and 1.95 %. Smaller than the Euler lattice's
+    # 0.63 %/2.88 % -- Euler overstates how far mean reversion departs from 1
+    # at kappa*DT this large, which also overstates how sensitive the option
+    # value is to where the variance sits. The direction is unchanged.
+    for kappa, floor in ((1.0, 0.003), (4.0, 0.015)):
         chi = probe.matched_sig_chi(0.3, "spot")
         one = probe.value_store(kappa, 0.0)
         two = probe.value_store(kappa, 0.3, sig_chi=chi)
@@ -2988,6 +2993,108 @@ def test_the_probe_would_catch_its_own_lattice_going_wrong():
         row = row @ narrow[1]
     drifted = float((row * np.exp(narrow[0])).sum())
     assert drifted < np.cosh(0.8 * np.sqrt(probe.DT)) ** (probe.N_T - 1) - 1e-6, drifted
+
+
+# ── S5: the probe's transition law and decision horizon ───────────────────────
+#
+# IMPLEMENTATION-GUIDE-2026-09-11.md §8.2/§8.3, checklist items 14-17. Two
+# independent defects, both reproduced before the fix and both matching the
+# guide's own P-terminal_anchor acceptance-pack case once combined:
+#
+#   - `_ou_lattice` built its transition PROBABILITIES from an Euler
+#     discretisation (mean (1-kappa*DT)*c, var sigma^2*DT) instead of the OU
+#     process's own EXACT one-step moments. At kappa=4, DT=1/12 (kappa*DT=1/3,
+#     not small), Euler's mean-reversion factor is 0.6667 against the exact
+#     0.7165 -- a 7 % per-step error compounding over every step, not just the
+#     last one a "match the final variance" patch would have touched.
+#   - `matched_sig_chi`'s "terminal" anchor defaulted its horizon to `N_T*DT`
+#     (2.0 y) -- one step PAST the actual last decision at `(N_T-1)*DT`
+#     (23/12 = 1.9167 y) -- so it matched a variance nothing in the probe is
+#     ever actually valued at.
+#
+# Together these produced the review's reported 8.95 % mismatch between the
+# probe's "matched" variance and what its own lattice actually propagated.
+
+def test_the_ou_lattice_matches_the_exact_closed_form_moments():
+    """`_ou_lattice`'s propagated variance must equal
+    `sigma^2 * (1 - exp(-2*kappa*t)) / (2*kappa)` (and `sigma^2*t` as
+    `kappa -> 0`) at every decision date, not merely the last one -- an Euler
+    lattice can agree by coincidence at one horizon and still be wrong
+    everywhere else.
+    """
+    import two_factor_probe as probe
+
+    def lattice_variance(nodes, trans, steps):
+        q = np.zeros(nodes.size)
+        q[nodes.size // 2] = 1.0
+        for _ in range(steps):
+            q = q @ trans
+        mean = float((q * nodes).sum())
+        return float((q * nodes ** 2).sum() - mean ** 2), q
+
+    for kappa in (0.0, 1e-6, 0.2, 1.0, 4.0, 20.0):
+        nodes, trans = probe._ou_lattice(kappa, probe.SIG_CHI)
+        # A valid transition matrix in its own right, regardless of horizon.
+        assert trans.min() > -1e-12, (kappa, trans.min())
+        assert np.allclose(trans.sum(axis=1), 1.0)
+        for steps in (1, 5, probe.N_T - 1):
+            variance, q = lattice_variance(nodes, trans, steps)
+            t = steps * probe.DT
+            closed_form = (probe.SIG_CHI ** 2 * t if kappa <= 0.0 else
+                           probe.SIG_CHI ** 2 * (1.0 - np.exp(-2.0 * kappa * t)) / (2.0 * kappa))
+            assert variance == pytest.approx(closed_form, rel=1e-8, abs=1e-12), (kappa, steps)
+            assert q[0] + q[-1] < 1e-10, (kappa, steps, "mass reached the truncation edge")
+
+
+def test_the_terminal_anchor_uses_the_actual_last_decision_not_n_t_times_dt():
+    """`(N_T-1)*DT`, not `N_T*DT` -- the decision that does not exist."""
+    import two_factor_probe as probe
+
+    assert probe.DECISION_TIMES[-1] == pytest.approx((probe.N_T - 1) * probe.DT)
+    assert probe.DECISION_TIMES[-1] < probe.N_T * probe.DT
+    assert probe.DECISION_TIMES.size == probe.N_T
+
+    # matched_sig_chi's default horizon must be the corrected one.
+    kappa = 4.0
+    explicit = probe.matched_sig_chi(0.1, "terminal", kappa=kappa,
+                                     horizon=probe.DECISION_TIMES[-1])
+    default = probe.matched_sig_chi(0.1, "terminal", kappa=kappa)
+    assert default == pytest.approx(explicit)
+
+
+def test_the_terminal_anchor_now_matches_what_the_lattice_actually_propagates():
+    """The acceptance pack's own `P-terminal_anchor` computation, reproduced
+    as a repository test: with the exact-moment lattice and the corrected
+    horizon, `sigma_chi`(matched) + `sigma_xi`'s variance must reproduce the
+    baseline `sigma_chi` variance at the ACTUAL last decision -- not merely
+    within the pack's 1e-10 + 1e-8*base tolerance, but to machine precision,
+    since both sides are now the same exact formula evaluated at the same
+    horizon.
+    """
+    import two_factor_probe as probe
+
+    def variance(sigma, kappa):
+        nodes, trans = probe._ou_lattice(kappa, sigma)
+        q = np.zeros(len(nodes))
+        q[len(nodes) // 2] = 1.0
+        for _ in range(probe.N_T - 1):
+            q = q @ trans
+        return float(q @ nodes ** 2 - (q @ nodes) ** 2)
+
+    for kappa in (0.2, 1.0, 4.0):
+        for sig_xi in (0.05, 0.1, 0.14):
+            base = variance(probe.SIG_CHI, kappa)
+            chi = probe.matched_sig_chi(sig_xi, "terminal", kappa=kappa)
+            if not np.isfinite(chi):
+                continue                         # budget exhausted at this kappa/sig_xi
+            long_nodes, long_trans = probe._walk_lattice(sig_xi)
+            q = np.zeros(len(long_nodes))
+            q[len(long_nodes) // 2] = 1.0
+            for _ in range(probe.N_T - 1):
+                q = q @ long_trans
+            long_variance = float(q @ long_nodes ** 2 - (q @ long_nodes) ** 2)
+            actual = variance(chi, kappa) + long_variance
+            assert actual == pytest.approx(base, rel=1e-10), (kappa, sig_xi, base, actual)
 
 
 def test_the_fixtures_depend_only_on_files_the_repository_carries():
@@ -3247,6 +3354,7 @@ def test_editing_a_workbook_in_place_invalidates_its_cache_even_with_mtime_resto
         wb = os.path.join(tmp, "mine.xlsx")
         pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
                      "TTFc1": [10.0]}).to_excel(wb, index=False)
+        original_bytes = open(wb, "rb").read()      # captured BEFORE any edit
         first, prov_first = qd.load_quote_matrix(wb)
         assert first["TTFc1"].iloc[0] == 10.0
         assert prov_first["cache"] == "rebuilt"
@@ -3261,14 +3369,20 @@ def test_editing_a_workbook_in_place_invalidates_its_cache_even_with_mtime_resto
             "same path, restored mtime, changed content -- got stale data")
         assert prov_second["source_sha256"] != prov_first["source_sha256"]
 
-        # And re-reading the FIRST content again (a third distinct file, same
-        # bytes as the original) correctly hits the cache entry THAT content
-        # made, not the second one -- content addressing means both coexist.
+        # And re-reading the FIRST content again (a third distinct file, the
+        # exact same BYTES as the original) correctly hits the cache entry
+        # THAT content made, not the second one -- content addressing means
+        # both coexist. Written from the CAPTURED bytes, not a second
+        # to_excel() call: an xlsx can embed its own write timestamp, so two
+        # calls with logically identical data are not guaranteed byte-for-byte
+        # identical, which is a fact about the Excel writer, not something
+        # this test needs to depend on.
         again_wb = os.path.join(tmp, "again.xlsx")
-        pd.DataFrame({"quote_date": [pd.Timestamp("2020-01-01")],
-                     "TTFc1": [10.0]}).to_excel(again_wb, index=False)
+        with open(again_wb, "wb") as handle:
+            handle.write(original_bytes)
         third, prov_third = qd.load_quote_matrix(again_wb, cache_dir=os.path.dirname(wb))
         assert third["TTFc1"].iloc[0] == 10.0
+        assert prov_third["source_sha256"] == prov_first["source_sha256"]
         assert prov_third["cache"] == "hit", "identical bytes should hit the first cache entry"
 
 
