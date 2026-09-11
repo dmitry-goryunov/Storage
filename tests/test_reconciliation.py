@@ -1944,6 +1944,70 @@ print("SIMPLE_STORAGE_OK")
     assert "SIMPLE_STORAGE_OK" in completed.stdout
 
 
+def test_the_live_convergence_check_uses_the_deal_actually_in_the_notebook():
+    """`VERIFY_CONVERGENCE = True` prices the CURRENT curve/ratchets/bounds at
+    N_STATES, x2 and x4, and feeds the result through the same
+    `benchmarks.convergence_verdict` the acceptance pack checks -- not a
+    lookup table measured once on a different day. Forces the flag on and
+    checks the ladder is genuinely live: three rows, at the right resolutions,
+    from a real `benchmarks.CONVERGENCE_STATUSES` member, not a hard-coded
+    number surviving an edited deal.
+
+    IMPLEMENTATION-GUIDE-2026-09-11.md checklist item 12.
+    """
+    path = os.path.join(ROOT, "Storage_30_60.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    assert not any("_RESIDUAL" in "".join(cell.get("source", []))
+                   for cell in notebook["cells"]), (
+        "the hard-coded _RESIDUAL lookup should be gone entirely")
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("Storage_30_60.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    source = "".join(cell.get("source", []))
+    if index == 3:
+        assert "VERIFY_CONVERGENCE = False" in source
+        # Replaces both the assignment and its own name inside the (now dead)
+        # False-branch print message -- harmless, since that branch does not
+        # run once the flag is True.
+        source = source.replace("VERIFY_CONVERGENCE = False", "VERIFY_CONVERGENCE = True")
+    exec(compile(source, f"Storage_30_60.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+    if index >= 3:
+        break
+
+ladder = namespace["_ladder"]
+assert list(ladder["n_states"]) == [namespace["N_STATES"], namespace["N_STATES"] * 2,
+                                    namespace["N_STATES"] * 4]
+assert ladder["refused"].isna().all(), ladder
+assert namespace["_status"] in {"within_declared_tolerance", "outside_tolerance",
+                                "insufficient", "invalid"}
+# The middle point must sit strictly between the other two -- proof this is a
+# live monotone-refinement computation, not a constant repeated three times.
+lo, mid, hi = ladder["total_eur"]
+assert lo < mid < hi or lo > mid > hi, ladder
+print("LIVE_LADDER_OK", namespace["_status"])
+'''
+    env = os.environ.copy()
+    env.update({"STORAGE_NOTEBOOK_SMOKE": "1", "MPLBACKEND": "Agg"})
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=300, check=False)
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
+    assert "LIVE_LADDER_OK" in completed.stdout, completed.stdout
+
+
 def test_a_stores_physical_volume_nets_to_zero_but_its_hedge_does_not():
     """The point of the 30/60 notebook, as an assertion.
 
@@ -2706,22 +2770,69 @@ def test_the_convergence_gate_fails_the_grid_it_should():
     import benchmarks
 
     exact = benchmarks.inventory_grid_ladder(ladder=(60, 120, 240, 480), n_p=8)
-    passed, steps = benchmarks.convergence_verdict(exact)
-    assert passed, steps
-    assert float(steps["total_eur"].max()) == pytest.approx(0.0, abs=1e-12)
+    status, steps, message = benchmarks.convergence_verdict(exact)
+    assert status == "within_declared_tolerance", (status, message, steps)
+    assert float(steps["total_eur_relative"].max()) == pytest.approx(0.0, abs=1e-12)
 
     coarse = benchmarks.inventory_grid_ladder(
         ladder=(240, 480, 960), ratchets=benchmarks.SOFT_RATCHETS, n_p=8)
-    passed, steps = benchmarks.convergence_verdict(coarse)
-    assert not passed, steps
+    status, steps, message = benchmarks.convergence_verdict(coarse)
+    assert status == "outside_tolerance", (status, message, steps)
 
-    # Two points cannot show two successive doublings, so the verdict is "no",
-    # not "yes by default".
-    assert not benchmarks.convergence_verdict(coarse.head(2))[0]
+    # Two points cannot show two successive doublings, so the verdict is
+    # "insufficient evidence", not "yes by default" and not a bare "no" either
+    # -- there is a real difference between "measured and diverged" and
+    # "never measured enough to judge".
+    status, _, _ = benchmarks.convergence_verdict(coarse.head(2))
+    assert status == "insufficient", status
 
 
-def test_the_price_grid_is_checked_separately_from_the_inventory_grid():
-    """So that refining one cannot conceal error in the other, or be blamed for it."""
+@pytest.mark.parametrize("name,grids,values,expected_status,refused", [
+    ("nan", [240, 480, 960], [math.nan] * 3, "invalid", None),
+    ("infinity", [240, 480, 960], [math.inf] * 3, "invalid", None),
+    ("duplicate_grid", [240, 240, 240], [1e6] * 3, "invalid", None),
+    ("descending_grid", [960, 480, 240], [1e6] * 3, "invalid", None),
+    ("not_a_doubling", [240, 500, 960], [1e6] * 3, "insufficient", None),
+    ("refused_row_leaves_a_gap", [240, 480, 960, 1920],
+     [1e6, math.nan, 1e6, 1e6], "insufficient",
+     [None, "unrepresentable grid", None, None]),
+    ("material_value_small_move", [240, 480, 960],
+     [10_000.0, 9_500.0, 9_000.0], "outside_tolerance", None),
+    ("stable_control", [240, 480, 960],
+     [1e6, 1_002_000.0, 1_003_000.0], "within_declared_tolerance", None),
+    ("moving_control", [240, 480, 960],
+     [1e6, 1_100_000.0, 1_200_000.0], "outside_tolerance", None),
+])
+def test_the_convergence_gate_reproduces_every_acceptance_pack_case(
+        name, grids, values, expected_status, refused):
+    """Nine cases from `IMPLEMENTATION-GUIDE-2026-09-11.md`'s own acceptance
+    pack (`check_acceptance.py`'s `gate()` helper), reproduced as a repository
+    test independent of that external script. Before this fix, six of the
+    first seven passed when they should have refused or rejected: NaN/inf
+    compare False against any tolerance; duplicate or descending grids were
+    never checked for being sorted; a refused row was filtered out and the
+    gap it left silently bridged; and an unconditional absolute-EUR fallback
+    let a flat 5 % relative move through because the EUR amount was small.
+    The two controls (stable/moving) must keep giving the right answer
+    throughout -- a fix that breaks the case it was not aimed at is not a fix.
+    """
+    import benchmarks
+
+    table = pd.DataFrame(dict(n_states=grids, total_eur=values, intrinsic_eur=values))
+    if refused is not None:
+        table["refused"] = refused
+    status, steps, message = benchmarks.convergence_verdict(table)
+    assert status == expected_status, (name, status, message, steps)
+
+
+def test_the_price_tree_boundary_width_is_checked_separately_from_the_inventory_grid():
+    """So that refining one cannot conceal error in the other, or be blamed for it.
+
+    `price_grid_ladder` refines `n_p` (the tree's price-boundary width) at a
+    FIXED daily time step -- see its docstring for why that is narrower than
+    "price discretisation" in general (IMPLEMENTATION-GUIDE-2026-09-11.md
+    §7.4). It is converged at the shipped width regardless.
+    """
     import benchmarks
 
     table = benchmarks.price_grid_ladder(

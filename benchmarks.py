@@ -235,9 +235,25 @@ def _summarise(model, res):
 
 # Proposed engineering thresholds, not achieved results and not commercial
 # tolerances: total AND intrinsic within this over each of two successive grid
-# doublings, on a benchmark whose value is material.
+# doublings, on a benchmark whose value is material. IMPLEMENTATION-GUIDE-
+# 2026-09-11.md §7.2's own proposed numbers: a relative test for anything
+# material, and a SEPARATE absolute allowance that applies ONLY when both
+# endpoints of the step are themselves near zero -- not whenever the MOVE
+# happens to be small in absolute terms. Conflating those two was the defect:
+# 10,000 -> 9,500 -> 9,000 (5 % steps, both endpoints plainly material) used
+# to pass because each 500 EUR move was under an unconditional 1,000 EUR
+# floor, regardless of what the values themselves were.
 CONVERGENCE_TOLERANCE = 0.005
-CONVERGENCE_ABS_EUR = 1_000.0       # for cases whose value is at or near zero
+CONVERGENCE_NEAR_ZERO_EUR = 100.0    # "material" cutoff: both endpoints must be at or below this
+CONVERGENCE_ABS_EUR = 1.0            # ...to use this absolute tolerance instead of the relative one
+
+#: What `convergence_verdict` can return, in place of a bare bool.
+#: IMPLEMENTATION-GUIDE-2026-09-11.md §7.2 item 6: "do not present all
+#: non-successes as an infeasible physical contract" -- a table with too few
+#: eligible steps, one with a non-finite value in it, and a table that
+#: genuinely has not settled are three different findings, not one "False".
+CONVERGENCE_STATUSES = ("within_declared_tolerance", "outside_tolerance",
+                        "insufficient", "invalid")
 
 
 def inventory_grid_ladder(ladder=(240, 480, 960, 1920, 3840), **case):
@@ -274,10 +290,21 @@ def inventory_grid_ladder(ladder=(240, 480, 960, 1920, 3840), **case):
 
 
 def price_grid_ladder(ladder=(10, 15, 20, 25, 30), n_states=240, **case):
-    """Refine the PRICE tree instead, at a fixed inventory grid.
+    """Refine the PRICE TREE's half-width `n_p`, at a fixed inventory grid.
 
-    Its own check, so that inventory refinement cannot conceal price
-    discretisation error -- or be blamed for it.
+    Its own check, so that inventory refinement cannot conceal price error --
+    or be blamed for it.
+
+    **This is a price-BOUNDARY-WIDTH check, not a full price-discretisation
+    study.** `n_p` controls how many price states the tree carries
+    (`2*n_p+1`), i.e. how far the price can range before truncating against
+    the tree's edge; the underlying TIME STEP is fixed at one calendar day
+    regardless of `n_p` (`storage_model.build_tree`'s `dt = 1/365.25`
+    throughout). Refining `n_p` therefore tests whether the tree is wide
+    enough to hold the relevant price range without truncation error -- it
+    does NOT test daily-step-size / transition-spacing accuracy, a genuinely
+    separate numerical dimension this project does not yet have a way to
+    refine independently. IMPLEMENTATION-GUIDE-2026-09-11.md §7.4.
     """
     rows = []
     for n_p in ladder:
@@ -290,32 +317,114 @@ def price_grid_ladder(ladder=(10, 15, 20, 25, 30), n_states=240, **case):
 
 
 def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
-                        abs_eur=CONVERGENCE_ABS_EUR, columns=("total_eur", "intrinsic_eur")):
-    """Did the last two refinements each move every tracked column by < tolerance?
+                        abs_eur=CONVERGENCE_ABS_EUR, near_zero_eur=CONVERGENCE_NEAR_ZERO_EUR,
+                        columns=("total_eur", "intrinsic_eur")):
+    """Did the last two eligible refinements each move every tracked column by
+    less than the declared tolerance?
 
-    Returns (bool, DataFrame of step-by-step moves). A step is inside the gate if
-    it is within `tolerance` relatively OR within `abs_eur` absolutely, so a
-    benchmark that prices near zero is not held to a meaningless ratio.
+    Returns `(status, steps, message)`. `status` is one of
+    `CONVERGENCE_STATUSES`: `"within_declared_tolerance"` /
+    `"outside_tolerance"` are verdicts; `"insufficient"` (too few eligible
+    steps to judge) and `"invalid"` (bad input) are refusals to judge at all,
+    not a quiet pass. `message` names the reason for a non-tolerance status;
+    `steps` is a DataFrame of every ELIGIBLE consecutive step, each carrying
+    its own per-column relative move, absolute move (EUR) and
+    within-tolerance flag, plus a `status` for that individual step.
+
+    Until 2026-09-11 this returned a bare bool and had seven confirmed ways to
+    fail open, reproduced independently and cross-checked against the
+    guide's own acceptance-pack oracle:
+
+    * NaN or infinite values compared as `nan > tolerance`, which is `False`
+      in Python -- three non-finite rows in a row silently PASSED.
+    * `n_states` was never checked for being sorted or for actually doubling:
+      three copies of the same grid, or a descending/non-doubling sequence,
+      all "converged" trivially or by accident.
+    * A refused row was filtered OUT entirely (`table[refused.isna()]`) and
+      the steps either side of the gap it left were treated as adjacent --
+      240 -> REFUSED -> 960 -> 1920 silently became "240 -> 960 -> 1920".
+    * The `abs_eur` absolute fallback was an unconditional OR on the SIZE OF
+      THE MOVE: 10,000 -> 9,500 -> 9,000 (5 % steps, plainly material values)
+      passed anyway, because each step's absolute move (500 EUR) happened to
+      be under the 1,000 EUR floor, regardless of what the underlying values
+      were. `abs_eur` now applies only when both endpoints' own MAGNITUDE are
+      at or below `near_zero_eur` -- a relative comparison is meaningless
+      near zero (0.01 -> 0.02 is a "100 % move" of nothing), but it is not a
+      substitute for the relative test on a material value just because one
+      particular move happened to be small in EUR terms.
+
+    A step is ELIGIBLE only between two ADJACENT rows of `table`, neither
+    refused, where the later `n_states` is exactly double the earlier -- the
+    project's own declared rule ("two successive doublings"), enforced
+    literally rather than approximated by "any two points that ended up next
+    to each other".
     """
-    live = table[table["refused"].isna()] if "refused" in table else table
-    steps, ok = [], True
-    for a, b in zip(live.index[:-1], live.index[1:]):
-        row = {"from": live.loc[a, "n_states"], "to": live.loc[b, "n_states"]}
+    required = {"n_states", *columns}
+    missing = required - set(table.columns)
+    if missing:
+        return "invalid", pd.DataFrame(), f"missing required column(s): {sorted(missing)}"
+    if len(table) == 0:
+        return "invalid", pd.DataFrame(), "empty table"
+
+    n_states = table["n_states"].to_numpy()
+    if not np.all(np.diff(n_states.astype(float)) > 0):
+        return "invalid", pd.DataFrame(), "n_states is not strictly increasing"
+
+    refused = (table["refused"].to_numpy() if "refused" in table
+              else np.full(len(table), None, dtype=object))
+
+    steps = []
+    for i in range(len(table) - 1):
+        lo_n, hi_n = int(n_states[i]), int(n_states[i + 1])
+        if refused[i] is not None or refused[i + 1] is not None:
+            continue                      # a refused row breaks the sequence, not just its own row
+        if hi_n != 2 * lo_n:
+            continue                      # only a genuine doubling is an eligible refinement step
+
+        row = {"from": lo_n, "to": hi_n}
+        row_status = "within_declared_tolerance"
         for col in columns:
-            lo, hi = float(live.loc[a, col]), float(live.loc[b, col])
+            lo, hi = float(table[col].iloc[i]), float(table[col].iloc[i + 1])
+            if not (np.isfinite(lo) and np.isfinite(hi)):
+                row_status = "invalid"
+                row[col + "_relative"] = np.nan
+                row[col + "_eur"] = np.nan
+                row[col + "_within_tolerance"] = False
+                continue
             moved = abs(hi - lo)
-            rel = moved / abs(lo) if abs(lo) > 0 else np.inf
-            row[col] = rel
+            magnitude = max(abs(lo), abs(hi))
+            relative = moved / magnitude if magnitude > 0 else 0.0
+            # The absolute allowance applies ONLY when the VALUES themselves
+            # are near zero -- a relative comparison is meaningless there
+            # (0.01 -> 0.02 is a "100 % move" of nothing). It is not a
+            # substitute for the relative test whenever a move happens to be
+            # small in EUR terms: a material value must pass on relative
+            # terms alone.
+            within = (relative <= tolerance if magnitude > near_zero_eur
+                     else moved <= abs_eur)
+            row[col + "_relative"] = relative
             row[col + "_eur"] = moved
+            row[col + "_within_tolerance"] = within
+            if not within and row_status != "invalid":
+                row_status = "outside_tolerance"
+        row["status"] = row_status
         steps.append(row)
+
     frame = pd.DataFrame(steps)
     if len(frame) < 2:
-        return False, frame
-    for _, row in frame.tail(2).iterrows():
-        for col in columns:
-            if row[col] > tolerance and row[col + "_eur"] > abs_eur:
-                ok = False
-    return ok, frame
+        return "insufficient", frame, (
+            f"{len(frame)} eligible successive-doubling step(s); at least 2 are needed "
+            f"to judge convergence (a refused row, a gap, or too short a ladder can all "
+            f"cause this)")
+
+    final_two = frame["status"].iloc[-2:]
+    if (final_two == "invalid").any():
+        return "invalid", frame, "a non-finite value appears in the final two eligible steps"
+    if (final_two == "within_declared_tolerance").all():
+        return "within_declared_tolerance", frame, None
+    return "outside_tolerance", frame, (
+        f"the final step moved {[c for c in columns if not frame[c + '_within_tolerance'].iloc[-1]]} "
+        f"by more than {tolerance:.1%} (and more than {abs_eur:,.0f} EUR)")
 
 
 # ── Market statistics: the spread comparison, made executable ─────────────────
@@ -481,11 +590,13 @@ def main():
         ratchets=SOFT_RATCHETS, min_inventory={"2027-10-01": 0.70})
     print(ladder.drop(columns=["refused"]).to_string(
         index=False, float_format=lambda v: f"{v:,.4f}"))
-    passed, steps = convergence_verdict(ladder)
-    print(steps.to_string(index=False, float_format=lambda v: f"{v:,.5f}"))
-    print(f"VERDICT: {'converged' if passed else 'NOT CONVERGED'}")
+    status, steps, message = convergence_verdict(ladder)
+    if len(steps):
+        print(steps.to_string(index=False, float_format=lambda v: f"{v:,.5f}"))
+    print(f"VERDICT: {status}" + (f" -- {message}" if message else ""))
 
-    _rule("Price-grid convergence at a fixed inventory grid")
+    _rule("Price-tree BOUNDARY WIDTH at a fixed inventory grid (n_p; NOT a "
+          "daily-step/transition-spacing study -- see price_grid_ladder's docstring)")
     print(price_grid_ladder(ratchets=SOFT_RATCHETS,
                             min_inventory={"2027-10-01": 0.70}).to_string(
         index=False, float_format=lambda v: f"{v:,.4f}"))
