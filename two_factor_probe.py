@@ -108,6 +108,12 @@ def _ou_lattice(kappa, sigma, half=40):
     itself has to track the variance it is meant to discretise.
     IMPLEMENTATION-GUIDE-2026-09-11.md §8.3.
     """
+    if kappa < 0.0:
+        raise ValueError("kappa must be non-negative")
+    if sigma < 0.0:
+        raise ValueError("sigma must be non-negative")
+    if sigma == 0.0:
+        return np.zeros(1), np.ones((1, 1))
     a = np.exp(-kappa * DT)
     var = (sigma ** 2 * (-np.expm1(-2.0 * kappa * DT)) / (2.0 * kappa)
           if kappa > 0.0 else sigma ** 2 * DT)
@@ -284,7 +290,12 @@ def matched_sig_chi(sig_xi, anchor="spot", kappa=None, horizon=None):
         residual = SIG_CHI ** 2 - sig_xi ** 2
     elif anchor == "terminal":
         horizon = DECISION_TIMES[-1] if horizon is None else horizon
-        ou_unit = (1.0 - np.exp(-2.0 * kappa * horizon)) / (2.0 * kappa)
+        if horizon < 0.0:
+            raise ValueError("horizon must be non-negative")
+        ou_unit = (-np.expm1(-2.0 * kappa * horizon) / (2.0 * kappa)
+                   if kappa > 0.0 else horizon)
+        if ou_unit == 0.0:
+            raise ValueError("terminal variance cannot be matched at a zero horizon")
         residual = SIG_CHI ** 2 - (sig_xi ** 2 * horizon) / ou_unit
     else:
         raise ValueError(f"unknown anchor {anchor!r}")

@@ -1,0 +1,3018 @@
+{
+  "architecture_assessment": {
+    "conclusion": "all declared windows select one_factor",
+    "valuation_status": "no repricing: the historical P comparison does not identify Q dynamics or a market price of risk",
+    "window_selections": [
+      "one_factor",
+      "one_factor"
+    ]
+  },
+  "comparison": {
+    "decision": {
+      "conclusion": "retain the one-factor baseline for the stated scope",
+      "selected_model": "one_factor"
+    },
+    "decision_thresholds": {
+      "maximum_hessian_condition_number": 100000000.0,
+      "minimum_holdout_nll_gain_per_observation": 0.01,
+      "minimum_start_stability_fraction": 0.75,
+      "minimum_training_bic_gain": 10.0
+    },
+    "fits": {
+      "one_factor": {
+        "attempts": [
+          {
+            "iterations": 21,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18022.39169096738,
+            "parameters": {
+              "kappa": 0.4673905338805404,
+              "observation_sigma": 0.014825518145000617,
+              "sigma_chi": 0.7395654101232482
+            },
+            "start": {
+              "kappa": 0.15,
+              "observation_sigma": 0.003,
+              "sigma_chi": 0.35
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 12,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18022.391690967495,
+            "parameters": {
+              "kappa": 0.46739078287279673,
+              "observation_sigma": 0.014825518927431584,
+              "sigma_chi": 0.7395655020060546
+            },
+            "start": {
+              "kappa": 0.75,
+              "observation_sigma": 0.01,
+              "sigma_chi": 0.7
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 13,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18022.391690967364,
+            "parameters": {
+              "kappa": 0.467390526312875,
+              "observation_sigma": 0.014825517875945068,
+              "sigma_chi": 0.7395652908427209
+            },
+            "start": {
+              "kappa": 2.5,
+              "observation_sigma": 0.025,
+              "sigma_chi": 1.2
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 15,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18022.391690967346,
+            "parameters": {
+              "kappa": 0.4673910220781397,
+              "observation_sigma": 0.014825519016976778,
+              "sigma_chi": 0.7395655532150592
+            },
+            "start": {
+              "kappa": 6.0,
+              "observation_sigma": 0.05,
+              "sigma_chi": 2.0
+            },
+            "status": 0,
+            "success": true
+          }
+        ],
+        "boundary_hits": [],
+        "holdout": {
+          "diagnostics": {
+            "correlation_rmse": 0.16144856007533798,
+            "covariance_rmse": 0.0002276455310191169,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.026782674814852882,
+                "predicted_rms_log_return": 0.03336805615376539
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03482571889358814,
+                "predicted_rms_log_return": 0.03942289940260363
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.02524561901230968,
+                "predicted_rms_log_return": 0.03065258175578193
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.013354901605183647,
+                "predicted_rms_log_return": 0.03151425615078535
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.017049386082356826,
+                "predicted_rms_log_return": 0.030593141165202318
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.025864608168976136,
+                "predicted_rms_log_return": 0.03479586208356111
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                1.0,
+                0.7805451738653116,
+                0.7278233750052515,
+                0.5864759693217739
+              ],
+              [
+                0.7805451738653116,
+                1.0,
+                0.6976267204150113,
+                0.5621436785143371
+              ],
+              [
+                0.7278233750052515,
+                0.6976267204150113,
+                1.0000000000000002,
+                0.5241739996215038
+              ],
+              [
+                0.5864759693217739,
+                0.5621436785143371,
+                0.5241739996215038,
+                1.0
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.002367612561942222,
+                0.001586783141573594,
+                0.001255990295440295,
+                0.0007872415643417731
+              ],
+              [
+                0.001586783141573594,
+                0.0017455344894998653,
+                0.0010336947017825383,
+                0.0006479090177053943
+              ],
+              [
+                0.001255990295440295,
+                0.0010336947017825383,
+                0.0012577952004192115,
+                0.0005128412118655145
+              ],
+              [
+                0.0007872415643417731,
+                0.0006479090177053943,
+                0.0005128412118655145,
+                0.0007610355640491313
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.8467738917607021,
+                0.8502935488468802,
+                0.6986375248842268
+              ],
+              [
+                0.8467738917607021,
+                1.0000000000000002,
+                0.8706375854644334,
+                0.6633936791114297
+              ],
+              [
+                0.8502935488468802,
+                0.8706375854644334,
+                1.0000000000000002,
+                0.8934643694608545
+              ],
+              [
+                0.6986375248842268,
+                0.6633936791114297,
+                0.8934643694608545,
+                1.0
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.002168399878807984,
+                0.0013626747646768207,
+                0.0011400848033052372,
+                0.0007285090736493343
+              ],
+              [
+                0.0013626747646768207,
+                0.00119429092986035,
+                0.0008663453810578683,
+                0.0005133809695357961
+              ],
+              [
+                0.0011400848033052372,
+                0.0008663453810578683,
+                0.000829081398040648,
+                0.000576088483051211
+              ],
+              [
+                0.0007285090736493343,
+                0.0005133809695357961,
+                0.000576088483051211,
+                0.0005014489649459084
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": -0.06976625727055728,
+              "TTFc12": -0.027192856314950817,
+              "TTFc24": -0.11362377530714132,
+              "TTFc6": -0.02210460922030073
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.3724265888303777,
+          "negative_log_likelihood": -7876.4562749168535,
+          "scalar_observation_count": 3320,
+          "snapshot_count": 830
+        },
+        "identification": {
+          "hessian_condition_number": 13.581947445750913,
+          "hessian_eigenvalues_per_observation": [
+            0.11050093104599379,
+            0.4190310813599229,
+            1.500817838173233
+          ],
+          "hessian_positive_definite": true,
+          "transformed_parameter_correlation": [
+            [
+              1.0000000000000002,
+              0.3998879386689385,
+              0.003294322937796922
+            ],
+            [
+              0.3998879386689386,
+              0.9999999999999999,
+              -0.06589967896532592
+            ],
+            [
+              0.0032943229377969166,
+              -0.06589967896532592,
+              0.9999999999999999
+            ]
+          ]
+        },
+        "iterations": 12,
+        "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+        "model": "one_factor",
+        "parameter_units": {
+          "kappa": "1/year",
+          "observation_sigma": "log-price per quote",
+          "rho": "dimensionless",
+          "sigma_chi": "log-price/sqrt(year)",
+          "sigma_xi": "log-price/sqrt(year)"
+        },
+        "parameters_P": {
+          "kappa": 0.46739078287279673,
+          "observation_sigma": 0.014825518927431584,
+          "sigma_chi": 0.7395655020060546
+        },
+        "start_stability": {
+          "attempt_count": 4,
+          "converged_to_best_count": 4,
+          "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+          "fraction": 1.0
+        },
+        "status": 0,
+        "success": true,
+        "training": {
+          "aic": -36038.78338193499,
+          "bic": -36017.6940501304,
+          "diagnostics": {
+            "correlation_rmse": 0.10483391808362699,
+            "covariance_rmse": 0.00020332479341394208,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.034703813432461456,
+                "predicted_rms_log_return": 0.03336612108266621
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03754061420337215,
+                "predicted_rms_log_return": 0.039423787833558106
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.0335358555105417,
+                "predicted_rms_log_return": 0.03065212887244174
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.02290393298309063,
+                "predicted_rms_log_return": 0.03151614427786601
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.03235603008369948,
+                "predicted_rms_log_return": 0.030592545636696323
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.034774982185570534,
+                "predicted_rms_log_return": 0.03479750863071951
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                1.0,
+                0.780545399962757,
+                0.7278478752262622,
+                0.5864272489886042
+              ],
+              [
+                0.780545399962757,
+                1.0,
+                0.6976568163796327,
+                0.5621022794093836
+              ],
+              [
+                0.7278478752262622,
+                0.6976568163796327,
+                1.0000000000000002,
+                0.5241528219585944
+              ],
+              [
+                0.5864272489886042,
+                0.5621022794093836,
+                0.5241528219585944,
+                0.9999999999999999
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.0023675170597291448,
+                0.0015867748351878384,
+                0.0012560966488241235,
+                0.0007871150950702635
+              ],
+              [
+                0.0015867748351878384,
+                0.0017455856150592934,
+                0.0010338280202741002,
+                0.0006478335928555422
+              ],
+              [
+                0.0012560966488241235,
+                0.0010338280202741002,
+                0.0012579742740222483,
+                0.0005128275507178816
+              ],
+              [
+                0.0007871150950702635,
+                0.0006478335928555422,
+                0.0005128275507178816,
+                0.0007609481775567825
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.700924908491311,
+                0.6638550140250111,
+                0.5822968835868503
+              ],
+              [
+                0.700924908491311,
+                0.9999999999999999,
+                0.6344344316129168,
+                0.48273090770469584
+              ],
+              [
+                0.6638550140250111,
+                0.6344344316129168,
+                1.0,
+                0.7833298842133651
+              ],
+              [
+                0.5822968835868503,
+                0.48273090770469584,
+                0.7833298842133651,
+                1.0000000000000002
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.0021036655892472623,
+                0.0012708765210620164,
+                0.001087580521283106,
+                0.0005971153395005165
+              ],
+              [
+                0.0012708765210620164,
+                0.0015627410577007004,
+                0.0008958392474987385,
+                0.0004266522381070747
+              ],
+              [
+                0.001087580521283106,
+                0.0008958392474987385,
+                0.0012758501200740436,
+                0.0006255613892501666
+              ],
+              [
+                0.0005971153395005165,
+                0.0004266522381070747,
+                0.0006255613892501666,
+                0.0004998628045201967
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": 0.03192386364301303,
+              "TTFc12": 0.06116687831989003,
+              "TTFc24": 0.08905737125067381,
+              "TTFc6": 0.00415269493278191
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.158887361160457,
+          "negative_log_likelihood": -18022.391690967495,
+          "scalar_observation_count": 8348,
+          "snapshot_count": 2087
+        },
+        "transformed_optimum": [
+          -0.7605895770701165,
+          -0.30169242468081503,
+          -4.211405331174257
+        ],
+        "transformed_parameter_order": [
+          "kappa",
+          "sigma_chi",
+          "observation_sigma"
+        ]
+      },
+      "two_factor_correlated": {
+        "attempts": [
+          {
+            "iterations": 48,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18028.287807668123,
+            "parameters": {
+              "kappa": 0.2768333843827398,
+              "observation_sigma": 0.014700942425779937,
+              "rho": -0.95,
+              "sigma_chi": 1.081618728253345,
+              "sigma_xi": 0.3800899306625415
+            },
+            "start": {
+              "kappa": 0.15,
+              "observation_sigma": 0.003,
+              "rho": 0.0,
+              "sigma_chi": 0.35,
+              "sigma_xi": 0.15
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 51,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18028.287807665227,
+            "parameters": {
+              "kappa": 0.2768313558842434,
+              "observation_sigma": 0.014700942092774163,
+              "rho": -0.95,
+              "sigma_chi": 1.0816257810293572,
+              "sigma_xi": 0.38009784560867027
+            },
+            "start": {
+              "kappa": 0.75,
+              "observation_sigma": 0.01,
+              "rho": 0.0,
+              "sigma_chi": 0.7,
+              "sigma_xi": 0.4
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 66,
+            "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+            "negative_log_likelihood": -18028.287807668872,
+            "parameters": {
+              "kappa": 0.2768340071734658,
+              "observation_sigma": 0.014700948449250463,
+              "rho": -0.95,
+              "sigma_chi": 1.081617209513079,
+              "sigma_xi": 0.3800880165917407
+            },
+            "start": {
+              "kappa": 2.5,
+              "observation_sigma": 0.025,
+              "rho": -0.5,
+              "sigma_chi": 1.2,
+              "sigma_xi": 0.8
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 72,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18028.28780766731,
+            "parameters": {
+              "kappa": 0.27683288538858963,
+              "observation_sigma": 0.014700944580882495,
+              "rho": -0.95,
+              "sigma_chi": 1.0816226184442517,
+              "sigma_xi": 0.3800934633315026
+            },
+            "start": {
+              "kappa": 6.0,
+              "observation_sigma": 0.05,
+              "rho": 0.5,
+              "sigma_chi": 2.0,
+              "sigma_xi": 1.5
+            },
+            "status": 0,
+            "success": true
+          }
+        ],
+        "boundary_hits": [
+          "rho"
+        ],
+        "comparison_to_one_factor": {
+          "holdout_nll_gain_per_observation": 8.360231955029107e-05,
+          "passes_fit_improvement": false,
+          "passes_identification": false,
+          "training_bic_gain": -6.2673211336368695
+        },
+        "holdout": {
+          "diagnostics": {
+            "correlation_rmse": 0.16380583534785126,
+            "covariance_rmse": 0.00023592129700529129,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.026782674814852882,
+                "predicted_rms_log_return": 0.03284680860600891
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03482571889358814,
+                "predicted_rms_log_return": 0.039845874502783575
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.02524561901230968,
+                "predicted_rms_log_return": 0.030251166382782645
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.013354901605183647,
+                "predicted_rms_log_return": 0.03185136200974363
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.017049386082356826,
+                "predicted_rms_log_return": 0.030349909170161702
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.025864608168976136,
+                "predicted_rms_log_return": 0.03543348014365327
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                1.0000000000000002,
+                0.7843582282541404,
+                0.7331485899999075,
+                0.565030927818385
+              ],
+              [
+                0.7843582282541404,
+                1.0000000000000002,
+                0.707827535780281,
+                0.548742580802597
+              ],
+              [
+                0.7331485899999075,
+                0.707827535780281,
+                0.9999999999999998,
+                0.5199172536685577
+              ],
+              [
+                0.565030927818385,
+                0.548742580802597,
+                0.5199172536685577,
+                1.0
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.0023323054274556857,
+                0.0015942570643459148,
+                0.0012708875200894189,
+                0.0007446004466098569
+              ],
+              [
+                0.0015942570643459148,
+                0.0017713417687549417,
+                0.0010693036152204037,
+                0.0006301997171599375
+              ],
+              [
+                0.0012708875200894189,
+                0.0010693036152204037,
+                0.001288382448322934,
+                0.0005092311835513985
+              ],
+              [
+                0.0007446004466098569,
+                0.0006301997171599375,
+                0.0005092311835513985,
+                0.0007445891806556046
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.8467738917607021,
+                0.8502935488468802,
+                0.6986375248842268
+              ],
+              [
+                0.8467738917607021,
+                1.0000000000000002,
+                0.8706375854644334,
+                0.6633936791114297
+              ],
+              [
+                0.8502935488468802,
+                0.8706375854644334,
+                1.0000000000000002,
+                0.8934643694608545
+              ],
+              [
+                0.6986375248842268,
+                0.6633936791114297,
+                0.8934643694608545,
+                1.0
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.002168399878807984,
+                0.0013626747646768207,
+                0.0011400848033052372,
+                0.0007285090736493343
+              ],
+              [
+                0.0013626747646768207,
+                0.00119429092986035,
+                0.0008663453810578683,
+                0.0005133809695357961
+              ],
+              [
+                0.0011400848033052372,
+                0.0008663453810578683,
+                0.000829081398040648,
+                0.000576088483051211
+              ],
+              [
+                0.0007285090736493343,
+                0.0005133809695357961,
+                0.000576088483051211,
+                0.0005014489649459084
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": -0.06982777290234979,
+              "TTFc12": -0.027121044866100494,
+              "TTFc24": -0.11367615874081105,
+              "TTFc6": -0.022213587588035336
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.372510191149928,
+          "negative_log_likelihood": -7876.733834617761,
+          "scalar_observation_count": 3320,
+          "snapshot_count": 830
+        },
+        "identification": {
+          "hessian_condition_number": 23165.53661281849,
+          "hessian_eigenvalues_per_observation": [
+            6.39133698559866e-05,
+            0.0024703767451736813,
+            0.13287553403379754,
+            1.251737712278714,
+            1.4805875094474672
+          ],
+          "hessian_positive_definite": true,
+          "transformed_parameter_correlation": [
+            [
+              1.0,
+              -0.993219063581749,
+              -0.9917978968907474,
+              0.9693215437757728,
+              -0.23537390127557947
+            ],
+            [
+              -0.9932190635817503,
+              1.0000000000000002,
+              0.9974453436821251,
+              -0.9584555230664819,
+              0.2082206932871633
+            ],
+            [
+              -0.9917978968907477,
+              0.9974453436821249,
+              1.0,
+              -0.9422082744244459,
+              0.1868435148597119
+            ],
+            [
+              0.9693215437757724,
+              -0.9584555230664805,
+              -0.9422082744244449,
+              1.0,
+              -0.32647367224273877
+            ],
+            [
+              -0.2353739012755786,
+              0.20822069328716222,
+              0.1868435148597109,
+              -0.326473672242738,
+              1.0
+            ]
+          ]
+        },
+        "iterations": 66,
+        "message": "CONVERGENCE: NORM OF PROJECTED GRADIENT <= PGTOL",
+        "model": "two_factor_correlated",
+        "parameter_units": {
+          "kappa": "1/year",
+          "observation_sigma": "log-price per quote",
+          "rho": "dimensionless",
+          "sigma_chi": "log-price/sqrt(year)",
+          "sigma_xi": "log-price/sqrt(year)"
+        },
+        "parameters_P": {
+          "kappa": 0.2768340071734658,
+          "observation_sigma": 0.014700948449250463,
+          "rho": -0.95,
+          "sigma_chi": 1.081617209513079,
+          "sigma_xi": 0.3800880165917407
+        },
+        "start_stability": {
+          "attempt_count": 4,
+          "converged_to_best_count": 4,
+          "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+          "fraction": 1.0
+        },
+        "status": 0,
+        "success": true,
+        "training": {
+          "aic": -36046.575615337744,
+          "bic": -36011.42672899676,
+          "diagnostics": {
+            "correlation_rmse": 0.10677572718750371,
+            "covariance_rmse": 0.0002008827933896705,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.034703813432461456,
+                "predicted_rms_log_return": 0.032844555678948874
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03754061420337215,
+                "predicted_rms_log_return": 0.0398463066507911
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.0335358555105417,
+                "predicted_rms_log_return": 0.030250690578501244
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.02290393298309063,
+                "predicted_rms_log_return": 0.03185355470782607
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.03235603008369948,
+                "predicted_rms_log_return": 0.03034916083185312
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.034774982185570534,
+                "predicted_rms_log_return": 0.035434972611407205
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                1.0,
+                0.7843544032676386,
+                0.7331727494491674,
+                0.5649799707360617
+              ],
+              [
+                0.7843544032676386,
+                0.9999999999999999,
+                0.7078556837521703,
+                0.5486966894401735
+              ],
+              [
+                0.7331727494491674,
+                0.7078556837521703,
+                1.0,
+                0.5198892301904053
+              ],
+              [
+                0.5649799707360617,
+                0.5486966894401735,
+                0.5198892301904053,
+                0.9999999999999999
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.0023321587439471807,
+                0.0015942085163880458,
+                0.0012709804486837216,
+                0.0007444674591545657
+              ],
+              [
+                0.0015942085163880458,
+                0.001771362569305132,
+                0.0010694289986376481,
+                0.0006301148067023891
+              ],
+              [
+                0.0012709804486837216,
+                0.0010694289986376481,
+                0.0012885669911678434,
+                0.0005092111858570991
+              ],
+              [
+                0.0007444674591545657,
+                0.0006301148067023891,
+                0.0005092111858570991,
+                0.0007445043280708207
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.700924908491311,
+                0.6638550140250111,
+                0.5822968835868503
+              ],
+              [
+                0.700924908491311,
+                0.9999999999999999,
+                0.6344344316129168,
+                0.48273090770469584
+              ],
+              [
+                0.6638550140250111,
+                0.6344344316129168,
+                1.0,
+                0.7833298842133651
+              ],
+              [
+                0.5822968835868503,
+                0.48273090770469584,
+                0.7833298842133651,
+                1.0000000000000002
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.0021036655892472623,
+                0.0012708765210620164,
+                0.001087580521283106,
+                0.0005971153395005165
+              ],
+              [
+                0.0012708765210620164,
+                0.0015627410577007004,
+                0.0008958392474987385,
+                0.0004266522381070747
+              ],
+              [
+                0.001087580521283106,
+                0.0008958392474987385,
+                0.0012758501200740436,
+                0.0006255613892501666
+              ],
+              [
+                0.0005971153395005165,
+                0.0004266522381070747,
+                0.0006255613892501666,
+                0.0004998628045201967
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": 0.03189248917898578,
+              "TTFc12": 0.061120600830990954,
+              "TTFc24": 0.08899327304209095,
+              "TTFc6": 0.004082390923201665
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.159593652092582,
+          "negative_log_likelihood": -18028.287807668872,
+          "scalar_observation_count": 8348,
+          "snapshot_count": 2087
+        },
+        "transformed_optimum": [
+          -1.2843372044994412,
+          0.07845733734222146,
+          -0.9673524304722371,
+          -1.8317808230648227,
+          -4.219843266921621
+        ],
+        "transformed_parameter_order": [
+          "kappa",
+          "sigma_chi",
+          "sigma_xi",
+          "rho",
+          "observation_sigma"
+        ]
+      },
+      "two_factor_independent": {
+        "attempts": [
+          {
+            "iterations": 28,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18023.89425745665,
+            "parameters": {
+              "kappa": 0.5057075677766283,
+              "observation_sigma": 0.014673154134382967,
+              "sigma_chi": 0.7322797218681266,
+              "sigma_xi": 0.13883231452832384
+            },
+            "start": {
+              "kappa": 0.15,
+              "observation_sigma": 0.003,
+              "sigma_chi": 0.35,
+              "sigma_xi": 0.15
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 18,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18023.894257459477,
+            "parameters": {
+              "kappa": 0.5057057217792744,
+              "observation_sigma": 0.014673159204814486,
+              "sigma_chi": 0.7322802556491629,
+              "sigma_xi": 0.1388293429220644
+            },
+            "start": {
+              "kappa": 0.75,
+              "observation_sigma": 0.01,
+              "sigma_chi": 0.7,
+              "sigma_xi": 0.4
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 21,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18023.894257457217,
+            "parameters": {
+              "kappa": 0.5057065403571114,
+              "observation_sigma": 0.014673162496981255,
+              "sigma_chi": 0.7322805207729832,
+              "sigma_xi": 0.13883068062709863
+            },
+            "start": {
+              "kappa": 2.5,
+              "observation_sigma": 0.025,
+              "sigma_chi": 1.2,
+              "sigma_xi": 0.8
+            },
+            "status": 0,
+            "success": true
+          },
+          {
+            "iterations": 28,
+            "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+            "negative_log_likelihood": -18023.894257454667,
+            "parameters": {
+              "kappa": 0.5057034169160822,
+              "observation_sigma": 0.014673166853066947,
+              "sigma_chi": 0.732279274940444,
+              "sigma_xi": 0.13882699752681746
+            },
+            "start": {
+              "kappa": 6.0,
+              "observation_sigma": 0.05,
+              "sigma_chi": 2.0,
+              "sigma_xi": 1.5
+            },
+            "status": 0,
+            "success": true
+          }
+        ],
+        "boundary_hits": [],
+        "comparison_to_one_factor": {
+          "holdout_nll_gain_per_observation": 0.002220037928266194,
+          "passes_fit_improvement": false,
+          "passes_identification": true,
+          "training_bic_gain": -6.024644284232636
+        },
+        "holdout": {
+          "diagnostics": {
+            "correlation_rmse": 0.1597719089516173,
+            "covariance_rmse": 0.00022725700361246435,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.026782674814852882,
+                "predicted_rms_log_return": 0.033461557243791656
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03482571889358814,
+                "predicted_rms_log_return": 0.03980248332517604
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.02524561901230968,
+                "predicted_rms_log_return": 0.03047948361384231
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.013354901605183647,
+                "predicted_rms_log_return": 0.03127477617530172
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.017049386082356826,
+                "predicted_rms_log_return": 0.03037643979984538
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.025864608168976136,
+                "predicted_rms_log_return": 0.03477418961570554
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                0.9999999999999998,
+                0.7841023565921077,
+                0.7279618728244125,
+                0.5787367557793911
+              ],
+              [
+                0.7841023565921077,
+                1.0000000000000002,
+                0.7001679828111319,
+                0.5611601359483537
+              ],
+              [
+                0.7279618728244125,
+                0.7001679828111319,
+                1.0,
+                0.5309233846975941
+              ],
+              [
+                0.5787367557793911,
+                0.5611601359483537,
+                0.5309233846975941,
+                1.0000000000000002
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.0023818301631629004,
+                0.0015944819753342355,
+                0.00125463742204493,
+                0.0007861589882872706
+              ],
+              [
+                0.0015944819753342355,
+                0.0017361327088720538,
+                0.0010302625540324615,
+                0.0006508069688527807
+              ],
+              [
+                0.00125463742204493,
+                0.0010302625540324615,
+                0.001247120494106504,
+                0.0005218671807769186
+              ],
+              [
+                0.0007861589882872706,
+                0.0006508069688527807,
+                0.0005218671807769186,
+                0.000774725492262556
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.8467738917607021,
+                0.8502935488468802,
+                0.6986375248842268
+              ],
+              [
+                0.8467738917607021,
+                1.0000000000000002,
+                0.8706375854644334,
+                0.6633936791114297
+              ],
+              [
+                0.8502935488468802,
+                0.8706375854644334,
+                1.0000000000000002,
+                0.8934643694608545
+              ],
+              [
+                0.6986375248842268,
+                0.6633936791114297,
+                0.8934643694608545,
+                1.0
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.002168399878807984,
+                0.0013626747646768207,
+                0.0011400848033052372,
+                0.0007285090736493343
+              ],
+              [
+                0.0013626747646768207,
+                0.00119429092986035,
+                0.0008663453810578683,
+                0.0005133809695357961
+              ],
+              [
+                0.0011400848033052372,
+                0.0008663453810578683,
+                0.000829081398040648,
+                0.000576088483051211
+              ],
+              [
+                0.0007285090736493343,
+                0.0005133809695357961,
+                0.000576088483051211,
+                0.0005014489649459084
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": -0.06978659084516761,
+              "TTFc12": -0.027180832049155407,
+              "TTFc24": -0.11317168332145595,
+              "TTFc6": -0.022147803047126064
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.374646626758644,
+          "negative_log_likelihood": -7883.826800838698,
+          "scalar_observation_count": 3320,
+          "snapshot_count": 830
+        },
+        "identification": {
+          "hessian_condition_number": 1001.2957872118203,
+          "hessian_eigenvalues_per_observation": [
+            0.0014431381608164384,
+            0.10793350694137052,
+            0.3694382277637123,
+            1.4450081607901142
+          ],
+          "hessian_positive_definite": true,
+          "transformed_parameter_correlation": [
+            [
+              0.9999999999999999,
+              -0.0405417732720383,
+              0.8004423799187896,
+              -0.44494112367585675
+            ],
+            [
+              -0.04054177327203829,
+              0.9999999999999999,
+              -0.29827046973397636,
+              0.08704776989547781
+            ],
+            [
+              0.8004423799187895,
+              -0.2982704697339763,
+              1.0,
+              -0.5270004876717076
+            ],
+            [
+              -0.44494112367585653,
+              0.08704776989547779,
+              -0.5270004876717076,
+              1.0
+            ]
+          ]
+        },
+        "iterations": 18,
+        "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+        "model": "two_factor_independent",
+        "parameter_units": {
+          "kappa": "1/year",
+          "observation_sigma": "log-price per quote",
+          "rho": "dimensionless",
+          "sigma_chi": "log-price/sqrt(year)",
+          "sigma_xi": "log-price/sqrt(year)"
+        },
+        "parameters_P": {
+          "kappa": 0.5057057217792744,
+          "observation_sigma": 0.014673159204814486,
+          "sigma_chi": 0.7322802556491629,
+          "sigma_xi": 0.1388293429220644
+        },
+        "start_stability": {
+          "attempt_count": 4,
+          "converged_to_best_count": 4,
+          "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+          "fraction": 1.0
+        },
+        "status": 0,
+        "success": true,
+        "training": {
+          "aic": -36039.78851491895,
+          "bic": -36011.669405846165,
+          "diagnostics": {
+            "correlation_rmse": 0.10322155598981331,
+            "covariance_rmse": 0.00020594195766516983,
+            "delivery_pair_spread_rms": {
+              "TTFc1-TTFc12": {
+                "observed_rms_log_return": 0.034703813432461456,
+                "predicted_rms_log_return": 0.03345953411759737
+              },
+              "TTFc1-TTFc24": {
+                "observed_rms_log_return": 0.03754061420337215,
+                "predicted_rms_log_return": 0.03980353344380551
+              },
+              "TTFc1-TTFc6": {
+                "observed_rms_log_return": 0.0335358555105417,
+                "predicted_rms_log_return": 0.030478996496645986
+              },
+              "TTFc12-TTFc24": {
+                "observed_rms_log_return": 0.02290393298309063,
+                "predicted_rms_log_return": 0.03127677170579536
+              },
+              "TTFc6-TTFc12": {
+                "observed_rms_log_return": 0.03235603008369948,
+                "predicted_rms_log_return": 0.030375822001008274
+              },
+              "TTFc6-TTFc24": {
+                "observed_rms_log_return": 0.034774982185570534,
+                "predicted_rms_log_return": 0.03477599769626911
+              }
+            },
+            "mean_predicted_return_correlation": [
+              [
+                1.0,
+                0.7841044240953293,
+                0.727989998607498,
+                0.5786870006008306
+              ],
+              [
+                0.7841044240953293,
+                0.9999999999999999,
+                0.7001991085459992,
+                0.5611154523502346
+              ],
+              [
+                0.727989998607498,
+                0.7001991085459992,
+                1.0,
+                0.5308952826279715
+              ],
+              [
+                0.5786870006008306,
+                0.5611154523502346,
+                0.5308952826279715,
+                1.0
+              ]
+            ],
+            "mean_predicted_return_covariance": [
+              [
+                0.0023817511203830057,
+                0.0015944869711899815,
+                0.0012547517030488907,
+                0.000786030820212886
+              ],
+              [
+                0.0015944869711899815,
+                0.0017361920494395105,
+                0.0010303970981420027,
+                0.0006507269141617562
+              ],
+              [
+                0.0012547517030488907,
+                0.0010303970981420027,
+                0.0012472927090814295,
+                0.0005218440276999514
+              ],
+              [
+                0.000786030820212886,
+                0.0006507269141617562,
+                0.0005218440276999514,
+                0.0007746317946549107
+              ]
+            ],
+            "observed_return_correlation": [
+              [
+                1.0,
+                0.700924908491311,
+                0.6638550140250111,
+                0.5822968835868503
+              ],
+              [
+                0.700924908491311,
+                0.9999999999999999,
+                0.6344344316129168,
+                0.48273090770469584
+              ],
+              [
+                0.6638550140250111,
+                0.6344344316129168,
+                1.0,
+                0.7833298842133651
+              ],
+              [
+                0.5822968835868503,
+                0.48273090770469584,
+                0.7833298842133651,
+                1.0000000000000002
+              ]
+            ],
+            "observed_return_covariance": [
+              [
+                0.0021036655892472623,
+                0.0012708765210620164,
+                0.001087580521283106,
+                0.0005971153395005165
+              ],
+              [
+                0.0012708765210620164,
+                0.0015627410577007004,
+                0.0008958392474987385,
+                0.0004266522381070747
+              ],
+              [
+                0.001087580521283106,
+                0.0008958392474987385,
+                0.0012758501200740436,
+                0.0006255613892501666
+              ],
+              [
+                0.0005971153395005165,
+                0.0004266522381070747,
+                0.0006255613892501666,
+                0.0004998628045201967
+              ]
+            ],
+            "rank_order": [
+              "TTFc1",
+              "TTFc6",
+              "TTFc12",
+              "TTFc24"
+            ],
+            "standardised_return_lag_one_correlation": {
+              "TTFc1": 0.03200494891905961,
+              "TTFc12": 0.06113962103315817,
+              "TTFc24": 0.0891381962635614,
+              "TTFc6": 0.004159684582572737
+            }
+          },
+          "mean_negative_log_likelihood_per_observation": -2.1590673523549926,
+          "negative_log_likelihood": -18023.894257459477,
+          "scalar_observation_count": 8348,
+          "snapshot_count": 2087
+        },
+        "transformed_optimum": [
+          -0.6818003563877857,
+          -0.3115919753854346,
+          -1.9745098489145414,
+          -4.221735358627264
+        ],
+        "transformed_parameter_order": [
+          "kappa",
+          "sigma_chi",
+          "sigma_xi",
+          "observation_sigma"
+        ]
+      }
+    },
+    "measure_specification": {
+      "P": "kappa, factor volatilities and correlation estimated from historical returns",
+      "Q": "none: the historical P fit does not identify Q risk premia or Q drift"
+    },
+    "observation_specification": {
+      "delivery_loading": "flat-forward calendar-day average over [delivery_start, delivery_end)",
+      "mean": "zero conditional mean over daily/weekend return intervals",
+      "measurement_noise": "independent quote-level Gaussian error; return variance 2*tau^2",
+      "returns": "log returns matched by fixed delivery identity",
+      "time_scale": "actual elapsed calendar days / 365.25"
+    },
+    "sample": {
+      "holdout_scalar_observation_count": 3320,
+      "holdout_snapshot_count": 830,
+      "holdout_window": [
+        "2023-01-01",
+        "2026-03-06"
+      ],
+      "ranks": [
+        1,
+        6,
+        12,
+        24
+      ],
+      "training_scalar_observation_count": 8348,
+      "training_snapshot_count": 2087,
+      "training_window": [
+        "2015-01-01",
+        "2022-12-31"
+      ]
+    }
+  },
+  "configuration": {
+    "as_of_date": "2026-03-06",
+    "cache_directory": ".cache",
+    "candidates": [
+      "one_factor",
+      "two_factor_independent",
+      "two_factor_correlated"
+    ],
+    "decision_thresholds": {
+      "maximum_hessian_condition_number": 100000000.0,
+      "minimum_holdout_nll_gain_per_observation": 0.01,
+      "minimum_start_stability_fraction": 0.75,
+      "minimum_training_bic_gain": 10.0
+    },
+    "holdout_end": "2026-03-06",
+    "holdout_start": "2023-01-01",
+    "max_iterations": 500,
+    "minimum_contracts_per_snapshot": 4,
+    "ranks": [
+      1,
+      6,
+      12,
+      24
+    ],
+    "retrieval_date": null,
+    "sensitivity_windows": [
+      {
+        "holdout_end": "2021-12-31",
+        "holdout_start": "2020-01-01",
+        "name": "pre_crisis_training",
+        "training_end": "2019-12-31",
+        "training_start": "2015-01-01"
+      }
+    ],
+    "source_path": "ttf q.xlsx",
+    "training_end": "2022-12-31",
+    "training_start": "2015-01-01",
+    "units": "EUR/MWh",
+    "valuation_measure_restriction": "none: the historical P fit does not identify Q risk premia or Q drift"
+  },
+  "data_manifest": {
+    "as_of_date": "2026-03-06T00:00:00",
+    "byte_count": 1626642,
+    "cache": "hit",
+    "cleaning_version": 1,
+    "column_definitions": {
+      "TTFc<N>": "continuous rank N monthly TTF forward; TTFc1 maps to the next calendar month",
+      "price": "monthly forward quotation in EUR/MWh",
+      "quote_date": "date on which the forward quotation was observed"
+    },
+    "contract_columns": [
+      "TTFc1",
+      "TTFc2",
+      "TTFc3",
+      "TTFc4",
+      "TTFc5",
+      "TTFc6",
+      "TTFc7",
+      "TTFc8",
+      "TTFc9",
+      "TTFc10",
+      "TTFc11",
+      "TTFc12",
+      "TTFc13",
+      "TTFc14",
+      "TTFc15",
+      "TTFc16",
+      "TTFc17",
+      "TTFc18",
+      "TTFc19",
+      "TTFc20",
+      "TTFc21",
+      "TTFc22",
+      "TTFc23",
+      "TTFc24",
+      "TTFc25",
+      "TTFc26",
+      "TTFc27",
+      "TTFc28",
+      "TTFc29",
+      "TTFc30",
+      "TTFc31",
+      "TTFc32",
+      "TTFc33",
+      "TTFc34",
+      "TTFc35",
+      "TTFc36",
+      "TTFc37",
+      "TTFc38",
+      "TTFc39",
+      "TTFc40",
+      "TTFc41",
+      "TTFc42",
+      "TTFc43",
+      "TTFc44",
+      "TTFc45",
+      "TTFc46",
+      "TTFc47",
+      "TTFc48",
+      "TTFc49",
+      "TTFc50",
+      "TTFc51",
+      "TTFc52",
+      "TTFc53",
+      "TTFc54",
+      "TTFc55"
+    ],
+    "delivery_convention": "TTFc1 is the calendar month after quote_date; ranks advance monthly",
+    "delivery_convention_status": "project convention; provider definition not independently supplied",
+    "delivery_interval": "delivery_start inclusive, delivery_end exclusive",
+    "duplicate_quote_dates": 0,
+    "filters": [
+      "unparseable quote dates removed by cleaning",
+      "non-numeric price cells coerced to missing and retained in the panel",
+      "missing and non-positive prices retained and flagged in the panel",
+      "returns require adjacent panel rows for the same delivery identity",
+      "missing or non-positive observations break rather than bridge a return chain"
+    ],
+    "missing_observations": 6071,
+    "non_positive_observations": 0,
+    "quote_date_max": "2026-03-06T00:00:00",
+    "quote_date_min": "2010-03-12T00:00:00",
+    "quote_rows": 4171,
+    "rejected_cells_during_cleaning": null,
+    "retrieval_date": null,
+    "retrieval_date_status": "not recorded by source",
+    "return_filter": "same delivery identity; adjacent panel rows; both prices positive and present",
+    "source_path": "ttf q.xlsx",
+    "source_sha256": "b9403ff09f0424aa477ff6351073febed688bfbb611eee2433213c741f7e9729",
+    "units": "EUR/MWh",
+    "unparseable_quote_dates": 0
+  },
+  "sensitivity_comparisons": {
+    "pre_crisis_training": {
+      "decision": {
+        "conclusion": "retain the one-factor baseline for the stated scope",
+        "selected_model": "one_factor"
+      },
+      "decision_thresholds": {
+        "maximum_hessian_condition_number": 100000000.0,
+        "minimum_holdout_nll_gain_per_observation": 0.01,
+        "minimum_start_stability_fraction": 0.75,
+        "minimum_training_bic_gain": 10.0
+      },
+      "fits": {
+        "one_factor": {
+          "attempts": [
+            {
+              "iterations": 25,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14041.026422701372,
+              "parameters": {
+                "kappa": 0.5445377064657868,
+                "observation_sigma": 0.00912913335126795,
+                "sigma_chi": 0.3792695656103884
+              },
+              "start": {
+                "kappa": 0.15,
+                "observation_sigma": 0.003,
+                "sigma_chi": 0.35
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 9,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14041.026422700019,
+              "parameters": {
+                "kappa": 0.5445369986006414,
+                "observation_sigma": 0.009129134424356675,
+                "sigma_chi": 0.37926980670934823
+              },
+              "start": {
+                "kappa": 0.75,
+                "observation_sigma": 0.01,
+                "sigma_chi": 0.7
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 12,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14041.026422701358,
+              "parameters": {
+                "kappa": 0.5445378814321585,
+                "observation_sigma": 0.009129133456052856,
+                "sigma_chi": 0.3792695376281932
+              },
+              "start": {
+                "kappa": 2.5,
+                "observation_sigma": 0.025,
+                "sigma_chi": 1.2
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 18,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14041.026422701305,
+              "parameters": {
+                "kappa": 0.5445381794291346,
+                "observation_sigma": 0.009129133030963816,
+                "sigma_chi": 0.3792696846865994
+              },
+              "start": {
+                "kappa": 6.0,
+                "observation_sigma": 0.05,
+                "sigma_chi": 2.0
+              },
+              "status": 0,
+              "success": true
+            }
+          ],
+          "boundary_hits": [],
+          "holdout": {
+            "diagnostics": {
+              "correlation_rmse": 0.15087959660306197,
+              "covariance_rmse": 0.0010048691140677986,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.041469015012362775,
+                  "predicted_rms_log_return": 0.020258259933961985
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.04856533698989485,
+                  "predicted_rms_log_return": 0.023297887853218575
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.05019460360653523,
+                  "predicted_rms_log_return": 0.01881278059445511
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.024236179719090204,
+                  "predicted_rms_log_return": 0.01912576204361387
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.04308834535908667,
+                  "predicted_rms_log_return": 0.018744809604547413
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.04973659527566854,
+                  "predicted_rms_log_return": 0.02078759136161356
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0,
+                  0.701088059121313,
+                  0.6273096395217534,
+                  0.45088464875636214
+                ],
+                [
+                  0.701088059121313,
+                  1.0000000000000002,
+                  0.5866008562797337,
+                  0.4216248314715997
+                ],
+                [
+                  0.6273096395217534,
+                  0.5866008562797337,
+                  1.0000000000000002,
+                  0.3772556399758009
+                ],
+                [
+                  0.45088464875636214,
+                  0.4216248314715997,
+                  0.3772556399758009,
+                  1.0
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.0006660415485776191,
+                  0.0003980445073909437,
+                  0.000303229341010164,
+                  0.00017597191870736252
+                ],
+                [
+                  0.0003980445073909437,
+                  0.0004839681798993734,
+                  0.00024170726089165905,
+                  0.00014026904627009902
+                ],
+                [
+                  0.000303229341010164,
+                  0.00024170726089165905,
+                  0.0003508142289946767,
+                  0.00010685666125199546
+                ],
+                [
+                  0.00017597191870736252,
+                  0.00014026904627009902,
+                  0.00010685666125199546,
+                  0.00022869386725825482
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.5501380631124891,
+                  0.6565528447618374,
+                  0.491032687074824
+                ],
+                [
+                  0.5501380631124891,
+                  1.0,
+                  0.5408268619160121,
+                  0.23098253068075839
+                ],
+                [
+                  0.6565528447618374,
+                  0.5408268619160121,
+                  1.0,
+                  0.721384314499427
+                ],
+                [
+                  0.491032687074824,
+                  0.23098253068075839,
+                  0.721384314499427,
+                  1.0000000000000002
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.003014740372417251,
+                  0.0015293749339037475,
+                  0.0012232564278908246,
+                  0.0005001246609041619
+                ],
+                [
+                  0.0015293749339037475,
+                  0.0025635077266074435,
+                  0.0009291769551417437,
+                  0.00021693986166245632
+                ],
+                [
+                  0.0012232564278908246,
+                  0.0009291769551417437,
+                  0.0011514516894599676,
+                  0.00045408009420852536
+                ],
+                [
+                  0.0005001246609041619,
+                  0.00021693986166245632,
+                  0.00045408009420852536,
+                  0.00034410090633312196
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": 0.07025850535705828,
+                "TTFc12": 0.22788474090271174,
+                "TTFc24": -0.010152921871383218,
+                "TTFc6": -0.01124120520093418
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -1.0324334573725467,
+            "negative_log_likelihood": -2159.8507928233676,
+            "scalar_observation_count": 2092,
+            "snapshot_count": 523
+          },
+          "identification": {
+            "hessian_condition_number": 24.304440270420308,
+            "hessian_eigenvalues_per_observation": [
+              0.06216908009866516,
+              0.37085154758434047,
+              1.5109846939249834
+            ],
+            "hessian_positive_definite": true,
+            "transformed_parameter_correlation": [
+              [
+                1.0,
+                0.4984388975872944,
+                0.01217445634075004
+              ],
+              [
+                0.4984388975872945,
+                0.9999999999999999,
+                -0.08099049856147299
+              ],
+              [
+                0.012174456340750048,
+                -0.08099049856147297,
+                0.9999999999999999
+              ]
+            ]
+          },
+          "iterations": 25,
+          "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+          "model": "one_factor",
+          "parameter_units": {
+            "kappa": "1/year",
+            "observation_sigma": "log-price per quote",
+            "rho": "dimensionless",
+            "sigma_chi": "log-price/sqrt(year)",
+            "sigma_xi": "log-price/sqrt(year)"
+          },
+          "parameters_P": {
+            "kappa": 0.5445377064657868,
+            "observation_sigma": 0.00912913335126795,
+            "sigma_chi": 0.3792695656103884
+          },
+          "start_stability": {
+            "attempt_count": 4,
+            "converged_to_best_count": 4,
+            "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+            "fraction": 1.0
+          },
+          "status": 0,
+          "success": true,
+          "training": {
+            "aic": -28076.052845402744,
+            "bic": -28056.374387091924,
+            "diagnostics": {
+              "correlation_rmse": 0.2124050168193755,
+              "covariance_rmse": 9.184015312391771e-05,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.020583154481796942,
+                  "predicted_rms_log_return": 0.02026505695197641
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.022794311650634877,
+                  "predicted_rms_log_return": 0.0233109933831043
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.024885435715863064,
+                  "predicted_rms_log_return": 0.018814741788408935
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.006880688717480061,
+                  "predicted_rms_log_return": 0.019127375659296463
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.018298144417941017,
+                  "predicted_rms_log_return": 0.01874651076528019
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.019097633081578375,
+                  "predicted_rms_log_return": 0.020793778362104415
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0,
+                  0.7014548701600805,
+                  0.6276116692241959,
+                  0.45104779927134453
+                ],
+                [
+                  0.7014548701600805,
+                  0.9999999999999999,
+                  0.586897533692195,
+                  0.42178759763009094
+                ],
+                [
+                  0.6276116692241959,
+                  0.586897533692195,
+                  1.0,
+                  0.3773855558957023
+                ],
+                [
+                  0.45104779927134453,
+                  0.42178759763009094,
+                  0.3773855558957023,
+                  1.0
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.0006670388139762964,
+                  0.0003987584292721577,
+                  0.0003036802309402409,
+                  0.00017617470742314667
+                ],
+                [
+                  0.0003987584292721577,
+                  0.00048447255313252156,
+                  0.0002420175342153951,
+                  0.00014040217396866389
+                ],
+                [
+                  0.0003036802309402409,
+                  0.0002420175342153951,
+                  0.0003509941811710357,
+                  0.00010692534746815861
+                ],
+                [
+                  0.00017617470742314667,
+                  0.00014040217396866389,
+                  0.00010692534746815861,
+                  0.00022871301337712926
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.4973789270155812,
+                  0.6920783141271049,
+                  0.5894977496270256
+                ],
+                [
+                  0.4973789270155812,
+                  0.9999999999999999,
+                  0.46104403672977984,
+                  0.3768012915312838
+                ],
+                [
+                  0.6920783141271049,
+                  0.46104403672977984,
+                  0.9999999999999998,
+                  0.9047307287164876
+                ],
+                [
+                  0.5894977496270256,
+                  0.3768012915312838,
+                  0.9047307287164876,
+                  0.9999999999999999
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.0007917969041188597,
+                  0.0002635341193652258,
+                  0.00031431377129138296,
+                  0.00024671724246002604
+                ],
+                [
+                  0.0002635341193652258,
+                  0.0003545562453799455,
+                  0.00014011552156277147,
+                  0.0001055274402444049
+                ],
+                [
+                  0.00031431377129138296,
+                  0.00014011552156277147,
+                  0.00026049688688542326,
+                  0.00021718561704301366
+                ],
+                [
+                  0.00024671724246002604,
+                  0.0001055274402444049,
+                  0.00021718561704301366,
+                  0.00022121822442746142
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": -0.07863024603138014,
+                "TTFc12": -0.0585605067112692,
+                "TTFc24": -0.10810380113985864,
+                "TTFc6": -0.08256139426634057
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -2.6919145749044042,
+            "negative_log_likelihood": -14041.026422701372,
+            "scalar_observation_count": 5216,
+            "snapshot_count": 1304
+          },
+          "transformed_optimum": [
+            -0.6078180892991747,
+            -0.9695080718129334,
+            -4.696284512071556
+          ],
+          "transformed_parameter_order": [
+            "kappa",
+            "sigma_chi",
+            "observation_sigma"
+          ]
+        },
+        "two_factor_correlated": {
+          "attempts": [
+            {
+              "iterations": 32,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14300.468654803106,
+              "parameters": {
+                "kappa": 7.155841358681465,
+                "observation_sigma": 0.007838077716047422,
+                "rho": 0.5825956095005861,
+                "sigma_chi": 0.4965027696943994,
+                "sigma_xi": 0.21295742377042332
+              },
+              "start": {
+                "kappa": 0.15,
+                "observation_sigma": 0.003,
+                "rho": 0.0,
+                "sigma_chi": 0.35,
+                "sigma_xi": 0.15
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 19,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14300.468654802276,
+              "parameters": {
+                "kappa": 7.155796996506379,
+                "observation_sigma": 0.007838076274524835,
+                "rho": 0.5825939124861484,
+                "sigma_chi": 0.49650099191321556,
+                "sigma_xi": 0.21295741228220605
+              },
+              "start": {
+                "kappa": 0.75,
+                "observation_sigma": 0.01,
+                "rho": 0.0,
+                "sigma_chi": 0.7,
+                "sigma_xi": 0.4
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 17,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14300.468654796357,
+              "parameters": {
+                "kappa": 7.155848952944037,
+                "observation_sigma": 0.007838082090547106,
+                "rho": 0.5825926468883114,
+                "sigma_chi": 0.4965024038978021,
+                "sigma_xi": 0.21295711979636725
+              },
+              "start": {
+                "kappa": 2.5,
+                "observation_sigma": 0.025,
+                "rho": -0.5,
+                "sigma_chi": 1.2,
+                "sigma_xi": 0.8
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 18,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14300.468654802153,
+              "parameters": {
+                "kappa": 7.1558245144924415,
+                "observation_sigma": 0.007838076697554664,
+                "rho": 0.5825962480087835,
+                "sigma_chi": 0.4965026505263803,
+                "sigma_xi": 0.21295734721147092
+              },
+              "start": {
+                "kappa": 6.0,
+                "observation_sigma": 0.05,
+                "rho": 0.5,
+                "sigma_chi": 2.0,
+                "sigma_xi": 1.5
+              },
+              "status": 0,
+              "success": true
+            }
+          ],
+          "boundary_hits": [],
+          "comparison_to_one_factor": {
+            "holdout_nll_gain_per_observation": -0.4938364702184248,
+            "passes_fit_improvement": false,
+            "passes_identification": true,
+            "training_bic_gain": 501.76549199625515
+          },
+          "holdout": {
+            "diagnostics": {
+              "correlation_rmse": 0.14797949221323653,
+              "covariance_rmse": 0.0010164416510927792,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.041469015012362775,
+                  "predicted_rms_log_return": 0.023013480648208687
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.04856533698989485,
+                  "predicted_rms_log_return": 0.023031045522523073
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.05019460360653523,
+                  "predicted_rms_log_return": 0.022410666376086297
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.024236179719090204,
+                  "predicted_rms_log_return": 0.015676173780862043
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.04308834535908667,
+                  "predicted_rms_log_return": 0.015698291058019884
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.04973659527566854,
+                  "predicted_rms_log_return": 0.015699582324119433
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0,
+                  0.6324671118555906,
+                  0.6056555055194072,
+                  0.604849522293678
+                ],
+                [
+                  0.6324671118555906,
+                  1.0000000000000002,
+                  0.5940827564104156,
+                  0.5937806857774524
+                ],
+                [
+                  0.6056555055194072,
+                  0.5940827564104156,
+                  1.0000000000000002,
+                  0.5857308372222263
+                ],
+                [
+                  0.604849522293678,
+                  0.5937806857774524,
+                  0.5857308372222263,
+                  0.9999999999999998
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.0008363124770336018,
+                  0.00032209534367715054,
+                  0.0003017356582240467,
+                  0.0003011495997061476
+                ],
+                [
+                  0.00032209534367715054,
+                  0.00031011617774094423,
+                  0.00018022948327930184,
+                  0.00018002753641418187
+                ],
+                [
+                  0.0003017356582240467,
+                  0.00018022948327930184,
+                  0.0002967791309599665,
+                  0.00017372624339570143
+                ],
+                [
+                  0.0003011495997061476,
+                  0.00018002753641418187,
+                  0.00017372624339570143,
+                  0.0002964157802392232
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.5501380631124891,
+                  0.6565528447618374,
+                  0.491032687074824
+                ],
+                [
+                  0.5501380631124891,
+                  1.0,
+                  0.5408268619160121,
+                  0.23098253068075839
+                ],
+                [
+                  0.6565528447618374,
+                  0.5408268619160121,
+                  1.0,
+                  0.721384314499427
+                ],
+                [
+                  0.491032687074824,
+                  0.23098253068075839,
+                  0.721384314499427,
+                  1.0000000000000002
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.003014740372417251,
+                  0.0015293749339037475,
+                  0.0012232564278908246,
+                  0.0005001246609041619
+                ],
+                [
+                  0.0015293749339037475,
+                  0.0025635077266074435,
+                  0.0009291769551417437,
+                  0.00021693986166245632
+                ],
+                [
+                  0.0012232564278908246,
+                  0.0009291769551417437,
+                  0.0011514516894599676,
+                  0.00045408009420852536
+                ],
+                [
+                  0.0005001246609041619,
+                  0.00021693986166245632,
+                  0.00045408009420852536,
+                  0.00034410090633312196
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": 0.056729031093421256,
+                "TTFc12": 0.22769214479258715,
+                "TTFc24": -0.007545082596536046,
+                "TTFc6": -0.010343386154375201
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -0.5385969871541219,
+            "negative_log_likelihood": -1126.744897126423,
+            "scalar_observation_count": 2092,
+            "snapshot_count": 523
+          },
+          "identification": {
+            "hessian_condition_number": 70.91574418981614,
+            "hessian_eigenvalues_per_observation": [
+              0.017392173421754746,
+              0.06441481851459757,
+              0.23846323924988544,
+              0.2910177777380348,
+              1.2333789212820787
+            ],
+            "hessian_positive_definite": true,
+            "transformed_parameter_correlation": [
+              [
+                1.0,
+                0.8291346658151986,
+                0.1552856674808345,
+                0.11422386576342729,
+                0.007307935540002114
+              ],
+              [
+                0.8291346658151985,
+                0.9999999999999998,
+                0.1627429446215089,
+                0.05860948887319003,
+                -0.09662581779475957
+              ],
+              [
+                0.1552856674808345,
+                0.1627429446215089,
+                1.0000000000000002,
+                -0.06160749204105932,
+                -0.14970316357174732
+              ],
+              [
+                0.1142238657634273,
+                0.05860948887319005,
+                -0.06160749204105944,
+                0.9999999999999999,
+                0.24909831732491006
+              ],
+              [
+                0.0073079355400020776,
+                -0.09662581779475957,
+                -0.14970316357174732,
+                0.2490983173249099,
+                1.0
+              ]
+            ]
+          },
+          "iterations": 32,
+          "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+          "model": "two_factor_correlated",
+          "parameter_units": {
+            "kappa": "1/year",
+            "observation_sigma": "log-price per quote",
+            "rho": "dimensionless",
+            "sigma_chi": "log-price/sqrt(year)",
+            "sigma_xi": "log-price/sqrt(year)"
+          },
+          "parameters_P": {
+            "kappa": 7.155841358681465,
+            "observation_sigma": 0.007838077716047422,
+            "rho": 0.5825956095005861,
+            "sigma_chi": 0.4965027696943994,
+            "sigma_xi": 0.21295742377042332
+          },
+          "start_stability": {
+            "attempt_count": 4,
+            "converged_to_best_count": 4,
+            "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+            "fraction": 1.0
+          },
+          "status": 0,
+          "success": true,
+          "training": {
+            "aic": -28590.93730960621,
+            "bic": -28558.13987908818,
+            "diagnostics": {
+              "correlation_rmse": 0.1551361057383221,
+              "covariance_rmse": 5.1675920197461736e-05,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.020583154481796942,
+                  "predicted_rms_log_return": 0.023036219022618765
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.022794311650634877,
+                  "predicted_rms_log_return": 0.023053714483065316
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.024885435715863064,
+                  "predicted_rms_log_return": 0.022433278740874404
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.006880688717480061,
+                  "predicted_rms_log_return": 0.015676173605863153
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.018298144417941017,
+                  "predicted_rms_log_return": 0.015698258346754253
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.019097633081578375,
+                  "predicted_rms_log_return": 0.015699542476384352
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0,
+                  0.6327074273918061,
+                  0.6059255629540039,
+                  0.605123816134891
+                ],
+                [
+                  0.6327074273918061,
+                  1.0000000000000002,
+                  0.5945150421076114,
+                  0.5942148305010634
+                ],
+                [
+                  0.6059255629540039,
+                  0.5945150421076114,
+                  1.0,
+                  0.586180480369384
+                ],
+                [
+                  0.605123816134891,
+                  0.5942148305010634,
+                  0.586180480369384,
+                  0.9999999999999998
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.0008383804804347108,
+                  0.0003227838022309605,
+                  0.00030240689303832164,
+                  0.00030182274121536153
+                ],
+                [
+                  0.0003227838022309605,
+                  0.00031043911909297775,
+                  0.00018055224823576766,
+                  0.00018035111929394536
+                ],
+                [
+                  0.00030240689303832164,
+                  0.00018055224823576766,
+                  0.0002971006924999959,
+                  0.00017404851352077218
+                ],
+                [
+                  0.00030182274121536153,
+                  0.00018035111929394536,
+                  0.00017404851352077218,
+                  0.0002967387534627087
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.4973789270155812,
+                  0.6920783141271049,
+                  0.5894977496270256
+                ],
+                [
+                  0.4973789270155812,
+                  0.9999999999999999,
+                  0.46104403672977984,
+                  0.3768012915312838
+                ],
+                [
+                  0.6920783141271049,
+                  0.46104403672977984,
+                  0.9999999999999998,
+                  0.9047307287164876
+                ],
+                [
+                  0.5894977496270256,
+                  0.3768012915312838,
+                  0.9047307287164876,
+                  0.9999999999999999
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.0007917969041188597,
+                  0.0002635341193652258,
+                  0.00031431377129138296,
+                  0.00024671724246002604
+                ],
+                [
+                  0.0002635341193652258,
+                  0.0003545562453799455,
+                  0.00014011552156277147,
+                  0.0001055274402444049
+                ],
+                [
+                  0.00031431377129138296,
+                  0.00014011552156277147,
+                  0.00026049688688542326,
+                  0.00021718561704301366
+                ],
+                [
+                  0.00024671724246002604,
+                  0.0001055274402444049,
+                  0.00021718561704301366,
+                  0.00022121822442746142
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": -0.07376536946475622,
+                "TTFc12": -0.058200279635966364,
+                "TTFc24": -0.10555041964295742,
+                "TTFc6": -0.08343081229509898
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -2.7416542666417,
+            "negative_log_likelihood": -14300.468654803106,
+            "scalar_observation_count": 5216,
+            "snapshot_count": 1304
+          },
+          "transformed_optimum": [
+            1.9679289964070903,
+            -0.7001662170746054,
+            -1.5466630216548296,
+            0.6663830278329267,
+            -4.848761663963292
+          ],
+          "transformed_parameter_order": [
+            "kappa",
+            "sigma_chi",
+            "sigma_xi",
+            "rho",
+            "observation_sigma"
+          ]
+        },
+        "two_factor_independent": {
+          "attempts": [
+            {
+              "iterations": 22,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14201.496009967723,
+              "parameters": {
+                "kappa": 5.388858732528349,
+                "observation_sigma": 0.007747687068414745,
+                "sigma_chi": 0.46143786337455667,
+                "sigma_xi": 0.22654225135102976
+              },
+              "start": {
+                "kappa": 0.15,
+                "observation_sigma": 0.003,
+                "sigma_chi": 0.35,
+                "sigma_xi": 0.15
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 18,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14201.496009967146,
+              "parameters": {
+                "kappa": 5.388870139575558,
+                "observation_sigma": 0.007747687626358182,
+                "sigma_chi": 0.46143832382663663,
+                "sigma_xi": 0.22654237260763008
+              },
+              "start": {
+                "kappa": 0.75,
+                "observation_sigma": 0.01,
+                "sigma_chi": 0.7,
+                "sigma_xi": 0.4
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 14,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14201.496009964161,
+              "parameters": {
+                "kappa": 5.388833627482551,
+                "observation_sigma": 0.007747685343383639,
+                "sigma_chi": 0.4614381461300034,
+                "sigma_xi": 0.22654235657392754
+              },
+              "start": {
+                "kappa": 2.5,
+                "observation_sigma": 0.025,
+                "sigma_chi": 1.2,
+                "sigma_xi": 0.8
+              },
+              "status": 0,
+              "success": true
+            },
+            {
+              "iterations": 15,
+              "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+              "negative_log_likelihood": -14201.496009965653,
+              "parameters": {
+                "kappa": 5.388888455126773,
+                "observation_sigma": 0.00774768933494367,
+                "sigma_chi": 0.4614389698329897,
+                "sigma_xi": 0.22654231131798994
+              },
+              "start": {
+                "kappa": 6.0,
+                "observation_sigma": 0.05,
+                "sigma_chi": 2.0,
+                "sigma_xi": 1.5
+              },
+              "status": 0,
+              "success": true
+            }
+          ],
+          "boundary_hits": [],
+          "comparison_to_one_factor": {
+            "holdout_nll_gain_per_observation": -0.5172342258495617,
+            "passes_fit_improvement": false,
+            "passes_identification": true,
+            "training_bic_gain": 312.37968842909686
+          },
+          "holdout": {
+            "diagnostics": {
+              "correlation_rmse": 0.16443224985617652,
+              "covariance_rmse": 0.0010672810609971878,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.041469015012362775,
+                  "predicted_rms_log_return": 0.023677742136331417
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.04856533698989485,
+                  "predicted_rms_log_return": 0.023775328227796367
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.05019460360653523,
+                  "predicted_rms_log_return": 0.02236034029265482
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.024236179719090204,
+                  "predicted_rms_log_return": 0.01549590998379779
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.04308834535908667,
+                  "predicted_rms_log_return": 0.015597597161317462
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.04973659527566854,
+                  "predicted_rms_log_return": 0.015612849612052759
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0,
+                  0.5094312308694164,
+                  0.4410154752165138,
+                  0.43587011078036664
+                ],
+                [
+                  0.5094312308694164,
+                  1.0,
+                  0.6178254885169676,
+                  0.6170676670383869
+                ],
+                [
+                  0.4410154752165138,
+                  0.6178254885169676,
+                  1.0,
+                  0.6206029489492141
+                ],
+                [
+                  0.43587011078036664,
+                  0.6170676670383869,
+                  0.6206029489492141,
+                  1.0
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.000641626367710472,
+                  0.00023087181243821548,
+                  0.00019872650383641213,
+                  0.00019640274423501653
+                ],
+                [
+                  0.00023087181243821548,
+                  0.0003201020751692813,
+                  0.00019663957529974957,
+                  0.00019639317762985866
+                ],
+                [
+                  0.00019872650383641213,
+                  0.00019663957529974957,
+                  0.00031646211263695634,
+                  0.00019639211975500245
+                ],
+                [
+                  0.00019640274423501653,
+                  0.00019639317762985866,
+                  0.00019639211975500245,
+                  0.00031644535309901194
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.5501380631124891,
+                  0.6565528447618374,
+                  0.491032687074824
+                ],
+                [
+                  0.5501380631124891,
+                  1.0,
+                  0.5408268619160121,
+                  0.23098253068075839
+                ],
+                [
+                  0.6565528447618374,
+                  0.5408268619160121,
+                  1.0,
+                  0.721384314499427
+                ],
+                [
+                  0.491032687074824,
+                  0.23098253068075839,
+                  0.721384314499427,
+                  1.0000000000000002
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.003014740372417251,
+                  0.0015293749339037475,
+                  0.0012232564278908246,
+                  0.0005001246609041619
+                ],
+                [
+                  0.0015293749339037475,
+                  0.0025635077266074435,
+                  0.0009291769551417437,
+                  0.00021693986166245632
+                ],
+                [
+                  0.0012232564278908246,
+                  0.0009291769551417437,
+                  0.0011514516894599676,
+                  0.00045408009420852536
+                ],
+                [
+                  0.0005001246609041619,
+                  0.00021693986166245632,
+                  0.00045408009420852536,
+                  0.00034410090633312196
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": 0.059795052972104586,
+                "TTFc12": 0.22706811653175407,
+                "TTFc24": -0.007313961288003821,
+                "TTFc6": -0.010555763247855194
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -0.515199231522985,
+            "negative_log_likelihood": -1077.7967923460847,
+            "scalar_observation_count": 2092,
+            "snapshot_count": 523
+          },
+          "identification": {
+            "hessian_condition_number": 98.74119794383411,
+            "hessian_eigenvalues_per_observation": [
+              0.011756141201574767,
+              0.21896831399251698,
+              0.3318485726121531,
+              1.1608154654403577
+            ],
+            "hessian_positive_definite": true,
+            "transformed_parameter_correlation": [
+              [
+                1.0000000000000002,
+                0.8189419350620754,
+                0.24943398724553562,
+                -0.09378961030046809
+              ],
+              [
+                0.8189419350620754,
+                1.0,
+                0.13801509580074187,
+                -0.15759458987865946
+              ],
+              [
+                0.24943398724553603,
+                0.13801509580074217,
+                1.0,
+                -0.08918946941915169
+              ],
+              [
+                -0.09378961030046812,
+                -0.15759458987865949,
+                -0.08918946941915168,
+                1.0000000000000002
+              ]
+            ]
+          },
+          "iterations": 22,
+          "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+          "model": "two_factor_independent",
+          "parameter_units": {
+            "kappa": "1/year",
+            "observation_sigma": "log-price per quote",
+            "rho": "dimensionless",
+            "sigma_chi": "log-price/sqrt(year)",
+            "sigma_xi": "log-price/sqrt(year)"
+          },
+          "parameters_P": {
+            "kappa": 5.388858732528349,
+            "observation_sigma": 0.007747687068414745,
+            "sigma_chi": 0.46143786337455667,
+            "sigma_xi": 0.22654225135102976
+          },
+          "start_stability": {
+            "attempt_count": 4,
+            "converged_to_best_count": 4,
+            "criterion": "successful and within 1e-4 NLL per scalar observation of best",
+            "fraction": 1.0
+          },
+          "status": 0,
+          "success": true,
+          "training": {
+            "aic": -28394.992019935446,
+            "bic": -28368.75407552102,
+            "diagnostics": {
+              "correlation_rmse": 0.17672858165656818,
+              "covariance_rmse": 7.63135715964583e-05,
+              "delivery_pair_spread_rms": {
+                "TTFc1-TTFc12": {
+                  "observed_rms_log_return": 0.020583154481796942,
+                  "predicted_rms_log_return": 0.023700030966576358
+                },
+                "TTFc1-TTFc24": {
+                  "observed_rms_log_return": 0.022794311650634877,
+                  "predicted_rms_log_return": 0.023797354328183182
+                },
+                "TTFc1-TTFc6": {
+                  "observed_rms_log_return": 0.024885435715863064,
+                  "predicted_rms_log_return": 0.022381811862341113
+                },
+                "TTFc12-TTFc24": {
+                  "observed_rms_log_return": 0.006880688717480061,
+                  "predicted_rms_log_return": 0.015495906375356389
+                },
+                "TTFc6-TTFc12": {
+                  "observed_rms_log_return": 0.018298144417941017,
+                  "predicted_rms_log_return": 0.015597556953763657
+                },
+                "TTFc6-TTFc24": {
+                  "observed_rms_log_return": 0.019097633081578375,
+                  "predicted_rms_log_return": 0.015612753752323424
+                }
+              },
+              "mean_predicted_return_correlation": [
+                [
+                  1.0000000000000002,
+                  0.5094809530130333,
+                  0.4410769698403241,
+                  0.43594931589377156
+                ],
+                [
+                  0.5094809530130333,
+                  1.0000000000000002,
+                  0.6182639284617895,
+                  0.6175097802578151
+                ],
+                [
+                  0.4410769698403241,
+                  0.6182639284617895,
+                  1.0,
+                  0.6210407459455881
+                ],
+                [
+                  0.43594931589377156,
+                  0.6175097802578151,
+                  0.6210407459455881,
+                  0.9999999999999998
+                ]
+              ],
+              "mean_predicted_return_covariance": [
+                [
+                  0.0006430395950567553,
+                  0.00023127932727483061,
+                  0.0001990878112118154,
+                  0.0001967681855256733
+                ],
+                [
+                  0.00023127932727483061,
+                  0.0003204645617341378,
+                  0.00019700413699589458,
+                  0.00019675866550956806
+                ],
+                [
+                  0.0001990878112118154,
+                  0.00019700413699589458,
+                  0.0003168274951835513,
+                  0.0001967576149027147
+                ],
+                [
+                  0.0001967681855256733,
+                  0.00019675866550956806,
+                  0.0001967576149027147,
+                  0.00031681084901568707
+                ]
+              ],
+              "observed_return_correlation": [
+                [
+                  1.0,
+                  0.4973789270155812,
+                  0.6920783141271049,
+                  0.5894977496270256
+                ],
+                [
+                  0.4973789270155812,
+                  0.9999999999999999,
+                  0.46104403672977984,
+                  0.3768012915312838
+                ],
+                [
+                  0.6920783141271049,
+                  0.46104403672977984,
+                  0.9999999999999998,
+                  0.9047307287164876
+                ],
+                [
+                  0.5894977496270256,
+                  0.3768012915312838,
+                  0.9047307287164876,
+                  0.9999999999999999
+                ]
+              ],
+              "observed_return_covariance": [
+                [
+                  0.0007917969041188597,
+                  0.0002635341193652258,
+                  0.00031431377129138296,
+                  0.00024671724246002604
+                ],
+                [
+                  0.0002635341193652258,
+                  0.0003545562453799455,
+                  0.00014011552156277147,
+                  0.0001055274402444049
+                ],
+                [
+                  0.00031431377129138296,
+                  0.00014011552156277147,
+                  0.00026049688688542326,
+                  0.00021718561704301366
+                ],
+                [
+                  0.00024671724246002604,
+                  0.0001055274402444049,
+                  0.00021718561704301366,
+                  0.00022121822442746142
+                ]
+              ],
+              "rank_order": [
+                "TTFc1",
+                "TTFc6",
+                "TTFc12",
+                "TTFc24"
+              ],
+              "standardised_return_lag_one_correlation": {
+                "TTFc1": -0.07559118860743017,
+                "TTFc12": -0.05786139682028314,
+                "TTFc24": -0.10524177452526788,
+                "TTFc6": -0.08324431665336784
+              }
+            },
+            "mean_negative_log_likelihood_per_observation": -2.7226794497637505,
+            "negative_log_likelihood": -14201.496009967723,
+            "scalar_observation_count": 5216,
+            "snapshot_count": 1304
+          },
+          "transformed_optimum": [
+            1.684333624565893,
+            -0.7734078746792613,
+            -1.4848238112743577,
+            -4.860360922944986
+          ],
+          "transformed_parameter_order": [
+            "kappa",
+            "sigma_chi",
+            "sigma_xi",
+            "observation_sigma"
+          ]
+        }
+      },
+      "measure_specification": {
+        "P": "kappa, factor volatilities and correlation estimated from historical returns",
+        "Q": "none: the historical P fit does not identify Q risk premia or Q drift"
+      },
+      "observation_specification": {
+        "delivery_loading": "flat-forward calendar-day average over [delivery_start, delivery_end)",
+        "mean": "zero conditional mean over daily/weekend return intervals",
+        "measurement_noise": "independent quote-level Gaussian error; return variance 2*tau^2",
+        "returns": "log returns matched by fixed delivery identity",
+        "time_scale": "actual elapsed calendar days / 365.25"
+      },
+      "sample": {
+        "holdout_scalar_observation_count": 2092,
+        "holdout_snapshot_count": 523,
+        "holdout_window": [
+          "2020-01-01",
+          "2021-12-31"
+        ],
+        "ranks": [
+          1,
+          6,
+          12,
+          24
+        ],
+        "training_scalar_observation_count": 5216,
+        "training_snapshot_count": 1304,
+        "training_window": [
+          "2015-01-01",
+          "2019-12-31"
+        ]
+      }
+    }
+  }
+}

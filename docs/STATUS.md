@@ -1,41 +1,42 @@
 # Project status
 
-**As of 2026-09-11 (later still).** S1–S5 and S8 (documentation reconciliation) are done and
-pushed. **S6 is scoped but not started in code** — no file has been edited for it yet. S7 has
-not been scoped at all. See the day-by-day account below, and the note directly under this one
-for exactly where S6 stands.
+**As of 2026-09-11 (S6/S7 pass). S6 is done and the first S7 model comparison is complete.**
+[`CALIBRATION-SPECIFICATION-2026-09-11.md`](CALIBRATION-SPECIFICATION-2026-09-11.md) is the
+current specification, result and next-course document. `quote_data.py` now builds a
+source-hashed fixed-delivery panel, matched-contract returns and a complete data manifest;
+`delivery_model.py` implements monthly delivery averaging and the nonlinear observation
+Jacobian. The repository workbook produces 229,405 panel observations and 223,023 returns;
+missing quotes remain flagged and break a return chain, and the 44,552 Friday-to-Monday
+returns retain their actual three-day duration.
 
-**S6 plan, recorded before writing any code.** Checklist items 19–20 (data manifest and the
-delivery-averaged observation function). `storage_model.py` already has the canonical
-month/front-month convention (`month_start`, `month_end`, `front_month_start`,
-`monthly_curve_from_quote` at lines 355–384) — `forward.ipynb` cell 4 independently
-reimplements the identical logic inline (`_month_start`/`_month_end`/`_front_month_start`),
-a pre-existing duplication this pass did not create and is not in scope to fix. The plan is to
-build on the library functions, not add a third copy:
+`calibration.py`, `calibration-config.json` and the dated JSON outputs make S7 executable.
+The primary 2015-2022 training / 2023-2026 holdout comparison retains the one-factor
+architecture: the independent two-factor model's holdout NLL gain is 0.00222 per observation,
+below the declared 0.01 gate, and its training BIC is 6.02 worse; the correlated fit puts rho
+on the -0.95 boundary and is locally confounded. A pre-crisis sensitivity also selects one
+factor, but reveals material regime instability: its one-factor sigma_chi is 0.3793 against
+0.7396 in the primary fit and it underpredicts the 2020-2021 c1-c6 spread by more than half.
+This supports keeping one valuation state for now. It does not validate the historical P
+parameters for Q valuation, so no fitted parameters have replaced `sVol`/`sMR` and no new
+storage-price claim is made.
 
-- `quote_data.py`: `build_delivery_panel(quotes, source_hash, columns=None)` — long-format
-  panel (`quote_date, contract_identifier, delivery_start, delivery_end, price_eur_mwh,
-  source_column, source_hash, validity_flag`) with `contract_identifier` keyed on the
-  *delivery month* (via `storage_model.front_month_start`), not the column name, so a
-  continuous-rank roll (TTFc2 on one date, TTFc1 on the next, same delivery month) is
-  recognised as the same contract and a rank that rolls *off* (front month entering delivery)
-  correctly stops rather than being bridged to the new front month. Plus `build_returns(panel)`
-  (aligned log-returns per contract, with actual elapsed calendar days recorded, non-positive
-  prices excluded and counted, no silent bridging across a missing quote) and
-  `build_data_manifest(quotes, provenance)` (source fingerprint, quote-date range, column
-  definitions, cleaning version, duplicates, missing-observation count, filters).
-- New `delivery_model.py`: `flat_forward_delivery_loading(kappa, t, A, B)` — the closed form
-  from guide §9.3, with the `kappa -> 0` limit (`= 1`) handled explicitly rather than dividing
-  by zero — and `delivery_averaged_loading(kappa, t, dates, forward_prices)`, the discrete
-  price-weighted sum for a non-flat curve. Test against the guide's own analytic pair
-  (month-end point 0.11932561 vs flat-forward delivery average 0.12443854, sigma 0.5, kappa 1,
-  equal one-month periods ending 0.5y/1y) and against a synthetic panel with a month-end roll,
-  a weekend, one missing quote and two delivery identifiers, expected returns worked by hand.
+The data manifest records the missing original retrieval date and marks the TTFc1 mapping as
+a project convention because provider documentation was not supplied. S6 is complete for the
+repository dataset, but neither point should be advertised as independently sourced market
+metadata. S7's next statistically useful step is a level-state observation likelihood with
+serial measurement error and an explicit regime candidate, followed by an evidenced P-to-Q
+restriction. The old 8% haircut remains withdrawn.
 
-Not yet decided: whether to also point `forward.ipynb` at the new panel builder while touching
-it. Revisit after the above is implemented and tested — do not let that decision block S6's
-own completion bar (guide §9: traceable source/delivery identity, matched-interval returns,
-delivery weighting reproduced on synthetic examples).
+**Independent follow-up hardening.** Six additional edge cases reproduced after the original
+acceptance pack are repaired and pinned: disconnected convergence steps cannot certify,
+fractional grid counts cannot be truncated, a damaged parquet cache rebuilds, zero-volatility
+OU dynamics are deterministic, the kappa-zero variance anchor uses its Brownian limit, and
+conflicting explicit clip rates are refused rather than ignored.
+
+**Verification for this S6/S7 change:** `python -m pytest -q` gives **183 passed** in the
+pinned dependency environment. The dated calibration JSON was regenerated after the final
+code changes; the primary plus sensitivity comparison completes deterministically in under a
+minute on the verification machine.
 
 **As of 2026-09-11 (later).** [IMPLEMENTATION-GUIDE-2026-09-11.md](IMPLEMENTATION-GUIDE-2026-09-11.md)'s S1–S5 are all done — every one of its acceptance pack's 31 checks now passes, up from 9 when the guide landed. What remains is S6/S7, the calibration and model-comparison work proper, blocked on TTF data past the workbook's 6 March 2026 endpoint regardless of further engineering. See the day-by-day account below.
 
@@ -70,17 +71,25 @@ Acceptance pack: **30 of 31** — every check passes except S5's `P-terminal_anc
 
 Fixing the transition law surfaced a second, previously-latent defect: with the exact (smaller) per-step variance, the lattice's *spacing* — fixed at `sigma*sqrt(3*DT)`, sized for the larger Euler variance — violated the trinomial's own stability condition at high kappa, producing probabilities as negative as −0.33 at the kappa=0 boundary node. `dx` is now derived from the same exact variance the transition uses (`dx = sqrt(3*var)`), which the guide's own §8.5 sequence explicitly asks be validated at kappa 0 and near zero — a case the pack itself does not test, and one the previous implementation would have failed had anyone exercised it.
 
-The qualitative findings are unchanged — a calibrated second factor still costs a store value at every kappa above 0.2 (now 4.97 % at kappa 4, spot anchor, down from a previously reported ~8 %), and the struck swing's answer still flips sign between anchors (+0.81 % spot vs −7.76 % terminal, down from +0.58 %/−10.23 %) — only the specific percentages moved, uniformly smaller, since Euler had been overstating how sharply mean reversion departs from a random walk at this step size. Update this file when that changes — a status document that lags is worse than none.
+Those S5 scenario findings remained conditional: at fixed kappa and independent factors the
+variance allocation reduced store value at every kappa above 0.2, while the struck-swing sign
+depended on the chosen scalar anchor. S7 has now superseded their use as current evidence. Its
+panel fit does not select a second factor under the declared gates and does not identify Q
+dynamics, so none of the probe percentages is a calibrated valuation adjustment.
 
 **S8 done — documentation reconciliation, against [`docs/IMPLEMENTATION-GUIDE-2026-09-11.md`](IMPLEMENTATION-GUIDE-2026-09-11.md) §11's own table, not just this file's own paraphrase of it.** Every current document that still described the dated-bound penalty, the "nine times too little" spread shortfall or the "no gap over three days" DA-observation claim as live now carries the fix or a correction link: [`MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) (the penalty paragraph, the kernel-constants table, and a new section on `normalise_storage_contract`'s requested-versus-effective distinction), [`.planning/ROADMAP.md`](../.planning/ROADMAP.md) (the same penalty language in P1.1, the DA-gap and ninefold claims in P4.1, and a flag on that item's still-unreconciled extrinsic-by-kappa table), and `Storage_30_60.ipynb` (cells 3 and 10). [`REVIEW-RESPONSE-2026-09-10.md`](REVIEW-RESPONSE-2026-09-10.md)'s provenance section now dates its 34-file/101-test claim to the exact pre-repair commit (`1a01848`, verified against the archive's own recorded `storage_model.py` hash) rather than leaving it looking current, and links [`PROJECT-REVIEW-2026-09-10-evening.md`](PROJECT-REVIEW-2026-09-10-evening.md) — the second, 37-file review this guide itself was built from. `benchmarks.py`'s delivery-averaging comment no longer claims point maturities are a volatility *upper bound*; that direction was disproved by a counterexample (0.12444 delivery-averaged against 0.11933 point, same kappa and sigma), so the comment now says so, and [`FINDINGS-2026-09-10-evening.md`](FINDINGS-2026-09-10-evening.md) carries a correction link where it repeated the same assumption. `two_factor_probe.py`'s narrative and printed "Reading" section now say plainly that its section 2 is a variance-*allocation* scenario at fixed mean reversion and independent factors, not a fit to any market observation, and that correlation could move `sigma_chi` the other way.
 
-One row of the guide's table is deliberately not fully closed: `DESIGN-P4.1-two-factor.md` already carries its 2026-09-10 correction notice, but the "link a new current calibration specification" half of that row has nothing to link to yet — that specification is S7's own deliverable, not something S8 can produce ahead of it. Revisit once S7 lands. All 154 tests still pass; this slice changed no valuation code, so the acceptance pack (last confirmed 31/31 after S5) was not rerun.
+At that S8 checkpoint one guide row remained open because the corrected design had no current
+calibration specification to link. S7 now supplies that link in
+[`CALIBRATION-SPECIFICATION-2026-09-11.md`](CALIBRATION-SPECIFICATION-2026-09-11.md). The
+154-test claim belongs to the earlier `362f526` checkpoint; see the current top entry for the
+new S6/S7 verification.
 
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` → **154 passed** as of `362f526` (S5, the last of this pass's commits). Rerun for the current count; a passed-count claim does not outlive the next commit |
+| Tests | `python -m pytest -q` -> **183 passed** for the S6/S7 change. The dated results were regenerated from `calibration-config.json` after the final implementation changes |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 
@@ -137,9 +146,11 @@ S1–S5 closed all of them: physical capacity/rate/boundary-inventory conversion
 incompatible request rather than silently rounding it (S1), the ratchet diagnostic checks
 every distinct rate rather than only the fastest (S2), the quote cache is content-addressed
 so two different sources can never collide (S3), and the convergence gate can actually fail
-(S4). What remains unresolved is calibration, not code: `sVol`/`sMR` have no estimation
-window or provenance, and no market data past the workbook's 6 March 2026 endpoint has been
-brought in to fit them (S6/S7). Treat every valuation as exploratory until that lands.
+(S4). S6 now gives every fitted observation a source and delivery identity, and the first S7
+historical P comparison has an explicit estimation window and provenance. What remains
+unresolved is valuation calibration: the estimates are regime-sensitive, measurement noise
+is material, P-to-Q dynamics are not identified, and the workbook still ends on 6 March 2026.
+Treat every valuation as exploratory until those limitations are resolved.
 
 ## How it got here
 
@@ -253,8 +264,8 @@ the document to argue with.
 | ~~P1.4~~ | ~~Withdrawal capacity, remaining half~~ | **Done 2026-09-10 (evening).** The loss is a **sawtooth** — zero where `rate × multiplier` lands on an integer, 33 % just below one, even on the *mild* shipped profile. `describe_ratchet_rates()` reports it per inventory level; `value_storage` now refuses a loss over **10 %** by default; the notebook runs at 1,920 clips and prints its 0.19 % residual; `forward.ipynb` reports the profile and says when `ratchets.xlsx` is inert. `inj_days` no longer means two things at once. Left open by choice: paying ~8 s a valuation for the 0.5 % value-convergence grid |
 | P2.1 | Shorten the terminal backstop | 24 % of the grid on a three-month deal, but it moves indices near the terminal condition |
 | ~~P2.2~~ | ~~Scale-aware exercise tie threshold~~ | **Considered and declined 2026-09-10.** It cannot misprice a deal — nominal cash is identical to nine decimals whether the store turns once or twice — but it can double the reported hedge, and only at a rate near 1e-9 with a hundredfold size contrast. Left as is |
-| P3.4 | Justify or change the 0.9 default vol | Part of calibration |
-| P4.1 | A second factor — **it is a calibration question, not an architecture one** | The correlations stand (c1/c6 **0.801**, c6/c12 **0.771**, c1/c24 **0.633**) but the shortfall is **3.1×**, not nine. At a *fixed* short factor a common long factor is worth exactly nothing to a homogeneous contract — true, and misleading on its own. A **calibrated** second factor takes volatility out of `sigma_chi`, and then a store **loses** up to **8 %**, because a store monetises short-horizon variance and that is what moved. For a struck swing even the SIGN depends on the calibration anchor (**+0.58 %** holding spot variance fixed, **−10.23 %** holding terminal variance fixed, same contract and same `sigma_xi`). No scalar anchor settles it. [`two_factor_probe.py`](../two_factor_probe.py) is the experiment; the panel fit comes first |
+| P3.4 | Justify or change the 0.9 default vol | Still open for valuation. S7 estimates historical P volatility, but the result is regime-sensitive and no P-to-Q restriction is identified; it would be wrong to copy 0.7396 into `sVol` as though that completed the task |
+| ~~P4.1~~ | ~~Select a second factor from the market panel~~ | **Provisionally closed 2026-09-11.** The fixed-delivery comparison retains one factor under the predeclared BIC, holdout and identification gates. The independent two-factor holdout gain is only 0.00222 NLL/observation and BIC is worse; the correlated fit puts rho at -0.95. Reopen only if the state-space measurement-noise and regime work changes that conclusion. See [`CALIBRATION-SPECIFICATION-2026-09-11.md`](CALIBRATION-SPECIFICATION-2026-09-11.md) |
 | ~~P4.2~~ | ~~Volumetric fuel loss~~ | **Done 2026-09-10.** `fuel_loss` charges the injection price leg; 1.5 % retention costs 8.9 % of value. Forced decision D-O3 — `delta` becomes the traded volume, which is what keeps the repricing identity closing |
 | ~~P4.4~~ | ~~Report hedge stability~~ | **Done 2026-09-10.** A 1 % bump per month, measured against the book's largest position. Oct–Dec move 0.1 %; Apr–Aug move 44–51 %, because months priced alike leave the optimiser flipping between them |
 | **P4.3** | **Calibrate at the sensitivity that matters** | A spot-fitted vol is the wrong target for a spread product; the answer swings tenfold across plausible `sMR` |

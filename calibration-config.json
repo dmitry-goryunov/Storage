@@ -1,0 +1,35 @@
+{
+  "source_path": "ttf q.xlsx",
+  "cache_directory": ".cache",
+  "retrieval_date": null,
+  "as_of_date": "2026-03-06",
+  "units": "EUR/MWh",
+  "training_start": "2015-01-01",
+  "training_end": "2022-12-31",
+  "holdout_start": "2023-01-01",
+  "holdout_end": "2026-03-06",
+  "sensitivity_windows": [
+    {
+      "name": "pre_crisis_training",
+      "training_start": "2015-01-01",
+      "training_end": "2019-12-31",
+      "holdout_start": "2020-01-01",
+      "holdout_end": "2021-12-31"
+    }
+  ],
+  "ranks": [1, 6, 12, 24],
+  "minimum_contracts_per_snapshot": 4,
+  "candidates": [
+    "one_factor",
+    "two_factor_independent",
+    "two_factor_correlated"
+  ],
+  "max_iterations": 500,
+  "valuation_measure_restriction": "none: the historical P fit does not identify Q risk premia or Q drift",
+  "decision_thresholds": {
+    "minimum_holdout_nll_gain_per_observation": 0.01,
+    "minimum_training_bic_gain": 10.0,
+    "minimum_start_stability_fraction": 0.75,
+    "maximum_hessian_condition_number": 100000000.0
+  }
+}
