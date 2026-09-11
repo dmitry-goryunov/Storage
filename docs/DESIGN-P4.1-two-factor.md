@@ -43,6 +43,12 @@
 > reversal as a gate. **Step 1, the calibration, survives intact and is now the
 > whole of the item.** Steps 2–6 need a fresh justification from struck swings or
 > fee-bearing contracts, not from storage value.
+>
+> **Current specification and result, 2026-09-11.** The replacement S6/S7 workflow is
+> [`CALIBRATION-SPECIFICATION-2026-09-11.md`](CALIBRATION-SPECIFICATION-2026-09-11.md).
+> Its fixed-delivery, delivery-averaged comparison retains the one-factor architecture under
+> predeclared gates, but finds material regime and observation-noise limitations. It does not
+> turn historical P estimates into Q valuation parameters or revive the withdrawn haircut.
 
 Design note, 2026-09-10. Not yet implemented. Written because the item is large enough that
 starting it without agreeing the numerical method would be a mistake, and because the case

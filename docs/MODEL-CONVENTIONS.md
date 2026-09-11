@@ -475,14 +475,17 @@ Rewritten 2026-09-10, when the dated inventory bound stopped being a penalty. Al
 | `INFEASIBLE_VALUE` | `-1e20` | The threshold `assert_contract_feasible` compares the reported value against. Anything at or below it means infeasibility propagated to the top, not a very bad deal — real deal values are millions |
 | `1e-6` | — | An exercise whose gain over idling is smaller is snapped to idle. Absolute, not scale-aware; measured and declined as P2.2 — it cannot misprice a deal at realistic rates (checked across seven orders of magnitude), but it can double the reported hedge at r ≈ 1e-9 with a hundredfold size contrast |
 
-## Calibration — not established
+## Calibration - historical comparison established, valuation calibration open
 
-This is the honest gap. The model is verified (it computes what it claims); it is not
-validated (nothing here establishes the claims are right for a traded price).
+The S6 data layer and first S7 historical P-measure comparison are now reproducible; see
+[`CALIBRATION-SPECIFICATION-2026-09-11.md`](CALIBRATION-SPECIFICATION-2026-09-11.md). The
+valuation model remains unvalidated because the P fit is regime-sensitive and no P-to-Q
+restriction or risk premium has been established.
 
-- `sVol` defaults to 0.9 with **no recorded provenance** — no estimation window, method or
-  as-of date.
-- `sMR` defaults to 1.0, likewise.
+- `sVol` still defaults to 0.9 as an illustrative Q input. The primary historical P fit gives
+  `sigma_chi=0.7396`, but the pre-crisis fit gives 0.3793. Neither is copied into valuation.
+- `sMR` still defaults to 1.0 as an illustrative Q input. The corresponding historical P
+  estimates are 0.4674 and 0.5445 per year, with no established P-to-Q map.
 - Forward curves come from `curve.csv` or the `ttf q.xlsx` quote matrix. The quote row is
   selected by date — the last quote on or before the as-of date — and a curve built from a
   quote may **no longer start before that quote**: valuing 2026-01-01 off a 2026-03-06
@@ -492,7 +495,14 @@ validated (nothing here establishes the claims are right for a traded price).
   `Products.ipynb` raises rather than ignoring one. The quote date is now carried into the
   notebook's curve label and results caption, but there is still **no such convention in
   the library's own outputs** — `run_valuation` returns no as-of stamp.
-- There is no parameter-sensitivity standard, so no statement of how much a value moves
-  per unit of vol or mean reversion.
+- The historical comparison tests ranks 1, 6, 12 and 24 using delivery-averaged loadings,
+  fixed-delivery returns and actual calendar intervals. Neither two-factor candidate passes
+  the predeclared combined BIC, holdout and identification gates. The correlated fit reaches
+  the `rho=-0.95` boundary.
+- The quote-noise and regime diagnostics are not adequate for valuation calibration. A
+  level-state likelihood with serial measurement error and a declared regime treatment is
+  the next statistical step.
+- There is no valuation parameter-sensitivity standard, so no statement of how much a value
+  moves per unit of Q volatility or mean reversion.
 
 Treat every number this model produces as exploratory until these are recorded.

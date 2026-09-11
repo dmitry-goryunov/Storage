@@ -45,6 +45,9 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 | `storage_kernels.py` | Numba-compiled kernels (tree core, DP solver, probabilities). Kept separate so edits to `storage_model.py` do not invalidate the Numba disk cache (avoids 20-40s recompiles) |
 | `benchmarks.py` | Executable fixtures — every contested configuration with its source revision and package versions, the inventory- and price-grid convergence ladders, and the realised-forward spread statistics. Run it directly: `python benchmarks.py` |
 | `two_factor_probe.py` | Independent small DP for the P4.1 question — what a second price factor is worth, and why the answer depends on the calibration anchor |
+| `quote_data.py`, `delivery_model.py` | Auditable fixed-delivery panel, matched returns, data manifest and monthly-delivery observation functions |
+| `calibration.py`, `calibration-config.json` | Reproducible P-measure one- versus two-factor comparison with frozen training/holdout windows, multi-start fitting and identification gates |
+| `docs/CALIBRATION-SPECIFICATION-2026-09-11.md` | Current S6/S7 method, results, limitations and next course of action |
 | `streamlit_app.py` | Streamlit app — value a single swing/storage deal interactively |
 | `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |
 | `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal; the most feature-complete path (per-deal `sMR`, deal-independent daily curve, asymmetric inject/withdraw rates) |
@@ -373,6 +376,10 @@ dependency:
 ```bash
 python -m pytest tests          # if pytest is installed
 python tests/test_regression.py # plain-script fallback (prints PASS/FAIL)
+
+# Reproduce the historical P-measure model comparison
+python calibration.py calibration-config.json \
+  --output calibration-results-2026-09-11.json
 ```
 
 ---

@@ -1719,9 +1719,16 @@ def normalise_storage_contract(params):
         raise ValueError(
             "normalise_storage_contract needs n_states, the inventory-grid resolution "
             "-- it is the one numerical input this function does not derive.")
-    n_states = int(params["n_states"])
-    if n_states <= 0:
-        raise ValueError(f"n_states must be a positive integer, got {n_states}.")
+    raw_n_states = params["n_states"]
+    try:
+        numeric_n_states = float(raw_n_states)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"n_states must be a positive integer, got {raw_n_states!r}.") from None
+    if (isinstance(raw_n_states, (bool, np.bool_)) or not isfinite(numeric_n_states)
+            or numeric_n_states <= 0.0 or not numeric_n_states.is_integer()):
+        raise ValueError(f"n_states must be a positive integer, got {raw_n_states!r}.")
+    n_states = int(numeric_n_states)
     v_step = capacity / n_states
 
     def _days(key):
@@ -1755,6 +1762,20 @@ def normalise_storage_contract(params):
                 f"{achieved:,.4f} MWh/day ({clips} clip(s)/day), a "
                 f"{(achieved - requested_mwh_day) / requested_mwh_day:+.2%} difference."
                 f"{suggestion}")
+        explicit_rate = params.get(key)
+        if explicit_rate is not None:
+            try:
+                numeric_rate = float(explicit_rate)
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} must be a non-negative integer, got {explicit_rate!r}.") from None
+            if (isinstance(explicit_rate, (bool, np.bool_)) or not isfinite(numeric_rate)
+                    or numeric_rate < 0.0 or not numeric_rate.is_integer()):
+                raise ValueError(f"{key} must be a non-negative integer, got {explicit_rate!r}.")
+            if int(numeric_rate) != clips:
+                raise ValueError(
+                    f"{key}={int(numeric_rate)} conflicts with {days:g} {label} days: "
+                    f"the requested physical rate requires {clips} clip(s)/day on this grid. "
+                    f"Supply one physical description, or make the fields agree.")
         rates[key] = clips
 
     boundary = {}
@@ -1767,7 +1788,17 @@ def normalise_storage_contract(params):
                 f"0..{capacity:,.0f} MWh.")
         explicit_clips = params.get(clip_key)
         if explicit_clips is not None:
-            explicit_clips = int(explicit_clips)
+            try:
+                numeric_clips = float(explicit_clips)
+            except (TypeError, ValueError):
+                raise ValueError(f"{clip_key} must be an integer, got {explicit_clips!r}.") from None
+            if (isinstance(explicit_clips, (bool, np.bool_)) or not isfinite(numeric_clips)
+                    or not numeric_clips.is_integer()):
+                raise ValueError(f"{clip_key} must be an integer, got {explicit_clips!r}.")
+            explicit_clips = int(numeric_clips)
+            if not 0 <= explicit_clips <= n_states:
+                raise ValueError(
+                    f"{clip_key}={explicit_clips} is outside the inventory grid 0..{n_states}.")
             achieved = explicit_clips * v_step
             if abs(achieved - requested_mwh) > GRID_TOLERANCE_MWH + (
                     GRID_TOLERANCE_RELATIVE * abs(requested_mwh)):

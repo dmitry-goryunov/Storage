@@ -366,8 +366,15 @@ def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
     if len(table) == 0:
         return "invalid", pd.DataFrame(), "empty table"
 
-    n_states = table["n_states"].to_numpy()
-    if not np.all(np.diff(n_states.astype(float)) > 0):
+    try:
+        n_states = table["n_states"].to_numpy(dtype=float)
+    except (TypeError, ValueError):
+        return "invalid", pd.DataFrame(), "n_states contains a non-numeric value"
+    if (not np.isfinite(n_states).all() or (n_states <= 0).any()
+            or not np.equal(n_states, np.floor(n_states)).all()):
+        return "invalid", pd.DataFrame(), "n_states must contain finite positive integers"
+    n_states = n_states.astype(np.int64)
+    if not np.all(np.diff(n_states) > 0):
         return "invalid", pd.DataFrame(), "n_states is not strictly increasing"
 
     refused = (table["refused"].to_numpy() if "refused" in table
@@ -417,7 +424,12 @@ def convergence_verdict(table, tolerance=CONVERGENCE_TOLERANCE,
             f"to judge convergence (a refused row, a gap, or too short a ladder can all "
             f"cause this)")
 
-    final_two = frame["status"].iloc[-2:]
+    final_rows = frame.iloc[-2:]
+    if int(final_rows.iloc[0]["to"]) != int(final_rows.iloc[1]["from"]):
+        return "insufficient", frame, (
+            "the final eligible doublings are separated by a refused or non-doubling row; "
+            "two connected successive refinements are required")
+    final_two = final_rows["status"]
     if (final_two == "invalid").any():
         return "invalid", frame, "a non-finite value appears in the final two eligible steps"
     if (final_two == "within_declared_tolerance").all():
