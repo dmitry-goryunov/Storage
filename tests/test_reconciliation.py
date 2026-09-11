@@ -2605,6 +2605,81 @@ def test_the_zero_rate_guard_is_not_an_accuracy_certificate():
         sm.assert_ratchet_rates_expressible(model, max_relative_loss=0.05)
 
 
+def test_the_ratchet_diagnostic_checks_every_active_rate_not_only_the_fastest():
+    """Until 2026-09-11 both the guard and the diagnostic read `curve.max()` --
+    the single largest active-day rate across the WHOLE date span -- so a
+    contract with more than one active rate only ever had its fastest day
+    checked. `IMPLEMENTATION-GUIDE-2026-09-11.md` §14 found this worse than
+    first described: not just the diagnostic, but `assert_ratchets_expressible`
+    itself, the guard built specifically to catch "cannot move at all".
+
+    An alternating 1-/2-clip-day schedule at a 0.5 multiplier is the sharpest
+    example: the 2-clip days are exact (`int(2*0.5)=1`), so `curve.max()`
+    alone reports zero loss, while the 1-clip days floor to zero and cannot
+    move at all -- a 100 % loss, and a genuine zero-rate truncation the guard
+    exists to catch. This is the acceptance pack's own R-daily_ratchet oracle,
+    reproduced here independently as a repository-level regression test.
+    """
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(n_op=5, v_step=1.0, i_curve=np.array([1, 2]),
+                            w_curve=np.array([1, 2]), i_ratch=np.full(5, 0.5),
+                            w_ratch=np.full(5, 0.5))
+
+    worst = sm.worst_ratchet_rate_loss(model)
+    assert worst["injection"] == pytest.approx(1.0), worst
+    assert worst["withdrawal"] == pytest.approx(1.0), worst
+
+    with pytest.raises(ValueError, match="truncates to zero"):
+        sm.assert_ratchets_expressible(model)
+
+    # And the reference store, which has only one active rate per side, must
+    # reproduce EXACTLY what was measured before this fix -- the worst-across-
+    # distinct-rates logic has to collapse to the single-rate case unchanged.
+    import benchmarks
+
+    reference, _ = sm.run_valuation(None, benchmarks.CASES["shipped-30-60"]())
+    reference_worst = sm.worst_ratchet_rate_loss(reference)
+    assert reference_worst["injection"] == pytest.approx(0.32203389830508455)
+    assert reference_worst["withdrawal"] == pytest.approx(0.33110367892976594)
+
+
+def test_headroom_is_not_reported_as_discretisation_loss():
+    """A state near the boundary that can only ever move its remaining
+    headroom is EXACT, not a rounding shortfall -- the kernel caps the
+    contractual rate by headroom BEFORE flooring to a whole clip
+    (`storage_kernels.all_inj_steps`/`all_wdr_steps`), so a headroom-limited
+    level is already an integer and contributes zero loss. Conflating the two
+    would call ordinary physics -- a nearly full store injects less -- a
+    numerical defect.
+
+    Ten clips, base rate 8/day (injection) and 4/day (withdrawal), no ratchet
+    (multiplier 1 everywhere): the two states nearest each edge are headroom-
+    limited (2 and 3 clips of room respectively, both integers, so exact), and
+    every interior state has full headroom and is also exact, since the base
+    rate itself is already a whole number of clips.
+    """
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(n_op=11, v_step=1.0,
+                            i_curve=np.full(1, 8.0), w_curve=np.full(1, 4.0),
+                            i_ratch=np.ones(11), w_ratch=np.ones(11))
+    table = sm.describe_ratchet_rates(model)
+
+    # Full store (clips=10): zero headroom to inject -- null, not zero, since
+    # there is nothing to move at all.
+    assert np.isnan(table["injection loss"].iloc[-1])
+    # One clip from full (clips=9): headroom=1, contract=8, allowed=min(8,1)=1,
+    # already an integer -- headroom-limited, exact, reported as 0 % not null.
+    assert table["injection loss"].iloc[-2] == pytest.approx(0.0)
+    assert table["injection grid MWh/day"].iloc[-2] == pytest.approx(1.0)
+    # Empty store (clips=0): zero headroom to withdraw -- null.
+    assert np.isnan(table["withdrawal loss"].iloc[0])
+    # Interior states: full headroom, base rate already whole -- exact.
+    assert table["injection loss"].iloc[2:-2].fillna(0).eq(0.0).all()
+    assert table["withdrawal loss"].iloc[2:-2].fillna(0).eq(0.0).all()
+
+
 def test_refining_the_clip_is_free_only_when_the_rates_are_already_exact():
     """The claim held in the one case that was checked, and nowhere else."""
     import benchmarks

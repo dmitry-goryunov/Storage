@@ -66,19 +66,30 @@ def storage_params(n_states, ratchets=None, curve=None, n_p=25, rate=0.10,
     """A 30/60 store at a chosen inventory clip, physical deal held fixed.
 
     `n_states` changes only the resolution: capacity and both MWh/day rates are
-    preserved by scaling the clip rates with the clip size. That is the property
-    a refinement ladder needs and the one the original "refinement is free" check
-    silently relied on the unratcheted case for.
+    preserved EXACTLY via `sm.normalise_storage_contract` -- the same check
+    IMPLEMENTATION-GUIDE-2026-09-11.md §4.2 put into `params_for_run_valuation`.
+    Until 2026-09-11 this rounded independently (`int(round(INJ_MWH_DAY /
+    v_step))`, no check), which is the identical defect fixed there: an
+    `n_states` that cannot express 30/60 exactly would have been silently
+    repriced rather than refused. Every value this module actually uses is a
+    multiple of `lcm(30, 60) = 60` -- the ladders all start from 60 and double
+    -- so this changes nothing for any of them; it only means a grid that
+    genuinely cannot express the rate now fails loudly instead of quietly
+    studying a different deal.
     """
-    v_step = CAPACITY / n_states
-    inj_rate = int(round(INJ_MWH_DAY / v_step))
-    wdr_rate = int(round(WDR_MWH_DAY / v_step))
+    contract = sm.normalise_storage_contract(dict(
+        capacity_mwh=CAPACITY, n_states=n_states,
+        inj_days=CAPACITY / INJ_MWH_DAY, wdr_days=CAPACITY / WDR_MWH_DAY,
+        initial_storage_mwh=0.0, terminal_storage_mwh=0.0))
+    v_step = contract["v_step"]
+    inj_rate, wdr_rate = contract["inj_rate"], contract["wdr_rate"]
     params = dict(
         product_type="storage", valDate="2026-06-01",
         storageStart="2027-01-01", storageEnd="2027-12-31",
         capacity_mwh=CAPACITY, daily_max=inj_rate * v_step,
         clips_per_day=inj_rate, inj_rate=inj_rate, wdr_rate=wdr_rate,
-        initial_inv_clips=0, terminal_inv_clips=0,
+        initial_inv_clips=contract["initial_inv_clips"],
+        terminal_inv_clips=contract["terminal_inv_clips"],
         inj_cost=0.0, wdr_cost=0.0, fuel_loss=0.0,
         vol=0.50, sMR=1.0, n_p_full=n_p, run_intrinsic=run_intrinsic,
         discount_rate=rate,

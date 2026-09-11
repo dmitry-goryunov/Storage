@@ -1002,6 +1002,14 @@ def assert_ratchets_expressible(model):
     A multiplier of exactly zero is left alone: that is the legitimate way to say
     the rate is shut off at that fullness.
 
+    **Checks every distinct active-day rate, not only the largest.** Until
+    2026-09-11 this read ``curve.max()`` -- the single largest rate across the
+    WHOLE date span -- so a contract with more than one active rate (an
+    alternating 1-/2-clip-day schedule, say) only ever checked the day it moved
+    fastest on. At 1 clip/day with a 0.5 multiplier this let a genuine
+    zero-clip truncation straight through, on the exact class of input the
+    guard exists to catch. IMPLEMENTATION-GUIDE-2026-09-11.md §5.2/§14.
+
     The fix when this fires is a finer clip: the smallest non-zero multiplier `m`
     needs a base rate of at least `ceil(1/m)` clips per day, which means dividing
     `v_step` by the same factor and multiplying `n_states` by it.
@@ -1013,44 +1021,60 @@ def assert_ratchets_expressible(model):
 
     for label, curve, ratch in (("injection", i_curve, i_ratch),
                                 ("withdrawal", w_curve, w_ratch)):
-        rate = float(curve.max()) if curve.size else 0.0
-        if rate <= 0.0:
-            continue
-        effective = rate * ratch
-        lost = np.flatnonzero((effective > 0.0) & (effective < 1.0))
-        if lost.size == 0:
-            continue
-        worst = int(lost[np.argmin(effective[lost])])
-        multiplier = float(ratch[worst])
-        fullness = worst / max(model.n_op - 1, 1)
-        needed = int(np.ceil(1.0 / multiplier))
-        raise ValueError(
-            f"the {label} ratchet truncates to zero at {fullness:.0%} full: a multiplier of "
-            f"{multiplier:.3f} on {rate:g} clip(s)/day gives {effective[worst]:.3f} clips, "
-            f"which the DP floors to 0 -- the store would be unable to move there at all and "
-            f"the deal would price at zero with no error. {lost.size} of {model.n_op} "
-            f"inventory states are affected. Use a base rate of at least {needed} clip(s)/day "
-            f"(divide v_step by {needed}, multiply n_states by {needed}), or set the "
-            f"multiplier to exactly 0 if the rate really is shut off there."
-        )
+        distinct_rates = np.unique(curve[curve > 0.0])
+        for rate in distinct_rates:
+            effective = float(rate) * ratch
+            lost = np.flatnonzero((effective > 0.0) & (effective < 1.0))
+            if lost.size == 0:
+                continue
+            worst = int(lost[np.argmin(effective[lost])])
+            multiplier = float(ratch[worst])
+            fullness = worst / max(model.n_op - 1, 1)
+            needed = int(np.ceil(1.0 / multiplier))
+            raise ValueError(
+                f"the {label} ratchet truncates to zero at {fullness:.0%} full: a multiplier "
+                f"of {multiplier:.3f} on {rate:g} clip(s)/day -- one of {distinct_rates.size} "
+                f"distinct active-day {label} rate(s) this contract uses -- gives "
+                f"{effective[worst]:.3f} clips, which the DP floors to 0. Any day priced at "
+                f"this rate would be unable to move there at all, worth zero with no error. "
+                f"{lost.size} of {model.n_op} inventory states are affected at this rate. Use "
+                f"a base rate of at least {needed} clip(s)/day here (divide v_step by {needed}, "
+                f"multiply n_states by {needed}), or set the multiplier to exactly 0 if the "
+                f"rate really is shut off there."
+            )
 
 
 def describe_ratchet_rates(model):
     """The contract's MWh/day against what the inventory grid can express.
 
-    The DP moves whole clips, so the kernel takes ``int(rate * multiplier)`` and
-    the remainder is thrown away. `assert_ratchets_expressible` catches only the
-    case where that reaches zero; everything short of zero passed silently, and
-    a silently slower store fills less, so the deal was under-valued with no
-    indication. On the reference 240-clip store a contractual 3,800 MWh/day at
-    10 % full is delivered as 2,500 -- a **34 % shortfall** that the guard,
-    the tests and the notebook all cleared.
+    The DP moves whole clips: the kernel caps the contractual rate by physical
+    HEADROOM first (``storage_kernels.all_inj_steps``/``all_wdr_steps``: a full
+    store cannot inject and an empty one cannot withdraw, however fine the
+    clip is), then floors THAT to a whole number of clips. Reporting these two
+    effects as one number would call a boundary state's headroom limit a
+    "discretisation loss" it is not -- a state one clip from full can only ever
+    move that one clip, exactly, with no rounding involved.
 
-    Returns one row per inventory state: fullness, the rate the contract grants
-    at that fullness, the rate the grid actually gives, and the loss in both
-    MWh/day and per cent. Levels where the move is physically impossible anyway
-    (withdrawing from empty, injecting into a full store) are reported with a
-    null loss rather than a spurious 100 %.
+    `assert_ratchets_expressible` catches only truncation to zero; everything
+    short of zero passes silently, and a silently slower store fills less, so
+    the deal is under-valued with no indication. On the reference 240-clip
+    store a contractual 3,800 MWh/day at 10 % full is delivered as 2,500 -- a
+    **34 % shortfall** that the guard, the tests and the notebook all cleared.
+
+    **Checks every distinct active-day rate, not only the largest.** Until
+    2026-09-11 this read ``curve.max()``, so a contract with more than one
+    active rate only ever had its FASTEST day checked; an alternating
+    1-/2-clip-day schedule at a 0.5 multiplier reported zero loss on both
+    sides while the 1-clip days could not move at all -- a 100 % loss,
+    invisible. IMPLEMENTATION-GUIDE-2026-09-11.md §5.2/§14.
+
+    Returns one row per inventory state: fullness, the WORST-case (by relative
+    loss) contract and grid rate across every distinct active-day rate on that
+    side, which rate produced it, and the loss in both MWh/day and per cent.
+    Levels with zero headroom (withdrawing from empty, injecting into a full
+    store) are reported with a null loss; a level with SOME headroom that
+    happens to be smaller than the contract rate reports zero loss, correctly,
+    because the headroom-capped movement is already a whole number of clips.
 
     Roadmap P1.4. Read `worst_ratchet_rate_loss()` for the single number.
     """
@@ -1062,20 +1086,41 @@ def describe_ratchet_rates(model):
     for side, curve, ratch in (("injection", model.i_curve, model.i_ratch),
                                ("withdrawal", model.w_curve, model.w_ratch)):
         curve = np.asarray(curve, dtype=float)
-        base = float(curve.max()) if curve.size else 0.0        # the active-day rate
-        mult = np.asarray(ratch, dtype=float)
-        contract = base * mult * model.v_step
-        grid = np.floor(base * mult) * model.v_step
-        # Headroom, not discretisation: a full store cannot inject and an empty
-        # one cannot withdraw however fine the clip is.
-        possible = (levels < n_states) if side == "injection" else (levels > 0)
-        loss = np.where(possible & (contract > 0.0), contract - grid, np.nan)
-        relative = np.where(possible & (contract > 0.0), 1.0 - grid / np.where(
-            contract > 0.0, contract, 1.0), np.nan)
-        out[f"{side} contract MWh/day"] = contract
-        out[f"{side} grid MWh/day"] = grid
-        out[f"{side} loss MWh/day"] = loss
-        out[f"{side} loss"] = relative
+        ratch = np.asarray(ratch, dtype=float)
+        headroom = (n_states - levels) if side == "injection" else levels    # clips
+
+        distinct_rates = np.unique(curve[curve > 0.0])
+        if distinct_rates.size == 0:
+            distinct_rates = np.zeros(1)
+
+        # (rates x levels): headroom BEFORE flooring, per the kernel's own order.
+        contract_r = distinct_rates[:, None] * ratch[None, :]
+        allowed_r = np.minimum(contract_r, headroom[None, :])
+        grid_r = np.floor(allowed_r)
+        loss_clips_r = allowed_r - grid_r
+        with np.errstate(invalid="ignore", divide="ignore"):
+            # -1 sentinel (not nan) for "nothing to move at this rate/level" so
+            # argmax below skips it in favour of any level with a genuine
+            # positive loss, rather than nan poisoning the comparison.
+            loss_rel_r = np.where(allowed_r > 0.0, loss_clips_r / allowed_r, -1.0)
+
+        worst_rate_index = np.argmax(loss_rel_r, axis=0)
+        at_level = np.arange(model.n_op)
+        contract = contract_r[worst_rate_index, at_level]
+        grid = grid_r[worst_rate_index, at_level]
+        loss_clips = loss_clips_r[worst_rate_index, at_level]
+        loss_rel = loss_rel_r[worst_rate_index, at_level]
+        rate_used = distinct_rates[worst_rate_index]
+
+        nothing_to_move = loss_rel < 0.0          # every rate gave the -1 sentinel here
+        loss_rel = np.where(nothing_to_move, np.nan, loss_rel)
+        loss_mwh = np.where(nothing_to_move, np.nan, loss_clips * model.v_step)
+
+        out[f"{side} base rate clips/day"] = rate_used
+        out[f"{side} contract MWh/day"] = contract * model.v_step
+        out[f"{side} grid MWh/day"] = grid * model.v_step
+        out[f"{side} loss MWh/day"] = loss_mwh
+        out[f"{side} loss"] = loss_rel
 
     return pd.DataFrame(out)
 
