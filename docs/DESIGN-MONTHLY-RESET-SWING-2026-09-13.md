@@ -22,9 +22,12 @@ that will determine `K_(M+1)`. The active-month valuation state is therefore
 
 or an economically equivalent reduced representation.
 
-A dense implementation of this state space is suitable only as a small exact benchmark. For
-realistic contracts, the recommended production route is regression Monte Carlo with a
-discrete cumulative-volume state, validated against the exact benchmark on small cases.
+A dense implementation of this state space must first be built as a small exact benchmark.
+For a qualified mandatory-volume structure, the current-strike dimension may be eliminated
+analytically and exact dynamic programming may also be practical at production scale. For
+other realistic contracts, regression Monte Carlo remains the likely production route. The
+choice must be made from measured state sizes, convergence, memory and runtime rather than
+assumed in advance.
 
 This produces an internally consistent value under the chosen risk-neutral price dynamics.
 It does not by itself establish that those dynamics or parameters are calibrated to market
@@ -283,63 +286,72 @@ Idle and all permitted partial daily quantities remain alternatives. Global and 
 volume constraints must be enforced according to the term sheet. The decision uses only
 information available at that timestamp.
 
-### 6.4 The current-strike axis is convex, and often affine — so it need not match `n_R`'s resolution
+### 6.4 Convexity and the conditional current-strike reduction
 
-Section 7.1's `n_price * n_volume * n_K * n_R` estimate treats `k` as needing resolution
-comparable to `r`. It does not: for fixed `(i,j,l)` within delivery month `M`, `V_i(j,l;k)` is
-convex in `k`, and in the common case of a per-month mandatory exercised volume, exactly
-affine. Both are proved, not assumed, and verified numerically against the existing engine.
+For fixed `(i, j, l, r)` within delivery month `M`, the value is convex in the already-fixed
+current strike `k`, provided that:
 
-**Proof (convexity, general case).** Within `M`, `k` is fixed and enters the Bellman recursion
-only through the immediate payoff, which is affine in `k`:
+- the feasible exercise set does not depend on `k`;
+- the current strike enters the immediate cashflow only as a linear amount per exercised
+  unit; and
+- the value at the `M` to `M+1` rollover is independent of the discarded strike `K_M`.
+
+For a call, suppressing the fixed accumulator coordinate from the notation, the recursion is
 
 ```text
-V_i(j,l;k) = max_{d in feasible(l)} { DF_i*d*v_step*(S_i(j) - k - vc_i)
-                                      + E[V_{i+1}(j',l-d;k) | j] }
+V_i(j,l;k) = max over feasible d of {
+    DF_i * d * v_step * (S_i(j) - k - variable_cost_i)
+    + E[V_(i+1)(j', l-d; k) | j]
+}.
 ```
 
-with the boundary value at the `M`/`M+1` rollover independent of `k` (§6.2: the old `K_M` is
-discarded there, and only `l` and the fresh `r` carry forward). By backward induction: the
-base case is a constant (trivially convex); if `V_{i+1}(·,·;k)` is convex in `k`, then for each
-fixed `d` the bracketed expression is an affine function of `k` plus a non-negative-weighted
-expectation of convex functions of `k`, hence convex; a pointwise maximum over `d` of functions
-convex in `k` is convex. So `V_i(j,l;k)` is convex in `k` for every `i` inside `M`.
+The rollover value is constant in `k`. Backward induction then establishes convexity because
+each action value is an affine immediate payoff plus an expectation of convex continuation
+values, and the maximum of convex functions is convex. The put result is symmetric.
 
-**Stronger case (exact affine).** If the exercised volume during `M` is pinned independent of
-price (a mandatory quota applying within the month, not just across the whole deal), the
-optimal policy does not depend on `k` at all: every feasible schedule's total exercised volume
-is the same fixed number, so shifting `k` by `delta` shifts every schedule's value by exactly
-`-total_volume * v_step * delta` for a call (symmetric sign for a put), which cannot change
-which schedule is optimal. Then `V(k) = V(k0) - total_volume * v_step * (k - k0)` exactly, with
-zero interpolation error at any `k` -- `n_K` collapses to a single evaluation.
+Convexity does not by itself make the value affine and does not establish how many strike
+knots are required.
 
-**Verified numerically**, using the existing, already-tested `value_call_swing` path directly
-(no new code): a one-month call swing (280,000 MWh mandatory capacity, `daily_max` 10,000
-MWh/day, flat 30.0 EUR/MWh curve, `sVol` 0.5, `sMR` 1.0), priced at nine strikes from 15 to 45,
-under both terminal conditions:
+The stronger affine result holds only when every feasible policy has the same discounted
+current-month exercise volume:
 
-| Configuration | Consecutive slopes `dV/dK` | Convexity check |
-|---|---|---|
-| Mandatory (default terminal pin) | `-280,000.0` at every interval, to full float precision | Exactly affine, as predicted |
-| Optional (`zero_penalty=True`) | `-279,421` down to `-4,535`, monotonically shrinking in magnitude | Every point lies on or below its neighbours' chord -- zero violations across all nine, consistent with convex |
+```text
+discounted_volume(policy) = sum(i in D_M, DF_i * volume_i(policy)).
+```
 
-The mandatory slope is exactly `-280,000` = `-(total mandatory volume in MWh)`, matching the
-closed form above to the last printed digit. The optional case's shrinking slope is exactly
-the expected shape: as `k` rises the swing becomes less attractive, the optimiser exercises
-less of the optional quota, and `V` becomes correspondingly less sensitive to further increases
-in `k` -- convex, not merely "different from affine."
+If this amount is the same constant `E_M` for all feasible policies, then
 
-**Consequence for §7.1's sizing.** For a per-month mandatory structure, drop `n_K` from the
-product entirely: `n_price * n_volume * n_R`, not `n_price * n_volume * n_K * n_R` -- the full
-factor of ~40 in the worked example, not a fraction of it. For an optional-volume structure,
-`n_K` is still needed, but a convexity-aware placement (few knots, tighter near the current
-forward level where curvature is highest, or the exact affine sub-policies as anchors rather
-than a naive uniform grid) should need far fewer than the 40 buckets `n_R` warrants on its own
-merits -- this should be confirmed with its own convergence ladder per §7.1's existing
-requirement to measure each grid separately, not assumed at a specific smaller number here.
+```text
+call: V(k) = V(k0) - E_M * (k - k0)
+put:  V(k) = V(k0) + E_M * (k - k0).
+```
 
-This does not touch `n_R`, which remains genuinely stochastic and path-dependent within its
-own accumulation window and gets no equivalent simplification from this argument.
+Examples satisfying the condition include zero interest rates, a common monthly cash
+settlement discount factor with a fixed monthly physical volume, or another settlement
+convention that makes discounted volume schedule-independent. A mandatory physical monthly
+volume alone is not sufficient when exercise-day discount factors differ. In that case,
+different exercise schedules can have different slopes in `k`; the value remains convex but
+may be piecewise affine, and the optimal policy can change with the strike.
+
+The originally reported one-month numerical run was at the engine's default zero rate only,
+and was not evidence for the general positive-rate case. Committed as four fixtures in
+`tests/test_reconciliation.py` (`test_zero_rate_mandatory_strike_affinity`,
+`test_common_settlement_strike_affinity`, `test_daily_discounting_can_break_affinity`,
+`test_optional_volume_strike_convexity`) against the existing call-swing engine directly --
+no reset-swing code exists yet to test, but the current-strike k-slice this section is about
+is exactly what a fixed scalar strike over one window already computes. The zero-rate and a
+patched common-settlement (flat, non-unit discount factor) case both reproduce the exact
+affine slope `-DF * total_volume` to the declared tolerance; the same contract under the
+engine's actual day-varying discount convention shows genuine curvature (slope spread > 100
+across the tested strikes, still convex, no chord violation) -- confirming the qualification
+above is not just a theoretical caveat but a reproducible property of this engine's own
+discounting convention.
+
+Consequently, `n_K` may be collapsed to one reference evaluation plus the analytic slope only
+after the schedule-independent discounted-volume condition has been checked. Otherwise the
+implementation must retain a strike grid, use an exact upper-envelope representation, or use
+another approximation whose error is demonstrated by convergence tests. Convexity can inform
+adaptive knot placement, but it does not justify a particular knot count or location.
 
 ## 7. Numerical architecture
 
@@ -355,7 +367,8 @@ Requirements:
 - construct reachable, date-dependent strike and accumulator domains;
 - interpolate continuation value between adjacent reset-grid points;
 - define boundary behaviour explicitly and never extrapolate silently;
-- measure convergence separately in the price, volume, strike and accumulator grids;
+- measure convergence separately in the price, volume and accumulator grids, and in the
+  strike grid whenever the analytic reduction does not apply;
 - report memory and runtime from actual dimensions.
 
 The state count during an active month grows approximately as
@@ -365,19 +378,17 @@ n_price * n_volume * n_K * n_R.
 ```
 
 The previous design counted only `n_R`. With 40 strike buckets and 40 accumulator buckets,
-the naive multiplier is about 1,600, before allowing for time or policy storage -- but §6.4
-shows `n_K` is not a free parameter to size the same way as `n_R`: it collapses to 1 for a
-per-month mandatory structure (dropping the multiplier back to ~40, `n_R` alone) and to a
-small, convexity-justified number otherwise, not 40. A dense full-history lattice may
-therefore be usable for the mandatory case specifically; this should be checked against a
-measured `n_R` convergence ladder before ruling it out, rather than assumed unusable from the
-uncorrected `n_K * n_R` product. The optional-volume case remains the more likely candidate
-for regression Monte Carlo, and still less likely to need it than this section originally
-suggested.
+the naive multiplier is about 1,600, before allowing for time or policy storage. Section 6.4
+permits `n_K` to be removed only when discounted current-month exercise volume is
+schedule-independent. In that qualified case, the incremental reset multiplier is `n_R`
+alone and a dense exact solver may be practical. Otherwise `n_K` remains a numerical
+dimension and must be sized from a separate convergence ladder. Whether the exact solver is
+usable for a realistic annual swing is therefore a measured result, not a design assumption.
 
-### 7.2 Production solver: regression Monte Carlo
+### 7.2 Conditional production solver: regression Monte Carlo
 
-The recommended realistic-size solver is least-squares Monte Carlo or another regression
+When the exact solver exceeds the declared production resource budget, the recommended
+realistic-size approximation is least-squares Monte Carlo or another regression
 dynamic-programming method:
 
 1. Simulate price paths under the same stated risk-neutral dynamics used for valuation.
@@ -518,10 +529,12 @@ residual. Finite-difference agreement is the primary Greek test.
 - zero daily exercise capacity produces zero optional exercise value;
 - mandatory full exercise reproduces the corresponding indexed linear cashflow;
 - a one-day, two-price-node example is enumerated by hand;
-- §6.4's current-strike property, on the actual `n_K` grid used: exactly affine (slope
-  constant to numerical tolerance) under a per-month mandatory quota, and convex (no chord
-  violation) under an optional one -- a coarser `n_K` must be justified against this, not
-  assumed.
+- at zero rates or with a common settlement discount factor, a fixed monthly volume produces
+  the analytic constant strike slope from Section 6.4;
+- with daily discounting, a two-date mandatory-volume counterexample remains convex but can
+  be non-affine and can change exercise timing as the strike changes;
+- optional volume is convex in the current strike, with no chord violations on the tested
+  strike grid.
 
 ### 10.3 Independent exact tests
 
@@ -602,7 +615,8 @@ Deliverables:
 - partial historical fixing support;
 - reset-boundary rotation;
 - interpolation and boundary diagnostics;
-- separate convergence ladders for `n_K` and `n_R`;
+- a convergence ladder for `n_R`, plus either proof and testing of the analytic `n_K`
+  reduction or a separate `n_K` convergence ladder;
 - measured memory and runtime report.
 
 Exit condition: all hand-computable and exact-tree cases pass, with convergence inside a
@@ -667,3 +681,269 @@ Implement Phase 0 and the conditional month-ahead projection from Phase 1 before
 is required by every later solver. After it passes, build the point-reset exact benchmark.
 Only then choose the averaged-reset production implementation on measured state sizes and
 runtime, rather than assuming the dense lattice will be practical.
+
+## 14. Implementation-readiness specification
+
+This section defines the work required to turn the preceding design into an executable
+specification. It does not declare the model implemented. The commercial terms listed in
+Section 2.1 remain unknown until a real term sheet or an explicit prototype convention is
+selected.
+
+### 14.1 Staged release scope
+
+The implementation should be divided into separately accepted releases.
+
+#### Release 1A: point-reset exact benchmark
+
+- call swing only;
+- one fixing observation for each delivery month;
+- the existing one-factor lattice and deterministic discount curve;
+- discrete partial daily exercise quantities;
+- explicit global and monthly volume constraints;
+- cash PV and essential diagnostics only;
+- a separate public entry point from `run_valuation`.
+
+This restricted release is a recommended development convention, not an inferred commercial
+contract. Its purpose is to validate the conditional quote and state-dependent strike before
+introducing the averaging accumulator.
+
+#### Release 1B: averaged-reset exact benchmark
+
+- multiple weighted fixing observations;
+- fully fixed, partially fixed and wholly future months;
+- simultaneous current-strike and next-accumulator states;
+- reset-boundary rotation;
+- interpolation, boundary and convergence diagnostics.
+
+#### Release 2: realistic-size production valuation
+
+- retain exact dynamic programming when the analytic reduction and measured resource use make
+  it practical;
+- otherwise implement regression Monte Carlo with independent out-of-sample policy valuation;
+- add Greeks and application integration only after the cash PV reconciles to the exact
+  benchmark.
+
+Put direction, floors, caps, rounding and detailed market-disruption provisions should be
+added only when their terms are specified. They are not silently included in Release 1A.
+
+### 14.2 Contract data model
+
+The implementation must define an immutable `ResetSwingTerms` structure containing at least:
+
+```python
+@dataclass(frozen=True)
+class ResetSwingTerms:
+    direction: Literal["call", "put"]
+    valuation_timestamp: pd.Timestamp
+    exercise_dates: tuple[pd.Timestamp, ...]
+    delivery_month_by_date: Mapping[pd.Timestamp, pd.Period]
+    daily_max_mwh: float
+    volume_step_mwh: float
+    global_min_mwh: float
+    global_max_mwh: float
+    monthly_limits: Mapping[pd.Period, VolumeLimits] | None
+    fixing_dates: Mapping[pd.Period, tuple[pd.Timestamp, ...]]
+    fixing_weights: Mapping[pd.Period, tuple[float, ...]]
+    publication_timestamps: Mapping[pd.Timestamp, pd.Timestamp]
+    index_definition: IndexDefinition
+    reset_formula: ResetFormula
+    settlement_dates: Mapping[pd.Timestamp, pd.Timestamp]
+    historical_fixings: Mapping[pd.Timestamp, float]
+    disruption_rule: Literal["raise", "previous", "specified_fallback"]
+```
+
+The final Python types may differ, but the specification must state:
+
+- the units of every field, including EUR, EUR/MWh and MWh;
+- whether bounds are inclusive;
+- whether global and monthly constraints apply separately or simultaneously;
+- whether daily capacity must be an integer multiple of `volume_step_mwh`;
+- which fields may be absent and the exact meaning of every default;
+- how infeasible volume schedules are rejected;
+- how historical observations and corrections are recorded in the audit output.
+
+No calendar, index, publication or settlement convention may be inferred merely from the
+description "month-ahead".
+
+### 14.3 Event construction and ordering
+
+`build_reset_schedule(terms)` must produce an auditable ordered event schedule. For each model
+date, the candidate operations are:
+
+1. establish the observable price-tree state;
+2. publish an index observation scheduled before the exercise decision;
+3. update the applicable reset accumulator;
+4. finalise a strike when its fixing window is complete;
+5. make the exercise decision using only the information then available;
+6. attach the resulting cashflow to its contractual settlement date;
+7. rotate the next strike and initialise the following accumulator at the month boundary.
+
+This is not a universal same-day order. If nomination precedes publication, exercise must be
+processed before that observation becomes available. The supplied timestamps decide the
+order, and equal or contradictory timestamps must either follow an explicit priority rule or
+raise a validation error.
+
+### 14.4 Module interfaces and array contracts
+
+The initial interfaces should be specified before implementation:
+
+```python
+build_reset_schedule(terms) -> ResetSchedule
+
+project_month_ahead_quotes(
+    tree,
+    delivery_periods,
+    delivery_weights,
+) -> ConditionalQuoteTable
+
+value_point_reset_exact(
+    tree,
+    terms,
+    quote_table,
+    controls,
+) -> ResetSwingResult
+
+value_average_reset_exact(
+    tree,
+    terms,
+    quote_table,
+    controls,
+) -> ResetSwingResult
+```
+
+The corresponding conceptual dimensions are:
+
+```text
+conditional_quote[observation_time, delivery_month, price_node]
+value[price_node, volume_state, strike_state, accumulator_state]
+policy[time, price_node, volume_state, strike_state, accumulator_state]
+```
+
+Omitted dimensions may be removed by a proved reduction, but the returned metadata must say
+which reduction was applied. Every array contract must define dtype, units, date alignment,
+reachable indices and boundary values. The document must also choose one value convention:
+cashflows discounted directly to the valuation date, or values expressed at each recursion
+date. These conventions must not be mixed.
+
+### 14.5 Required Bellman transitions
+
+The detailed implementation section must supply separate pseudocode or equations for:
+
+- an ordinary exercise date;
+- a fixing-only date;
+- a date containing both fixing and exercise events;
+- finalisation of a monthly strike;
+- month-boundary state rotation;
+- terminal global and monthly volume enforcement;
+- fully and partially fixed initialisation.
+
+For every transition it must specify whether the accumulator is updated before or after the
+exercise decision, how discounting is applied, how unreachable states are excluded and which
+state variables survive the boundary. Interpolation must name the method, valid domain and
+failure behaviour. Extrapolation must never occur silently.
+
+### 14.6 Solver-selection rules
+
+Use the following decision sequence:
+
+1. Test whether discounted current-month volume is schedule-independent. If it is, apply the
+   analytic strike reduction and verify its slope numerically.
+2. If it is not, retain `n_K` or an exact upper-envelope equivalent and run an explicit strike
+   convergence ladder.
+3. Measure peak memory and runtime for the intended contract dimensions.
+4. Use exact dynamic programming while it remains inside the declared application resource
+   budget.
+5. Introduce regression Monte Carlo only when the exact method exceeds that budget or fails
+   another documented production requirement.
+
+The local and Streamlit resource budgets are currently unknown. They must be measured and
+recorded before a production-solver decision is final.
+
+### 14.7 Reproducible acceptance fixtures
+
+The following tests are required as named, committed fixtures:
+
+```text
+test_fixed_strike_equivalence
+test_zero_volatility_reset
+test_point_reset_by_exhaustive_enumeration
+test_two_observation_average_reset
+test_partially_fixed_month
+test_fixing_after_exercise_not_visible
+test_monthly_and_global_volume_limits
+test_zero_rate_mandatory_strike_affinity
+test_common_settlement_strike_affinity
+test_daily_discounting_can_break_affinity
+test_optional_volume_strike_convexity
+test_reset_accumulator_grid_convergence
+test_strike_grid_convergence
+test_tree_boundary_convergence
+```
+
+Every fixture must contain complete inputs, an independently calculated expected result and
+declared absolute and relative tolerances. Algebraic identities, benchmark PV comparisons and
+Monte Carlo confidence checks require separate tolerances. Numerical values for those
+tolerances are not fixed here because no reference runs have yet established defensible
+levels.
+
+### 14.8 Stable result object
+
+`ResetSwingResult` must define at least:
+
+```text
+pv_eur
+deterministic_pv_eur
+extrinsic_pv_eur
+expected_volume_mwh_by_date
+expected_volume_mwh_by_month
+reset_strike_distribution
+expected_strike_conditional_on_exercise
+total_curve_delta
+physical_leg_delta
+index_leg_delta
+solver_name
+numerical_controls
+convergence_results
+standard_error
+warnings
+audit_inputs
+```
+
+An inapplicable field must be explicitly `None` or carry a documented status; it must not be
+silently omitted. The solver name, model parameters, reduction flags, grid sizes, random seed
+where applicable and convergence evidence must accompany every reported PV.
+
+### 14.9 Repository mapping and traceability
+
+| Requirement | Suggested implementation | Primary test file |
+|---|---|---|
+| Contract validation and audit schedule | `reset_terms.py` | `tests/test_reset_terms.py` |
+| Conditional month-ahead projection | `reset_forward.py` | `tests/test_reset_forward.py` |
+| Point-reset exact recursion | `reset_swing_exact.py` | `tests/test_reset_swing_point.py` |
+| Averaged fixing accumulator | `reset_swing_exact.py` | `tests/test_reset_swing_average.py` |
+| Regression Monte Carlo policy | `reset_swing_lsmc.py` | `tests/test_reset_swing_lsmc.py` |
+| Reporting and Greeks | `reset_swing_reporting.py` | `tests/test_reset_swing_reporting.py` |
+
+`storage_kernels.py` should remain unchanged until the contract schedule and conditional quote
+modules pass independently. The new product should use a separate public entry point until
+its result conventions and regression suite are stable.
+
+### 14.10 Definition of implementation-ready
+
+The selected release is implementation-ready only when:
+
+1. its supported commercial terms and exclusions are explicit;
+2. every input has a type, unit, validation rule and default policy;
+3. one term object maps to one deterministic ordered event schedule;
+4. every state and Bellman transition is defined without relying on programmer judgement;
+5. discounting and settlement conventions are consistent with the strike-dimension treatment;
+6. every acceptance claim maps to a committed, reproducible test fixture;
+7. numerical tolerances and failure behaviour are declared;
+8. the output schema and audit metadata are stable;
+9. existing fixed-strike swing and storage tests remain part of the release gate;
+10. unresolved commercial or calibration choices are labelled unknown rather than defaulted
+    silently.
+
+The immediate document task is to complete this definition for Release 1A. After its tests
+pass, extend the same specification to Release 1B using measured strike and accumulator state
+sizes.

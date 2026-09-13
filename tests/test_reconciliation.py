@@ -1612,6 +1612,136 @@ def test_a_one_day_swing_reproduces_black_76(strike, months):
     assert abs(float(np.dot(weights, (logs - mean) ** 2)) / var - 1.0) < 0.01
 
 
+# ── Current-strike convexity/affinity, DESIGN-MONTHLY-RESET-SWING-2026-09-13.md §6.4 ──────
+#
+# Not the reset-swing feature itself -- nothing there is built yet. These pin the
+# structural claim that design makes about V_i(j,l;k) as a function of the ALREADY-FIXED
+# strike within one delivery month, using only the existing, already-tested call-swing
+# engine (a fixed scalar strike for the whole window IS exactly the k-slice that claim is
+# about). The first version of §6.4 overclaimed "mandatory volume alone gives exact
+# affinity" -- true only when DISCOUNTED exercise volume is schedule-independent, which a
+# zero rate or a common settlement date give, and ordinary day-by-day discounting does
+# not. These four fixtures pin both the claim and its boundary, not just the favourable
+# case.
+
+def _two_block_call_swing_pv(strike, discount_rate):
+    """A 40-day mandatory call swing, cheap in the first half, pricier in the second --
+    built so the schedule choice (which half to draw the mandatory volume from) is
+    genuinely free, not forced by capacity. 20 of 40 possible clips are mandatory."""
+    val_date = pd.Timestamp("2026-01-01")
+    start = pd.Timestamp("2026-02-01")
+    end = start + pd.DateOffset(days=39)
+    days = pd.date_range("2025-01-01", "2028-12-31", freq="D")
+    window = pd.date_range(start, end, freq="D")
+    curve = pd.Series(24.5, index=days)
+    half = len(window) // 2
+    curve.loc[window[:half]] = 24.0
+    curve.loc[window[half:]] = 25.0
+
+    mandatory_clips, clip_mwh = 20, 5_000.0
+    model, _ = sm.run_valuation(None, dict(
+        product_type="call_swing", valDate=val_date, storageStart=start, storageEnd=end,
+        capacity_mwh=mandatory_clips * clip_mwh, daily_max=clip_mwh, clips_per_day=1,
+        vol=0.5, sMR=1.0, n_p_full=30, run_intrinsic=False, discount_rate=discount_rate,
+        strike=strike, zero_penalty=False, daily_curve=curve))
+    return float(model.v[0, model.n_p, model.initial_state]), mandatory_clips * clip_mwh
+
+
+def _slopes(strikes, values):
+    return np.diff(values) / np.diff(strikes)
+
+
+def test_zero_rate_mandatory_strike_affinity():
+    """At a zero discount rate every feasible schedule's discounted volume is just its
+    physical volume, which a mandatory quota fixes -- design doc's stronger affine case.
+    V(k) must be affine to machine precision: constant slope, no curvature."""
+    strikes = np.linspace(15.0, 45.0, 9)
+    values = np.array([_two_block_call_swing_pv(k, 0.0)[0] for k in strikes])
+    total_volume = _two_block_call_swing_pv(strikes[0], 0.0)[1]
+
+    slopes = _slopes(strikes, values)
+    assert slopes.max() - slopes.min() < 1e-6, f"slopes not constant: {slopes}"
+    assert abs(slopes[0] - (-total_volume)) < 1e-6, (
+        f"slope {slopes[0]} should be exactly -total_volume {-total_volume}")
+
+
+def test_common_settlement_strike_affinity(monkeypatch):
+    """A nonzero rate does not by itself break affinity -- only day-varying discount
+    factors do. Force every cashflow to settle at one common date (a flat, non-unit DF,
+    still pricing in real time value) by patching `discount_factors`, matching the
+    condition the design doc actually needs: discounted volume schedule-independent."""
+    flat_df = math.exp(-1.0)
+    original = sm.discount_factors
+    monkeypatch.setattr(sm, "discount_factors",
+                        lambda n_t, rate: np.full(n_t, flat_df))
+
+    strikes = np.linspace(15.0, 45.0, 9)
+    values, total_volume = zip(*(_two_block_call_swing_pv(k, 1.0) for k in strikes))
+    values = np.array(values)
+    total_volume = total_volume[0]
+
+    monkeypatch.undo()
+    assert sm.discount_factors is original
+
+    slopes = _slopes(strikes, values)
+    assert slopes.max() - slopes.min() < 1e-3, f"slopes not constant: {slopes}"
+    assert abs(slopes[0] - (-flat_df * total_volume)) < 1e-3, (
+        f"slope {slopes[0]} should be exactly -DF*total_volume {-flat_df*total_volume}")
+
+
+def test_daily_discounting_can_break_affinity():
+    """The realistic engine convention -- settle on the exercise day, so the discount
+    factor varies day to day -- is exactly the case §6.4 says is NOT covered by the
+    affine result. A high enough rate must show genuine curvature: the optimal schedule
+    trades a cheaper early block against a pricier, more-discounted late one differently
+    as k moves, so slopes must shrink in magnitude (still convex) but must NOT be
+    constant. This is the boundary of the claim, not a counterexample to it -- the
+    design doc already says daily discounting can do this."""
+    strikes = np.linspace(15.0, 45.0, 13)
+    values = np.array([_two_block_call_swing_pv(k, 1.0)[0] for k in strikes])
+
+    slopes = _slopes(strikes, values)
+    assert slopes.max() - slopes.min() > 100.0, (
+        f"expected genuine curvature from daily discounting, got flat slopes {slopes}")
+    # Still convex: every interior point on or below the chord through its neighbours.
+    for i in range(1, len(strikes) - 1):
+        k0, k1, k2 = strikes[i - 1], strikes[i], strikes[i + 1]
+        v0, v1, v2 = values[i - 1], values[i], values[i + 1]
+        chord = v0 + (v2 - v0) * (k1 - k0) / (k2 - k0)
+        assert v1 <= chord + 1e-6, f"convexity violated at K={k1}: {v1} > chord {chord}"
+
+
+def test_optional_volume_strike_convexity():
+    """With `zero_penalty=True` the total exercised volume is itself a choice, so the
+    policy genuinely depends on `k` -- §6.4's general (not the stronger affine) case.
+    Convex, and strictly not affine: shrinking slope magnitude as k rises."""
+    val_date = pd.Timestamp("2026-01-01")
+    start = pd.Timestamp("2026-02-01")
+    end = pd.Timestamp("2026-02-28")
+    curve = pd.Series(30.0, index=pd.date_range("2025-01-01", "2028-12-31", freq="D"))
+    strikes = np.linspace(15.0, 45.0, 9)
+
+    def pv(strike):
+        model, _ = sm.run_valuation(None, dict(
+            product_type="call_swing", valDate=val_date, storageStart=start, storageEnd=end,
+            capacity_mwh=280_000.0, daily_max=10_000.0, clips_per_day=1,
+            vol=0.5, sMR=1.0, n_p_full=40, run_intrinsic=False, discount_rate=0.0,
+            strike=strike, zero_penalty=True, daily_curve=curve))
+        return float(model.v[0, model.n_p, model.initial_state])
+
+    values = np.array([pv(k) for k in strikes])
+    slopes = _slopes(strikes, values)
+    assert slopes.max() - slopes.min() > 1000.0, (
+        f"expected genuine convexity under optional volume, got flat slopes {slopes}")
+    assert np.all(np.diff(np.abs(slopes)) <= 1e-6), (
+        f"slope magnitude should shrink monotonically as k rises: {slopes}")
+    for i in range(1, len(strikes) - 1):
+        k0, k1, k2 = strikes[i - 1], strikes[i], strikes[i + 1]
+        v0, v1, v2 = values[i - 1], values[i], values[i + 1]
+        chord = v0 + (v2 - v0) * (k1 - k0) / (k2 - k0)
+        assert v1 <= chord + 1e-6, f"convexity violated at K={k1}: {v1} > chord {chord}"
+
+
 def test_an_obligation_is_worth_less_than_the_same_right():
     """`call_swing` defaults to a mandatory quota, and that is not a call.
 
