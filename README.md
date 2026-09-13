@@ -48,6 +48,7 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 | `quote_data.py`, `delivery_model.py` | Auditable fixed-delivery panel, matched returns, data manifest and monthly-delivery observation functions |
 | `calibration.py`, `calibration-config.json` | Reproducible P-measure one- versus two-factor comparison with frozen training/holdout windows, multi-start fitting and identification gates |
 | `docs/CALIBRATION-SPECIFICATION-2026-09-11.md` | Current S6/S7 method, results, limitations and next course of action |
+| `reset_terms.py`, `reset_forward.py`, `reset_swing_exact.py` | Prototype (no real term sheet): a call swing whose strike resets monthly from the model's own month-ahead projection, not a fixed number. Point-reset exact benchmark only — see `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md` for what is and is not built |
 | `streamlit_app.py` | Unified single-contract app — term-sheet entry, valuation, diagnostics and downloads |
 | `pricing_app_core.py` | Streamlit-independent validation and export boundary for the unified app |
 | `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |

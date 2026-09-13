@@ -277,6 +277,12 @@ class Storage:
 
         self.fwd, self.x, q, p_u, p_m, p_d = build_tree(
             self.price_curve, self.n_t, self.n_p, self.sVol, self.sMR)
+        # Kept on the instance (not just used locally) so a conditional projection
+        # -- "what does the model expect a future date's price to be, given the
+        # node reached at an earlier date" -- can be built from the exact transition
+        # law actually implemented, without a second, independently-written copy of
+        # it drifting from this one. See reset_forward.py.
+        self.p_u, self.p_m, self.p_d = p_u, p_m, p_d
 
         self.v, self.strat = run_model(
             self.n_t, self.n_p, self.n_op, self.v_step, self.x, p_u, p_m, p_d,

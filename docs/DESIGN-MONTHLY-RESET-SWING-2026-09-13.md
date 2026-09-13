@@ -682,6 +682,45 @@ is required by every later solver. After it passes, build the point-reset exact 
 Only then choose the averaged-reset production implementation on measured state sizes and
 runtime, rather than assuming the dense lattice will be practical.
 
+**Done, 2026-09-14, no real term sheet -- an explicit prototype convention per sec.2.1/sec.14
+instead (call-only, month-end point reset, a model-internal index, global not per-month
+volume, no historical fixings):**
+
+- `reset_forward.py` -- the conditional month-ahead projection, exactly as this section
+  specifies (backward induction through the lattice's own `p_u`/`p_m`/`p_d`, no derived
+  closed form). `storage_kernels.py` untouched; `storage_model.py::Storage.build()` gained
+  three lines storing `p_u`/`p_m`/`p_d` on the instance (previously local to `build_tree`'s
+  caller) so this module reads the exact transition law an actual valuation used, not a
+  second copy of it. `tests/test_reset_forward.py`: one-step recursion and the tower identity
+  at kappa in {0, 1e-6, 0.3, 1.0, 4.0}, root value against the input forward, a kappa=0
+  sanity check, and the boundary-occupancy check sec.5.1 explicitly asks for (a tower
+  identity passing on a tree too narrow to trust, demonstrated directly, not just avoided).
+- `reset_terms.py` -- `ResetSwingTerms` and `build_reset_schedule`. Found and closed one
+  real gap while building this: a partial FINAL month would need a strike fixed from a date
+  after its own exercise had already stopped, which is refused outright (a partial FIRST
+  month is fine -- that month's settlement reference is unaffected by when exercise starts).
+  `tests/test_reset_terms.py` covers both, plus the fixing-strictly-precedes-exercise
+  property and refusing a fixing that would fall before val_date (no historical-fixing
+  input in this release).
+- `reset_swing_exact.py::value_point_reset_call_swing` -- the point-reset exact benchmark
+  itself (sec.7.1, sec.8), pure Python/NumPy. Uses sec.6.4's finding that a point reset's
+  `k` is an exact function of a single lattice node -- not a continuous quantity needing
+  its own interpolated grid -- so the state stays `(i, j, l, j_fix)` with `j_fix` an
+  index, not a separate `n_K`-sized discretisation. `tests/test_reset_swing_point.py`
+  pins it at near-zero volatility, where the model is deterministic and the answer is
+  hand-computable: a single-month mandatory case, a two-month case whose global (not
+  per-month) quota must be deferred across the month rotation for the right answer,
+  and an optional-volume case that must touch zero-margin days not at all. All three
+  matched their hand-computed values to the stated tolerance on the first correct run
+  of the algorithm; the two bugs found before that (curve silently hardcoded instead of
+  taken from the caller; a dead conditional left over from an earlier draft of the
+  within-month loop) were caught by review before any test ran, not by a failing test.
+
+**Not yet done:** sec.10.3's exhaustive-enumeration cross-check against a brute-force
+scenario tree, sec.10.4's convergence ladders (`n_p`, `n_l`, tree boundary), the averaged
+(non-point) reset, and everything in sec.14.7's fixture list beyond what the tests above
+already cover. 229 tests pass in the full repository suite (198 before this + 31 here).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable

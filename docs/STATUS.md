@@ -1,5 +1,24 @@
 # Project status
 
+**As of 2026-09-14 (monthly-reset swing, Phase 0/1).** No real term sheet exists for
+this feature -- built as a generic prototype per an explicit user request ("just strike
+price is changing month ahead, i.e. not fixed"), with every simplification named rather
+than silently assumed (call-only, month-end point reset, a model-internal index, global
+not per-month volume, no historical fixings). New: `reset_terms.py`
+(`ResetSwingTerms`/`build_reset_schedule`), `reset_forward.py` (the conditional
+month-ahead quote, by exact backward induction through the lattice's own transition
+probabilities -- no derived closed form, avoiding the class of risk S5 already found
+once), `reset_swing_exact.py::value_point_reset_call_swing` (the point-reset exact
+benchmark, pure Python/NumPy per the design's own "small reference, not production
+scale"). `storage_model.py::Storage.build()` gained three lines exposing `p_u`/`p_m`/`p_d`
+on the instance; `storage_kernels.py` untouched. Pinned at near-zero volatility, where
+the answer is hand-computable: single-month mandatory, two-month global-quota chaining
+across the month rotation, and optional-volume touching zero-margin days not at all --
+all three matched by construction, not by tuning. See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md)
+sec.13 for exactly what remains (exhaustive-enumeration cross-check, convergence ladders,
+the averaged reset). 229 tests pass (198 before this + 31 here).
+
 **As of 2026-09-11 (unified pricing app feature).** The single-contract Streamlit
 app now accepts complete put-swing, call-swing and storage term sheets. Storage
 inputs include independent days-to-fill and days-to-empty, exact opening/terminal
@@ -102,7 +121,7 @@ new S6/S7 verification.
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
 | Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
-| Tests | `python -m pytest -q` -> **194 passed** on the unified-app feature tree (the S6/S7 checkpoint was 183). The dated calibration results were regenerated from `calibration-config.json` after the S6/S7 implementation changes |
+| Tests | `python -m pytest -q` -> **229 passed** (the S6/S7 checkpoint was 183, the unified-app checkpoint 194). The dated calibration results were regenerated from `calibration-config.json` after the S6/S7 implementation changes |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
 
