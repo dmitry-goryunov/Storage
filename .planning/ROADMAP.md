@@ -5,6 +5,12 @@
 > [`docs/REVIEW-RESPONSE-2026-09-10.md`](../docs/REVIEW-RESPONSE-2026-09-10.md) and has not
 > been applied to the priorities below. In short: P1.4 and P1.1 rise to the top, P4.1 loses its
 > storage rationale and collapses into calibration with P3.4 and P4.3.
+>
+> **2026-09-11.** That re-ranking has now played out rather than staying a proposal: P1.1 and
+> P1.4 are done (Priority 1, below), and P4.1 has collapsed into calibration exactly as
+> predicted -- [`docs/CALIBRATION-SPECIFICATION-2026-09-11.md`](../docs/CALIBRATION-SPECIFICATION-2026-09-11.md)'s
+> S6/S7 market-panel comparison provisionally closes P4.1 (Priority 4, item 1) and leaves P3.4
+> and P4.3 as the two live calibration threads.
 
 This replaces planning derived from the stale Drive working tree.
 
@@ -157,10 +163,25 @@ absent field. The app treasury scenario is exercised end to end, and every code 
 4. Review the 0.9 default annualised volatility and document or change it with
    calibration evidence (remaining part of finding 16).
 
-## Deferred: calibration and backtesting
+   PARTLY ADDRESSED 2026-09-11: calibration evidence now exists and does not close this item.
+   `docs/CALIBRATION-SPECIFICATION-2026-09-11.md` fits a historical one-factor `sigma_chi` of
+   **0.7396** on the primary 2015-2022 window against **0.3793** pre-crisis -- nearly doubling
+   between windows, which is regime sensitivity, not noise. The fit is also under the
+   historical P measure with no P-to-Q restriction established, and a sizeable fitted
+   quote-noise term suggests some of that volatility is measurement error rather than true
+   price variance. Copying 0.7396 into `sVol` would trade one undocumented number for one that
+   looks documented but is not yet valid for valuation.
 
-**Decided 2026-09-10.** Both are deliberately deferred, not forgotten, and the reason is worth
-recording because the data for them is already in the repository.
+## Calibration: a first comparison is done; backtesting is still deferred
+
+**Decided 2026-09-10, updated 2026-09-11.** Backtesting remains deliberately deferred, not
+forgotten, and the reason is worth recording because the data for it is already in the
+repository. Calibration is no longer merely deferred -- S6 built the panel/return/manifest
+layer and S7 ran a first frozen model comparison against it; see
+[`docs/CALIBRATION-SPECIFICATION-2026-09-11.md`](../docs/CALIBRATION-SPECIFICATION-2026-09-11.md)
+for the method and results, and P4.1/P3.4 above for what it did and did not settle. A held-out
+statistical comparison of P-measure candidates is not a trading or hedging backtest -- that
+distinction is deliberate, and the backtest itself has not been built.
 
 `ttf q.xlsx` carries 4,117 day-ahead prints alongside the forward curves, 2010-03-12 to
 2026-03-06. CORRECTED 2026-09-10: the date *index* itself has only one- and three-day gaps
@@ -173,16 +194,24 @@ mid-year dates from 2011 to 2024 have a full year of realised prices after them.
 backtest is therefore mostly a matter of writing the harness, not of finding data, but the
 harness still has to handle the gaps rather than assume a clean three-day cadence.
 
-That matters because the two are one job. `sVol` 0.9 and `sMR` 1.0 have no provenance, and
-the same file gives 0.409, 1.083 and 0.549 across three regimes — a judgement about which
-regime the deal resembles, until a backtest turns it into an out-of-sample measurement.
+That matters because the two are one job. `sVol` 0.9 and `sMR` 1.0 still have no provenance as
+*valuation* inputs, and the same file gives 0.409, 1.083 and 0.549 across three regimes — a
+judgement about which regime the deal resembles, until a backtest turns it into an
+out-of-sample measurement. CORRECTED 2026-09-11: `sVol` is no longer entirely without
+provenance as a *historical* estimate — S7 fits 0.7396 (2015-2022) and 0.3793 (pre-crisis) —
+but the regime gap between those two numbers is itself the finding, and neither is a Q
+parameter or a backtested one. See P3.4 above.
 
-Until then every number this model produces remains verified rather than validated, and the
-P1 to P4 items below are improvements argued from first principles rather than from evidence.
+Every number this model produces remains verified rather than validated. P1, P2 and most of
+P4 below are still improvements argued from first principles rather than from evidence; P4.1
+is now the exception — it was closed by the S6/S7 evidence above, not by further first-
+principles argument, which is why it reads differently from the rest of this section.
 
 ## Priority 4: model capability
 
-Not defects. The model computes what it claims and 91 tests say so. These are things it
+Not defects. The model computes what it claims and the test suite says so (see
+[`docs/STATUS.md`](../docs/STATUS.md) for the current count, tied to a commit -- it has grown
+substantially since this section was written and will keep moving). These are things it
 cannot currently represent at all, found 2026-09-10 while pricing a 30/60 store, and ordered
 by what they are worth against what they cost.
 
@@ -192,6 +221,27 @@ by what they are worth against what they cost.
    first**: three of this item's original arguments were found wrong, and the two tables
    below predate that correction. Realised correlations since 2015 reproduce exactly: 0.801
    for c1/c6, 0.771 for c6/c12, 0.633 for c1/c24.
+
+   PROVISIONALLY CLOSED 2026-09-11, by an actual market-panel comparison rather than the
+   scenario probe below. `docs/CALIBRATION-SPECIFICATION-2026-09-11.md` fits one-factor,
+   independent two-factor and correlated two-factor candidates on 2,087 training snapshots
+   (2015-2022) against an untouched 2023-2026 holdout (830 snapshots), four dispersed starts
+   each, against predeclared gates (training BIC improvement >= 10, holdout NLL improvement
+   >= 0.01 per scalar observation). The independent two-factor model gains only **0.00222**
+   NLL/observation on holdout and its training BIC is **6.02 worse** -- fails the fit gate
+   outright. The correlated fit gains **0.000084**, has BIC **6.27 worse**, and drives
+   correlation to the imposed -0.95 boundary with a local-curvature condition number of
+   **23,165** against one factor's **13.6** -- confounded, not identified, so it fails both
+   the fit and the identification gate. A predeclared pre-crisis sensitivity (train through
+   2019, hold out 2020-2021) reaches the same one-factor decision for a sharper reason: both
+   richer candidates improve training fit and then forecast the crisis worse than one factor
+   does, and the one-factor `sigma_chi` itself moves from **0.3793** pre-crisis to **0.7396**
+   in the primary fit -- regime instability, not a stable calibration either candidate would
+   fix. Keep one factor for now; reopen only if that document's own state-space
+   measurement-noise and regime follow-up (its §8) changes the conclusion. The paragraphs and
+   tables below are the *scenario* case that motivated looking here, not the closing evidence,
+   and are kept for that context -- including the still-unreconciled table flagged further
+   down, which this closure does not resolve.
 
    CORRECTED 2026-09-10: the original "nine times too little" comparison for the c6/c12
    spread — 0.373 realised against 0.041 from the model — is **withdrawn**. It divided by
@@ -261,7 +311,9 @@ by what they are worth against what they cost.
 3. **Calibrate at what the product is sensitive to.** Related to P3.4 but sharper than it. A
    vol fitted to front-month spot returns is calibrated to the wrong quantity for a spread
    product, and the table above shows the answer swinging tenfold across plausible `sMR`.
-   Whatever is estimated, record the target alongside the estimate.
+   Whatever is estimated, record the target alongside the estimate. S7's regime-sensitivity
+   result (P4.1 above) is independent evidence for the same caution from a different angle:
+   the *window*, not just the *target quantity*, changes what gets estimated.
 
 Two smaller items already listed above were both hit in practice on 2026-09-10 and are worth
 re-reading in that light: integer clip rates (P1.4 -- a 30/65 deal needs a 390-state grid to
