@@ -102,6 +102,19 @@ class DeliveryMonth:
     label: pd.Period
     fixing_date: pd.Timestamp
     exercise_dates: tuple  # pd.Timestamp, ascending, within [storage_start, storage_end]
+    fixing_observation_dates: tuple  # pd.Timestamp, ascending: EVERY calendar day of the
+        # ONE calendar month immediately preceding this one -- independent of
+        # exercise_dates, per DESIGN-MONTHLY-RESET-SWING-2026-09-13.md sec.3's own
+        # "reset observations and exercise dates are separate calendars." The two
+        # coincide only when that preceding month is itself a COMPLETE delivery month
+        # in this same deal; for the deal's first delivery month (or any month whose
+        # predecessor falls partly or wholly before storage_start) they do not, and
+        # conflating them was a real, independent-review-found defect (2026-09-14
+        # INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02): the first delivery
+        # month's own average silently used every day since val_date instead of just
+        # its one contractual preceding month, and a partial first delivery month's
+        # own exercise days were silently substituted for the NEXT month's full
+        # preceding-month window.
 
 
 @dataclass(frozen=True)
@@ -119,6 +132,15 @@ def build_reset_schedule(terms):
     every exercise date in the month it sets the strike for, by construction: no
     fixing-after-exercise case can arise from this schedule, so there is nothing
     to validate at exercise time for it.
+
+    Each month's `fixing_observation_dates` is the FULL calendar month M-1, always
+    -- regardless of `exercise_dates` (see `DeliveryMonth`'s own docstring for why
+    these must be kept separate). `val_date` is required to precede the START of
+    every month's own fixing window, not merely its end (`fixing_date`): the
+    "wholly future" scope this prototype supports (sec.3.1's own three cases) means
+    no part of any window may already be historical, and a val_date landing INSIDE
+    a window used to pass the old end-only check while silently pricing as if the
+    whole window were still ahead.
     """
     start, end = terms.storage_start, terms.storage_end
     if end != sm.month_end(end):
@@ -142,16 +164,22 @@ def build_reset_schedule(terms):
         exercise_dates = tuple(pd.date_range(exercise_start, exercise_end, freq="D"))
 
         fixing_date = m_start - pd.Timedelta(days=1)
-        if fixing_date < terms.val_date:
+        fixing_window_start = sm.month_start(fixing_date)
+        if fixing_window_start <= terms.val_date:
             raise ValueError(
-                f"Delivery month {month_period}'s fixing date {fixing_date:%Y-%m-%d} "
-                f"is before val_date {terms.val_date:%Y-%m-%d} -- this prototype has "
-                f"no historical-fixing input, so storage_start must leave at least "
-                f"one full calendar month of lead time from val_date. Release 1B "
-                f"scope, per DESIGN-MONTHLY-RESET-SWING-2026-09-13.md sec.3.1.")
+                f"Delivery month {month_period}'s fixing observation window "
+                f"({fixing_window_start:%Y-%m-%d} .. {fixing_date:%Y-%m-%d}) starts on "
+                f"or before val_date {terms.val_date:%Y-%m-%d} -- this prototype has "
+                f"no historical-fixing input, so val_date must precede the START of "
+                f"every delivery month's own fixing window, not just its end "
+                f"({fixing_date:%Y-%m-%d}). storage_start must leave at least one "
+                f"full calendar month of lead time from val_date. Release 1B scope, "
+                f"per DESIGN-MONTHLY-RESET-SWING-2026-09-13.md sec.3.1.")
+        fixing_observation_dates = tuple(pd.date_range(fixing_window_start, fixing_date, freq="D"))
         assert fixing_date < exercise_dates[0], "fixing must strictly precede exercise"
 
-        months.append(DeliveryMonth(month_period, fixing_date, exercise_dates))
+        months.append(DeliveryMonth(month_period, fixing_date, exercise_dates,
+                                    fixing_observation_dates))
         cursor = m_end + pd.Timedelta(days=1)
 
     if not months:

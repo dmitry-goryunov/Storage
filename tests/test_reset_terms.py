@@ -49,6 +49,71 @@ def test_a_partial_first_month_is_clipped_to_the_deal_window():
     assert april.exercise_dates[-1] == pd.Timestamp("2026-04-30")
 
 
+def test_fixing_observation_dates_is_the_full_calendar_month_not_exercise_dates():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02: a delivery
+    month's own `fixing_observation_dates` must be EVERY calendar day of the
+    month before it, independent of `exercise_dates` -- the two coincide only
+    when that preceding month is a COMPLETE delivery month in this same deal.
+    March here is partial (15-31, clipped by storage_start), but April's own
+    fixing_observation_dates must still be the FULL 1-31 March: the strike
+    index is a contractual calendar, not the deal's own exercise window."""
+    terms = _terms(storage_start="2026-03-15", storage_end="2026-04-30")
+    schedule = rt.build_reset_schedule(terms)
+    march, april = schedule.months
+
+    assert march.fixing_observation_dates[0] == pd.Timestamp("2026-02-01")
+    assert march.fixing_observation_dates[-1] == pd.Timestamp("2026-02-28")
+    assert len(march.fixing_observation_dates) == 28
+
+    assert april.fixing_observation_dates[0] == pd.Timestamp("2026-03-01")
+    assert april.fixing_observation_dates[-1] == pd.Timestamp("2026-03-31")
+    assert len(april.fixing_observation_dates) == 31
+    # The point of the fix: April's window is wider than March's own exercise
+    # window (15-31), reaching back to cover all of March, not just the days
+    # this deal actually delivers on.
+    assert april.fixing_observation_dates[0] < march.exercise_dates[0]
+    assert set(march.exercise_dates) < set(april.fixing_observation_dates)
+
+
+def test_fixing_observation_dates_matches_exercise_dates_for_a_complete_month():
+    """For a month that is NOT the deal's (possibly partial) first one, its own
+    exercise window already spans the whole calendar month, so the next
+    month's fixing_observation_dates and this month's exercise_dates coincide
+    exactly -- the degenerate case the original (buggy) implementation happened
+    to get right, per R-02's own account of why the bug went unnoticed."""
+    terms = _terms(storage_start="2026-03-01", storage_end="2026-05-31")
+    schedule = rt.build_reset_schedule(terms)
+    march, april, may = schedule.months
+    assert april.fixing_observation_dates == march.exercise_dates
+    assert may.fixing_observation_dates == april.exercise_dates
+
+
+def test_valuation_inside_a_fixing_window_is_refused_not_silently_shortened():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01 point 4: val_date
+    must precede the START of every month's fixing window, not merely its end
+    (the old check). storage_start leaves a full calendar month of lead time
+    from storage_start's own month, but val_date itself lands inside that
+    window (10 February, with the window being all of February) -- must be
+    refused, not silently averaged over only the remaining Feb 10-28."""
+    with pytest.raises(ValueError, match="must precede the START"):
+        rt.build_reset_schedule(_terms(val_date="2026-02-10", storage_start="2026-03-01"))
+
+
+def test_valuation_exactly_on_the_fixing_window_start_is_refused():
+    """The boundary case: val_date lands exactly on the window's first day,
+    not merely inside it -- must still be refused (strictly before, not
+    before-or-equal), since that whole day's own observation is not yet
+    available at valuation."""
+    with pytest.raises(ValueError, match="must precede the START"):
+        rt.build_reset_schedule(_terms(val_date="2026-02-01", storage_start="2026-03-01"))
+
+
+def test_valuation_the_day_before_the_fixing_window_starts_is_accepted():
+    terms = _terms(val_date="2026-01-31", storage_start="2026-03-01")
+    schedule = rt.build_reset_schedule(terms)
+    assert schedule.months[0].fixing_observation_dates[0] == pd.Timestamp("2026-02-01")
+
+
 def test_a_partial_final_month_is_refused_not_guessed():
     """storage_end mid-month would need a strike fixed from a date after
     exercise has already stopped -- a real settlement question this generic
@@ -130,8 +195,10 @@ def test_a_global_volume_not_expressible_on_the_grid_is_refused():
 def test_a_single_day_window_on_a_month_end_still_has_one_month():
     # storage_end before storage_start can't happen (constructor refuses it);
     # this is the smallest non-empty window the schedule builder accepts, to
-    # confirm it doesn't need multiple days to produce a month.
-    terms = _terms(val_date="2026-01-01", storage_start="2026-02-28", storage_end="2026-02-28")
+    # confirm it doesn't need multiple days to produce a month. val_date is
+    # 2025-12-31, not 2026-01-01: the fixing window is the full calendar month
+    # of January, and val_date must precede its START, not land exactly on it.
+    terms = _terms(val_date="2025-12-31", storage_start="2026-02-28", storage_end="2026-02-28")
     schedule = rt.build_reset_schedule(terms)
     assert len(schedule.months) == 1
     assert schedule.months[0].exercise_dates == (pd.Timestamp("2026-02-28"),)

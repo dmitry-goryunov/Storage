@@ -1,5 +1,30 @@
 # Project status
 
+**As of 2026-09-14 (P0 fix: the averaged reset's fixing window was wrong).** An independent
+review ([`docs/INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md`](INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md))
+found, and this project's own re-derivation from the design doc's own stated convention
+independently confirmed before any fix was written, that Release 1B averaged the reset strike
+over the WRONG window: the deal's first delivery month averaged over every calendar day since
+`val_date` instead of just the one contractual preceding month (R-01), and a partial delivery
+month's own accumulation toward the next month's strike silently dropped the days before its
+own exercise window began (R-02). Both were invisible to every brute-force test built so far,
+which checked "is the average computed correctly for whatever window it's given," never "is
+the window itself the contractual one." Fixed at every layer: `reset_terms.DeliveryMonth`
+gains an explicit `fixing_observation_dates` field (the true calendar-month window,
+independent of `exercise_dates`), `ResetSwingTerms` now refuses a `val_date` landing inside any
+month's fixing window (not just after it), and both the Numba kernel and its Python reference
+now accumulate over the full window with exercise applied only on the trailing exercise days.
+Verified with two NEW discriminative brute-force tests (the old, wrong window is shown to
+differ from the correct one by ~125%, not a rounding-level gap, proving the tests would have
+caught the original bug) plus 6 more pinning the schedule-layer fix directly. 270 tests pass
+(262 before this + 8). **Every PV, delta and runtime figure reported before this entry --
+including in `MonthlyResetSwing.ipynb` and everywhere in `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`
+before this fix -- was computed under the wrong window and is not representative of the
+corrected code; none has been recomputed or republished yet.** See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md)
+for the full account, including the other, still-open findings (R-03 through R-11) from the
+same review.
+
 **As of 2026-09-14 (Release 2: Numba kernel).** "Stay in DP" now holds at production scale.
 `reset_swing_kernels.py` (new, mirroring `storage_kernels.py`'s own established pattern and
 its reasoning for living in a separate module from the wrapper code it's called from) adds
@@ -245,7 +270,7 @@ new S6/S7 verification.
 | | |
 |---|---|
 | Repository | [dmitry-goryunov/Storage](https://github.com/dmitry-goryunov/Storage) — the single writable source. `origin` points here directly as of 2026-09-10; it had been on the pre-rename `dmitrygoryunov2000` URL and reaching this one through a GitHub redirect |
-| Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, tracking `main`. **Stays on Drive by decision, 2026-09-09** — see the note below |
+| Working copy | `H:\My Drive\Github\dmitry-goryunov\Storage`, currently on `feature/unified-pricing-app` (13 ahead / 2 behind `main` as of 2026-09-14 — not yet merged). **Stays on Drive by decision, 2026-09-09** — see the note below |
 | Tests | `python -m pytest -q` -> **244 passed** (183 at S6/S7, 194 at the unified-app checkpoint, 229 after reset-swing Phase 0/1, 238 after the real-vol/convergence pass). The dated calibration results were regenerated from `calibration-config.json` after the S6/S7 implementation changes |
 | CI | `.github/workflows/test.yml`, pinned from `requirements-lock.txt`, on every push and PR |
 | Environment | System Python 3.12. There is deliberately no venv in the Drive folder — build one outside it. **It is not the pinned environment**: the working machine runs NumPy 2.4.3 / pandas 2.3.3 / SciPy 1.17.1 / Numba 0.65.1 against `requirements-lock.txt`'s 2.5.3 / 3.0.5 / 1.18.1 / 0.67.0, so a green local run is evidence about this machine, not about CI |
@@ -468,7 +493,8 @@ charts. The other committed outputs are unchanged by this review.
 | [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
 | [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |
-| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A) and averaged-reset (Release 1B) are built, brute-force verified (including the multi-month chaining path), delta-hedged and wired into `MonthlyResetSwing.ipynb`; a Numba kernel (`reset_swing_kernels.py`) now makes production-scale sizing (Release 2) practical, ~30-40x faster than the pure-Python DP it replaced in the hot path |
+| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Point-reset (Release 1A) is a credible restricted prototype (independent review's own assessment). Averaged-reset (Release 1B) had a P0 fixing-window defect found by independent review and fixed 2026-09-14 -- now brute-force verified against the CORRECTED window, including the multi-month chaining path -- but the review's other findings (R-03 through R-11: restricted scope, missing result object, production memory, more) are still open. A Numba kernel (`reset_swing_kernels.py`) makes production-scale sizing (Release 2) practical, ~30-40x faster than the pure-Python DP it replaced |
+| [`docs/INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md`](INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md) | The independent review that found the averaged-reset P0 fixing-window defect (R-01/R-02, since fixed) and ten other findings (R-03 through R-11), most still open |
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |

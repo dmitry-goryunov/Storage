@@ -159,15 +159,21 @@ def _run_accumulation_only(lattice, dates, r_grid, quote_by_date, terminal_value
     return v
 
 
-def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
-              v_step, daily_max_clips):
+def _run_month(lattice, month, r_grid, quotes_for_next_month, fixing_observation_dates,
+              terminal_value, v_step, daily_max_clips):
     """One delivery month M, for every incoming accumulator bucket in r_grid
     (fixing K_M = r_grid[k], the identity reset formula -- sec.2's simple
     case) at once. `terminal_value`: a SINGLE (width, n_l) array -- the SAME
     for every k, because K_M does not affect anything after month M ends.
     `quotes_for_next_month`: (n_t, width) array, H[month_end(M+1)][i, :] for
-    every date i -- this month's own days are M+1's accumulation window; None
-    for the deal's last month (nothing left to accumulate for).
+    every date i. `fixing_observation_dates`: M+1's OWN fixing-observation
+    window (`schedule.months[idx+1].fixing_observation_dates`) -- the FULL
+    calendar month M itself falls in, independent of M's own `exercise_dates`
+    (see `reset_terms.DeliveryMonth`'s own docstring for why these must be
+    kept separate: 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02
+    found the two conflated, silently wrong whenever M is a partial delivery
+    month). Both `quotes_for_next_month` and `fixing_observation_dates` are
+    None together for the deal's last month (nothing left to accumulate for).
 
     Returns a list of n_r arrays, one per incoming bucket k: (width, n_l, n_r)
     if accumulating (the fresh, not-yet-collapsed outgoing axis -- the
@@ -186,7 +192,8 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
     own docstring, and tests/test_reset_swing_kernels.py, which checks the two
     agree). The deal's LAST month (`accumulate=False`) keeps the plain Python
     loop below directly: it has no r-axis interpolation of its own and was
-    never the bottleneck (sec.13's Release 2 measurement).
+    never the bottleneck (sec.13's Release 2 measurement), and no separate
+    fixing-observation calendar either (there is no month after it to fix).
     """
     date_span = lattice["date_span"]
     x, p_u, p_m, p_d, d_curve = (lattice["x"], lattice["p_u"], lattice["p_m"],
@@ -205,11 +212,19 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
             f"got shape {terminal_value.shape}")
 
     if accumulate:
-        exercise_indices_arr = np.asarray(exercise_indices, dtype=np.int64)
+        fixing_indices = [date_span.get_loc(d) for d in fixing_observation_dates]
+        n_exercise_days = len(exercise_indices)
+        assert fixing_indices[-n_exercise_days:] == exercise_indices, (
+            f"{month.label}: fixing_observation_dates must end exactly at "
+            f"this month's own exercise_dates -- they cover the same calendar "
+            f"month by construction, so a mismatch here means the schedule "
+            f"itself is wrong, not just this call's arguments.")
+        fixing_indices_arr = np.asarray(fixing_indices, dtype=np.int64)
         stacked = rsk.run_month_accumulate_core(
             np.ascontiguousarray(x), np.ascontiguousarray(p_u), np.ascontiguousarray(p_m),
-            np.ascontiguousarray(p_d), np.ascontiguousarray(d_curve), exercise_indices_arr,
-            fixing_idx, np.ascontiguousarray(r_grid), np.ascontiguousarray(quotes_for_next_month),
+            np.ascontiguousarray(p_d), np.ascontiguousarray(d_curve), fixing_indices_arr,
+            n_exercise_days, np.ascontiguousarray(r_grid),
+            np.ascontiguousarray(quotes_for_next_month),
             np.ascontiguousarray(terminal_value), float(v_step), int(daily_max_clips))
         return [stacked[k] for k in range(n_r)]
 
@@ -231,7 +246,8 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
     return results
 
 
-def _run_month_accumulate_reference(lattice, month, r_grid, quotes_for_next_month, terminal_value,
+def _run_month_accumulate_reference(lattice, month, r_grid, quotes_for_next_month,
+                                    fixing_observation_dates, terminal_value,
                                     v_step, daily_max_clips):
     """`_run_month`'s own accumulate=True path BEFORE it was wired to the
     Numba kernel -- the pure-Python `for k in range(n_r)` loop over
@@ -242,31 +258,44 @@ def _run_month_accumulate_reference(lattice, month, r_grid, quotes_for_next_mont
     itself); exists ONLY so a change to the kernel has something independent,
     slow-but-trusted to be checked against, the same role
     `_run_month_for_one_fixing_node` plays for the point-reset benchmark.
+
+    Walks `fixing_observation_dates` (the FULL fixing window for the month
+    after this one), not `month.exercise_dates`: every one of those days
+    folds into the running average, but only its trailing suffix -- this
+    month's own actual `exercise_dates` -- also gets an exercise decision.
+    Because `fixing_observation_dates` always reaches back to this month's
+    own fixing date already (it IS the calendar month this delivery month
+    falls in), no separate gap-closing propagation is needed afterwards --
+    unlike `_run_month`'s own `accumulate=False` branch above, which still
+    needs one for a different reason (this month's OWN lead-in gap between
+    its fixing date and its first exercise day, when this month itself is a
+    partial one).
     """
     date_span = lattice["date_span"]
     x, p_u, p_m, p_d, d_curve = (lattice["x"], lattice["p_u"], lattice["p_m"],
                                  lattice["p_d"], lattice["d_curve"])
     exercise_indices = [date_span.get_loc(d) for d in month.exercise_dates]
-    fixing_idx = date_span.get_loc(month.fixing_date)
+    fixing_indices = [date_span.get_loc(d) for d in fixing_observation_dates]
     n_r = len(r_grid)
-    n_days = len(exercise_indices)
+    n_fixing_days = len(fixing_indices)
+    n_exercise_days = len(exercise_indices)
+    assert fixing_indices[-n_exercise_days:] == exercise_indices, (
+        f"{month.label}: fixing_observation_dates must end exactly at this "
+        f"month's own exercise_dates.")
 
     results = []
     for k in range(n_r):
         strike = float(r_grid[k])
         v = terminal_value.copy()
 
-        for pos, i in enumerate(reversed(exercise_indices)):
-            spot = np.exp(x[i, :])
-            weight_so_far = float(n_days - 1 - pos)
+        for pos, i in enumerate(reversed(fixing_indices)):
+            weight_so_far = float(n_fixing_days - 1 - pos)
             v = accumulate_step(v, r_grid, quotes_for_next_month[i, :], weight_so_far, 1.0)
-            v = _exercise_step_3d(v, spot, strike, d_curve[i], v_step, daily_max_clips)
+            if pos < n_exercise_days:
+                spot = np.exp(x[i, :])
+                v = _exercise_step_3d(v, spot, strike, d_curve[i], v_step, daily_max_clips)
             if i > 0:
                 v = _propagate_price_step_3d(v, p_u[i - 1, :], p_m[i - 1, :], p_d[i - 1, :])
-
-        first_i = exercise_indices[0]
-        for i in range(first_i - 2, fixing_idx - 1, -1):
-            v = _propagate_price_step_3d(v, p_u[i, :], p_m[i, :], p_d[i, :])
         results.append(v)
     return results
 
@@ -385,11 +414,13 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
     for idx in range(len(months) - 1, -1, -1):
         month = months[idx]
         quotes_next = None
+        fixing_obs_next = None
         if idx + 1 < len(months):
             u_next = date_span.get_loc(month_ends[idx + 1])
             quotes_next = all_h[u_next]
-        results = _run_month(lattice, month, r_grid, quotes_next, terminal_value,
-                             v_step, daily_max_clips)
+            fixing_obs_next = months[idx + 1].fixing_observation_dates
+        results = _run_month(lattice, month, r_grid, quotes_next, fixing_obs_next,
+                             terminal_value, v_step, daily_max_clips)
         if quotes_next is None:
             # results[k] is already (width, n_l): no outgoing axis to collapse.
             collapsed = results
@@ -409,19 +440,31 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
         terminal_value = np.stack(collapsed, axis=-1)
     # After the loop, `first_month_terminal_by_r_in[k]` is the value at month
     # 1's own fixing date given K_1 = r_grid[k]. K_1 is not a free choice --
-    # it is whatever the pre-deal window (val_date .. month 1's fixing date)
+    # it is whatever month 1's own fixing-observation window (the ONE calendar
+    # month immediately before it -- NOT "every day since val_date", a real
+    # bug 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01 found here)
     # actually accumulates, generally with real randomness. Reuse the exact
     # same accumulation machinery for that window, not a shortcut.
     u_first = date_span.get_loc(month_ends[0])
     pre_deal_quotes = all_h[u_first]
-    pre_deal_dates = list(pd.date_range(terms.val_date, months[0].fixing_date, freq="D"))[1:]
+    fixing_window = months[0].fixing_observation_dates
     v_by_r_l0 = np.stack([arr[:, 0] for arr in first_month_terminal_by_r_in], axis=1)  # (width, n_r)
-    if pre_deal_dates:
-        quote_by_date = {d: pre_deal_quotes[date_span.get_loc(d), :] for d in pre_deal_dates}
-        v_at_root_by_r = _run_accumulation_only(
-            lattice, pre_deal_dates, r_grid, quote_by_date, v_by_r_l0)
-    else:
-        v_at_root_by_r = v_by_r_l0
+    quote_by_date = {d: pre_deal_quotes[date_span.get_loc(d), :] for d in fixing_window}
+    v_at_window_start_by_r = _run_accumulation_only(
+        lattice, fixing_window, r_grid, quote_by_date, v_by_r_l0)
+    # `_run_accumulation_only` lands at (fixing_window[0]'s index - 1) -- the
+    # calendar day right before the fixing window itself starts (NOT month 1's
+    # own fixing_date, which is the window's LAST day, not the day before its
+    # first). If val_date sits further back than that (the deal was valued
+    # more than one month ahead of the first fixing window -- the schedule's
+    # own validation only requires "before", not "immediately
+    # before"), the value must still propagate the rest of the way back to
+    # val_date with NO further accumulation: nothing is observed in that gap.
+    window_start_idx = date_span.get_loc(fixing_window[0])
+    v_at_root_by_r = v_at_window_start_by_r
+    for i in range(window_start_idx - 2, -1, -1):
+        v_at_root_by_r = rse._propagate_one_step(
+            v_at_root_by_r, lattice["p_u"][i, :], lattice["p_m"][i, :], lattice["p_d"][i, :])
 
     root_row = v_at_root_by_r[terms.n_p, :]
     spread = float(root_row.max() - root_row.min())

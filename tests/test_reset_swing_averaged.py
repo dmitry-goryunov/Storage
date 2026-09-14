@@ -41,6 +41,25 @@ into again:
 Once a scenario respects all four, the DP and the brute force agree to
 ~1e-12 to ~1e-14 (tighter than point-reset's own 1e-9 bar, since n_p=1 here
 leaves essentially no lattice-approximation error to absorb).
+
+A fifth trap, found later by an independent review rather than by these
+tests (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02): every
+brute-force scenario below originally built its "fixing window" implicitly,
+by choosing `exercise_dates` and a pre-deal window that happened to coincide
+with the ONE calendar month the design actually specifies -- so the tests
+above never exercised, and could not have caught, the production code
+silently averaging over every day since val_date (R-01) or over only the
+current month's own exercise days when partial (R-02), instead of the full
+preceding calendar month either way. That defect is now pinned directly, in
+`test_reset_terms.py` (the schedule's own `fixing_observation_dates` field)
+and in `tests/test_reset_swing_kernels.py` (the kernel's handling of
+fixing-only days that carry no exercise decision) -- both against literal
+brute-force enumeration with a DISCRIMINATIVE scenario (curve/gap shaped so
+the old, wrong window gives a materially different answer, not one that
+happens to agree by symmetry). The tests below still pin what they always
+did (the accumulation/chaining arithmetic, given whatever window it is
+handed) and now pass a `fixing_observation_dates` argument explicitly rather
+than relying on it being implicit.
 """
 import numpy as np
 import pandas as pd
@@ -101,13 +120,14 @@ def test_matches_brute_force_enumeration_with_averaged_strike():
     v_step = 1_000.0
     daily_max_clips = 1
     terminal_value = np.array([[-np.inf, 0.0]] * width)  # must end with l == 1
-    month = rt.DeliveryMonth(label=None, fixing_date=fixing_date, exercise_dates=(day_E1, day_E2))
+    month = rt.DeliveryMonth(label=None, fixing_date=fixing_date, exercise_dates=(day_E1, day_E2),
+                             fixing_observation_dates=(day_E1, day_E2))  # last month: unused by _run_month
 
     Ks = np.array([[(H[i_P1, jp1] + H[i_P2, jp2]) / 2.0 for jp2 in range(width)]
                    for jp1 in range(width)])
     r_grid = np.linspace(Ks.min() - 0.5, Ks.max() + 0.5, 1001)
 
-    results = rsa._run_month(lattice, month, r_grid, None, terminal_value, v_step, daily_max_clips)
+    results = rsa._run_month(lattice, month, r_grid, None, None, terminal_value, v_step, daily_max_clips)
     v_by_r_l0 = np.stack([arr[:, 0] for arr in results], axis=1)  # (width, n_r)
     quote_by_date = {day_P1: H[i_P1, :], day_P2: H[i_P2, :]}
     v_at_root = rsa._run_accumulation_only(lattice, [day_P1, day_P2], r_grid, quote_by_date, v_by_r_l0)
@@ -209,8 +229,16 @@ def test_matches_brute_force_enumeration_across_two_delivery_months():
     v_step = 1_000.0
     daily_max_clips = 1
     terminal_value_B = np.array([[-np.inf, 0.0]] * width)  # must end with l == 1
-    month_A = rt.DeliveryMonth(label=None, fixing_date=fixing_A, exercise_dates=(day_A1,))
-    month_B = rt.DeliveryMonth(label=None, fixing_date=fixing_B, exercise_dates=(day_B1,))
+    # month_A's own fixing_observation_dates is never read here (nothing feeds
+    # INTO month_A -- it's the deal's first month) -- placeholder only.
+    month_A = rt.DeliveryMonth(label=None, fixing_date=fixing_A, exercise_dates=(day_A1,),
+                               fixing_observation_dates=(day_P0,))
+    # month_B's fixing_observation_dates IS the key input: the degenerate
+    # one-day case (equal to month_A's own exercise_dates), matching this
+    # test's own premise -- the "extends earlier than exercise" case is
+    # covered separately and more thoroughly in tests/test_reset_swing_kernels.py.
+    month_B = rt.DeliveryMonth(label=None, fixing_date=fixing_B, exercise_dates=(day_B1,),
+                               fixing_observation_dates=(day_A1,))
 
     # r_grid must bracket BOTH K_A's range and K_B's range -- see the module
     # docstring's trap 4, found precisely by this test's own first attempt.
@@ -218,9 +246,10 @@ def test_matches_brute_force_enumeration_across_two_delivery_months():
     hi = max(H_A[i_P0, :].max(), H_B[i_A1, :].max()) + 1.0
     r_grid = np.linspace(lo, hi, 2001)
 
-    results_B = rsa._run_month(lattice, month_B, r_grid, None, terminal_value_B, v_step, daily_max_clips)
+    results_B = rsa._run_month(lattice, month_B, r_grid, None, None, terminal_value_B, v_step, daily_max_clips)
     terminal_value_A = np.stack(results_B, axis=-1)  # (width, n_l, n_r): B's own results, stacked for A
-    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, terminal_value_A, v_step, daily_max_clips)
+    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
+                               terminal_value_A, v_step, daily_max_clips)
     collapsed_A = rsa._collapse_fresh_axis(results_A, label="A")
     v_by_r_l0 = np.stack([arr[:, 0] for arr in collapsed_A], axis=1)  # (width, n_r), fn of K_A
     quote_by_date = {day_P0: H_A[i_P0, :]}
@@ -252,6 +281,211 @@ def test_matches_brute_force_enumeration_across_two_delivery_months():
                 p_jB1[jB1] * dc[i_B1] * v_step * (spotB1[jB1] - K_B)
                 for jB1 in range(width) if p_jB1[jB1] > 1e-15)
             total += w0 * w1 * max(exercise_now, wait_then_forced_at_B)
+
+    assert code_pv == pytest.approx(total, abs=1e-6), (
+        f"DP+interpolation: {code_pv}, brute force: {total}")
+
+
+def test_pre_deal_window_averages_only_the_one_preceding_month_not_every_day_since_valuation():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01, pinned directly
+    against literal brute-force enumeration. Two "gap" days (val_date+1,
+    val_date+2) sit BEFORE the actual one-month fixing window (two more days,
+    immediately following); the deal's only month has a single, OPTIONAL
+    exercise day right after that. The gap days must propagate WITHOUT
+    accumulating anything -- only the fixing window itself may fold into K.
+
+    Deliberately uses OPTIONAL (not mandatory) exercise: a mandatory single
+    clip's expected payoff is exactly zero regardless of which days get
+    averaged (by the tower property -- E[spot] = E[K] either way, since every
+    day's own H observation is already an unbiased conditional expectation of
+    spot), so it cannot distinguish a correct window from a wrong one. This
+    scenario's own numbers prove that distinction is real: the CORRECT
+    2-day-window brute force below and the WRONG 4-day-window brute force
+    (averaging the gap days in too, i.e. exactly the pre-fix defect) differ by
+    about 125%, not a rounding-level difference.
+    """
+    n_p = 1
+    width = 2 * n_p + 1
+    val_date = pd.Timestamp("2026-01-01")
+    day_G1, day_G2 = pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-03")  # gap: no accumulation
+    day_F1, day_F2 = pd.Timestamp("2026-01-04"), pd.Timestamp("2026-01-05")  # the ACTUAL fixing window
+    fixing_A = day_F2
+    day_A1 = pd.Timestamp("2026-01-06")  # the deal's only exercise day, optional
+    end_date = pd.Timestamp("2026-01-20")
+
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-01-01":"2026-01-05"] = 26.0
+    curve.loc["2026-01-06":] = 24.0
+
+    lattice = rf.build_lattice(val_date, fixing_A, end_date, vol=0.6, sMR=1.0,
+                              n_p=n_p, daily_curve=curve, discount_rate=0.08)
+    date_span = lattice["date_span"]
+    quotes = rf.project_month_end_quotes(lattice, [day_A1])
+    u_A = date_span.get_loc(day_A1)
+    H_A = quotes[u_A]
+    i_G1, i_G2, i_F1, i_F2, i_A1 = (date_span.get_loc(d) for d in (day_G1, day_G2, day_F1, day_F2, day_A1))
+
+    v_step = 1_000.0
+    daily_max_clips = 1
+    terminal_value = np.array([[0.0, 0.0]] * width)  # OPTIONAL: both l=0 and l=1 admissible
+    month_A = rt.DeliveryMonth(label=None, fixing_date=fixing_A, exercise_dates=(day_A1,),
+                               fixing_observation_dates=(day_F1, day_F2))
+    fixing_window = month_A.fixing_observation_dates
+
+    lo = H_A[[i_G1, i_G2, i_F1, i_F2], :].min() - 1.0
+    hi = H_A[[i_G1, i_G2, i_F1, i_F2], :].max() + 1.0
+    r_grid = np.linspace(lo, hi, 8001)
+
+    results = rsa._run_month(lattice, month_A, r_grid, None, None, terminal_value, v_step, daily_max_clips)
+    v_by_r_l0 = np.stack([arr[:, 0] for arr in results], axis=1)
+    quote_by_date = {d: H_A[date_span.get_loc(d), :] for d in fixing_window}
+    v_at_window_start = rsa._run_accumulation_only(lattice, fixing_window, r_grid, quote_by_date, v_by_r_l0)
+    window_start_idx = date_span.get_loc(fixing_window[0])
+    v_at_root = v_at_window_start
+    for i in range(window_start_idx - 2, -1, -1):
+        v_at_root = rse._propagate_one_step(
+            v_at_root, lattice["p_u"][i, :], lattice["p_m"][i, :], lattice["p_d"][i, :])
+    root_row = v_at_root[n_p, :]
+    assert root_row.max() - root_row.min() < 1e-6, "root value should not depend on the starting r bucket"
+    code_pv = float(root_row[0])
+
+    p_u, p_m, p_d, x, dc = (lattice["p_u"], lattice["p_m"], lattice["p_d"],
+                            lattice["x"], lattice["d_curve"])
+    spotA1 = np.exp(x[i_A1, :])
+    p_jG1 = _forward_point_mass(p_u, p_m, p_d, 0, n_p, i_G1, width)
+
+    total_correct = 0.0
+    total_old_buggy = 0.0
+    for jG1 in range(width):
+        wG1 = p_jG1[jG1]
+        if wG1 < 1e-15:
+            continue
+        p_jG2 = _forward_point_mass(p_u, p_m, p_d, i_G1, jG1, i_G2, width)
+        for jG2 in range(width):
+            wG2 = p_jG2[jG2]
+            if wG2 < 1e-15:
+                continue
+            p_jF1 = _forward_point_mass(p_u, p_m, p_d, i_G2, jG2, i_F1, width)
+            for jF1 in range(width):
+                w1 = p_jF1[jF1]
+                if w1 < 1e-15:
+                    continue
+                p_jF2 = _forward_point_mass(p_u, p_m, p_d, i_F1, jF1, i_F2, width)
+                for jF2 in range(width):
+                    w2 = p_jF2[jF2]
+                    if w2 < 1e-15:
+                        continue
+                    K_correct = (float(H_A[i_F1, jF1]) + float(H_A[i_F2, jF2])) / 2.0
+                    K_old_buggy = (float(H_A[i_G1, jG1]) + float(H_A[i_G2, jG2])
+                                  + float(H_A[i_F1, jF1]) + float(H_A[i_F2, jF2])) / 4.0
+                    p_jA1 = _forward_point_mass(p_u, p_m, p_d, i_F2, jF2, i_A1, width)
+                    for jA1 in range(width):
+                        w3 = p_jA1[jA1]
+                        if w3 < 1e-15:
+                            continue
+                        prob = wG1 * wG2 * w1 * w2 * w3
+                        total_correct += prob * max(dc[i_A1] * v_step * (spotA1[jA1] - K_correct), 0.0)
+                        total_old_buggy += prob * max(dc[i_A1] * v_step * (spotA1[jA1] - K_old_buggy), 0.0)
+
+    assert code_pv == pytest.approx(total_correct, abs=1e-6), (
+        f"DP+interpolation: {code_pv}, brute force (correct 2-day window): {total_correct}")
+    # The discriminating check: the pre-fix window (averaging the 2 gap days
+    # in too) gives a materially different answer, not a near-miss -- proving
+    # this scenario really does distinguish correct from wrong, not just
+    # exercise arithmetic that would pass either way.
+    relative_gap = abs(total_old_buggy - total_correct) / total_correct
+    assert relative_gap > 0.5, (
+        f"expected the old, wrong 4-day window to differ substantially from the "
+        f"correct 2-day one (it should, by ~125%): correct={total_correct}, "
+        f"old-buggy-window={total_old_buggy}, relative_gap={relative_gap}")
+
+
+def test_a_fixing_only_day_folds_into_the_next_months_strike_without_its_own_exercise():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-02, pinned directly
+    against literal brute-force enumeration. Month A's own calendar month
+    spans two days (day_X0, day_A1), but month A is the deal's PARTIAL first
+    delivery month, so only day_A1 is actually exercisable -- day_X0 is
+    before storage_start, a fixing-only day with no exercise decision at all.
+    Month B's strike K_B must still average BOTH days (the property under
+    test): `fixing_observation_dates` for month B is (day_X0, day_A1), wider
+    than month A's own `exercise_dates` of (day_A1,) alone.
+    """
+    n_p = 1
+    width = 2 * n_p + 1
+    val_date = pd.Timestamp("2026-01-01")
+    day_P0 = pd.Timestamp("2026-01-02")  # val_date + 1 -- month A's own (1-day) pre-deal window
+    fixing_A = day_P0
+    day_X0 = pd.Timestamp("2026-01-03")  # month A's calendar day 1 -- NOT exercisable
+    day_A1 = pd.Timestamp("2026-01-04")  # month A's ONLY exercise day; also its calendar day 2 (month end)
+    fixing_B = day_A1                     # month B's fixing == month A's own last calendar day
+    day_B1 = pd.Timestamp("2026-01-05")  # month B's only exercise day
+    end_date = pd.Timestamp("2026-01-20")
+
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-01-01":"2026-01-04"] = 26.0
+    curve.loc["2026-01-05":] = 24.0
+
+    lattice = rf.build_lattice(val_date, fixing_A, end_date, vol=0.6, sMR=1.0,
+                              n_p=n_p, daily_curve=curve, discount_rate=0.08)
+    date_span = lattice["date_span"]
+    quotes = rf.project_month_end_quotes(lattice, [day_A1, day_B1])
+    u_A, u_B = date_span.get_loc(day_A1), date_span.get_loc(day_B1)
+    H_A, H_B = quotes[u_A], quotes[u_B]
+    i_P0, i_X0, i_A1, i_B1 = (date_span.get_loc(d) for d in (day_P0, day_X0, day_A1, day_B1))
+
+    v_step = 1_000.0
+    daily_max_clips = 1
+    terminal_value_B = np.array([[-np.inf, 0.0]] * width)  # mandatory: must end with l == 1
+    month_A = rt.DeliveryMonth(label=None, fixing_date=fixing_A, exercise_dates=(day_A1,),
+                               fixing_observation_dates=(day_P0,))  # unused (nothing feeds into month A)
+    month_B = rt.DeliveryMonth(label=None, fixing_date=fixing_B, exercise_dates=(day_B1,),
+                               fixing_observation_dates=(day_X0, day_A1))  # month A's FULL calendar month
+
+    lo = min(H_A[i_P0, :].min(), H_B[i_X0, :].min(), H_B[i_A1, :].min()) - 1.0
+    hi = max(H_A[i_P0, :].max(), H_B[i_X0, :].max(), H_B[i_A1, :].max()) + 1.0
+    r_grid = np.linspace(lo, hi, 8001)
+
+    results_B = rsa._run_month(lattice, month_B, r_grid, None, None, terminal_value_B, v_step, daily_max_clips)
+    terminal_value_A = np.stack(results_B, axis=-1)
+    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
+                               terminal_value_A, v_step, daily_max_clips)
+    collapsed_A = rsa._collapse_fresh_axis(results_A, label="A")
+    v_by_r_l0 = np.stack([arr[:, 0] for arr in collapsed_A], axis=1)
+    quote_by_date = {day_P0: H_A[i_P0, :]}
+    v_at_root = rsa._run_accumulation_only(lattice, [day_P0], r_grid, quote_by_date, v_by_r_l0)
+    root_row = v_at_root[n_p, :]
+    assert root_row.max() - root_row.min() < 1e-6, "root value should not depend on the starting r bucket"
+    code_pv = float(root_row[0])
+
+    p_u, p_m, p_d, x, dc = (lattice["p_u"], lattice["p_m"], lattice["p_d"],
+                            lattice["x"], lattice["d_curve"])
+    spotA1, spotB1 = np.exp(x[i_A1, :]), np.exp(x[i_B1, :])
+    p_jP0 = _forward_point_mass(p_u, p_m, p_d, 0, n_p, i_P0, width)
+
+    total = 0.0
+    for jP0 in range(width):
+        w0 = p_jP0[jP0]
+        if w0 < 1e-15:
+            continue
+        K_A = float(H_A[i_P0, jP0])
+        p_jX0 = _forward_point_mass(p_u, p_m, p_d, i_P0, jP0, i_X0, width)
+        for jX0 in range(width):
+            wX0 = p_jX0[jX0]
+            if wX0 < 1e-15:
+                continue
+            p_jA1 = _forward_point_mass(p_u, p_m, p_d, i_X0, jX0, i_A1, width)
+            for jA1 in range(width):
+                w1 = p_jA1[jA1]
+                if w1 < 1e-15:
+                    continue
+                # K_B averages BOTH day_X0 (fixing-only) and day_A1 (fixing + exercise).
+                K_B = (float(H_B[i_X0, jX0]) + float(H_B[i_A1, jA1])) / 2.0
+                exercise_now = dc[i_A1] * v_step * (spotA1[jA1] - K_A)
+                p_jB1 = _forward_point_mass(p_u, p_m, p_d, i_A1, jA1, i_B1, width)
+                wait_then_forced_at_B = sum(
+                    p_jB1[jB1] * dc[i_B1] * v_step * (spotB1[jB1] - K_B)
+                    for jB1 in range(width) if p_jB1[jB1] > 1e-15)
+                total += w0 * wX0 * w1 * max(exercise_now, wait_then_forced_at_B)
 
     assert code_pv == pytest.approx(total, abs=1e-6), (
         f"DP+interpolation: {code_pv}, brute force: {total}")
@@ -331,38 +565,48 @@ def test_accumulate_step_running_average_matches_hand_computation():
     assert out.shape == (width, len(r_grid))
 
 
-def test_matches_point_reset_when_the_averaging_window_is_a_single_day():
-    """A one-day accumulation window is a degenerate average of one term --
+def test_matches_point_reset_at_near_zero_vol_despite_a_month_long_average():
+    """A one-day accumulation window used to be this module's degenerate
+    match to point-reset, but a window is now ALWAYS a full calendar month
+    (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01's fix) -- there is
+    no longer a "one term" case to degenerate to. Near-zero vol reaches the
+    same property a different way: with the curve effectively deterministic,
+    the model's own projected quote H is the same value on every day of the
+    averaging window (mean reversion pulls every observation date's
+    conditional expectation to the same future price), so a month-long
+    average and a single point observation average to the identical number --
     Release 1B must then reproduce Release 1A exactly, using the REAL
     ResetSwingTerms/build_reset_schedule machinery end to end (not a hand-built
     month), since this is an integration check of the whole pipeline rather
-    than the recursion in isolation."""
+    than the recursion in isolation.
+    """
     curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
     curve.loc["2026-04-01":"2026-04-30"] = 24.0
 
     terms = rt.ResetSwingTerms(
-        val_date="2026-03-30", storage_start="2026-04-01", storage_end="2026-04-30",
+        val_date="2026-01-01", storage_start="2026-04-01", storage_end="2026-04-30",
         daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
         global_min_mwh=0.0, global_max_mwh=5_000.0,
-        vol=0.3, sMR=1.0, discount_rate=0.05, n_p=6)
+        vol=1e-4, sMR=1.0, discount_rate=0.05, n_p=6)
     schedule = rt.build_reset_schedule(terms)
 
     point_pv = rse.value_point_reset_call_swing(terms, schedule, daily_curve=curve)
-    # r_lo/r_hi bracket the curve fairly tightly (24.0 +/- 8, not +/- 20) rather
-    # than broadly: this deal has a real, binding global-volume cap (5 of 30
-    # possible days), so the value-vs-K surface has a genuine kink, and -- same
-    # O(1/n_r) story as test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol
-    # below -- a much wider range at this n_r leaves visible interpolation
-    # error even though nothing about the DP is wrong. [20, 28] once looked
-    # tight enough, but value_averaged_reset_call_swing's own bracket check
-    # (added after a real multi-month bug turned out to be exactly this: too
-    # narrow a grid silently clamping a materially-probable lattice state)
-    # correctly rejects it -- at vol=0.3 the lattice's own >=1e-6-probability
-    # states reach [20.32, 28.16], just outside [20, 28].
+    # n_r=6400 and a TIGHT bracket (24.0 +/- 0.5): the O(1/n_r) interpolation
+    # bias (module docstring, and
+    # test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol
+    # below) folds ONCE per accumulation day there, but a real calendar month
+    # folds it ~31 times -- found running this test itself, at n_r=400 over a
+    # wide [16, 32] bracket (this test's own first attempt) the residual was
+    # 49.4 EUR, not a rounding error, and only converged slowly: still 2.0 EUR
+    # at n_r=6400 over that same wide bracket, before narrowing it. A tight
+    # bracket earns back most of that -- confirmed by direct n_r/bracket
+    # sweeps before choosing these parameters -- but the residual here is
+    # still real, not machine noise, hence the loose (not 1e-4-relative)
+    # absolute tolerance.
     averaged_pv = rsa.value_averaged_reset_call_swing(
-        terms, schedule, curve, n_r=400, r_lo=16.0, r_hi=32.0)
+        terms, schedule, curve, n_r=6400, r_lo=23.5, r_hi=24.5)
 
-    assert averaged_pv == pytest.approx(point_pv, rel=1e-4)
+    assert averaged_pv == pytest.approx(point_pv, abs=0.5)
 
 
 def test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol():

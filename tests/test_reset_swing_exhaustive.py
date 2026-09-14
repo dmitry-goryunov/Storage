@@ -68,7 +68,8 @@ def test_matches_brute_force_enumeration_of_every_stopping_policy():
     n_l = 2  # l in {0, 1}; mandatory total = 1 clip
     terminal_value = np.array([[-np.inf, 0.0]] * width)  # must end with l == 1
 
-    month = rt.DeliveryMonth(label=None, fixing_date=fixing_date, exercise_dates=(day1, day2))
+    month = rt.DeliveryMonth(label=None, fixing_date=fixing_date, exercise_dates=(day1, day2),
+                             fixing_observation_dates=(day1, day2))  # unused: point-reset never reads it
     collapsed = np.empty((width, n_l))
     strikes = np.empty(width)
     for j_fix in range(width):

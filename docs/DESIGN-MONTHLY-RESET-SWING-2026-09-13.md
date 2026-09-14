@@ -902,6 +902,65 @@ of PV to `n_r=600` in about 3 minutes; `n_r=600` itself takes 13.4 minutes, not 
 extrapolated for the pure-Python path. 262 tests pass (255 before this + 7 in
 `tests/test_reset_swing_kernels.py`).
 
+**P0 correctness fix: the averaged reset's fixing window was wrong (2026-09-14
+INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02).** An independent review of the branch,
+requested and read in full, found -- and this project's own re-derivation from sec.3's "reset
+observations and exercise dates are separate calendars" independently confirmed before any
+fix was written -- that Release 1B's strike averaging window was constructed wrong in two
+related ways, both silently: (R-01) the deal's first delivery month averaged its strike over
+EVERY calendar day since `val_date`, not just the one calendar month sec.1 itself specifies
+("fixed from market observations made in the preceding month"); (R-02) a non-first month's own
+accumulation toward the NEXT month's strike used that month's `exercise_dates`, which only
+equals the true fixing-observation window when the month is complete -- a partial delivery
+month (mid-month `storage_start`) silently dropped the days before its own exercise window
+began, even though sec.3 requires them. Both bugs are invisible to "does the code compute the
+right average of whatever window it's given" verification, which is exactly what every
+brute-force test up to this point checked; they needed checking the window ITSELF against the
+contract, which none of them did.
+
+**The fix, by layer:**
+- `reset_terms.DeliveryMonth` gains `fixing_observation_dates`: every calendar day of the ONE
+  month immediately before this one, computed independently of `exercise_dates` in
+  `build_reset_schedule`. `ResetSwingTerms`'s own validation now requires `val_date` to precede
+  the START of every month's fixing window, not merely its END (the old check) -- R-01 point 4's
+  "refuse the valuation" option, since a val_date landing inside a window has no historical-fixing
+  input to use instead.
+- `reset_swing_kernels.run_month_accumulate_core` and `reset_swing_averaged.
+  _run_month_accumulate_reference` now walk the full `fixing_observation_dates` window
+  (accumulating on every day) with exercise applied ONLY on the trailing days that are also
+  `exercise_dates` -- eliminating the conflation R-02 found, and (as a side effect) eliminating
+  the separate gap-closing propagation loop the accumulating branch used to need, since the
+  extended window already reaches the right starting point by construction.
+- `value_averaged_reset_call_swing`'s pre-deal handling now accumulates over
+  `months[0].fixing_observation_dates` only, then propagates (with NO further accumulation)
+  through any remaining gap back to `val_date` -- replacing the old
+  `date_range(val_date, fixing_date)[1:]` construction R-01 named directly.
+
+**Verification, the same discipline as every other fix in this design:** two new,
+DISCRIMINATIVE brute-force tests (not just re-checking the arithmetic, which was never wrong) --
+one proving the pre-deal window ignores two "gap" days before the true fixing window (optional,
+not mandatory, exercise: a mandatory single clip's expected payoff is zero regardless of which
+days get averaged, by the tower property, so it could not have caught this; the correct 2-day
+window and the old, wrong 4-day window differ by ~125%, not a rounding-level gap), the other
+proving a fixing-only day (no exercise decision) still folds into the next month's strike. Both
+match the code to ~1e-12/1e-14. `tests/test_reset_terms.py` separately pins
+`fixing_observation_dates`'s own construction (5 new tests) and the stricter val_date
+validation. `tests/test_reset_swing_kernels.py`'s randomised comparisons now include scenarios
+with fixing-only days ahead of the exercise window, not only the degenerate case where the two
+calendars coincide. 270 tests pass (262 before this + 8: 5 in `test_reset_terms.py`, 2 in
+`test_reset_swing_averaged.py`, 1 in `test_reset_swing_kernels.py`'s existing parametrisation).
+
+**Still not corrected, named so it is not silently forgotten:** every PV, delta and timing
+figure reported earlier in this document and in `MonthlyResetSwing.ipynb` was computed under
+the WRONG window and is not representative of the corrected code -- none has been recomputed
+and republished here; treat every number before this entry as illustrative of the mechanism
+only, not of the corrected contract's actual value. R-03 through R-11 from the same review
+(same-day information-ordering assumption, production memory not yet reduced, "exact"
+terminology, Release 1B's still-restricted scope, missing simultaneous global/monthly state,
+missing result-object outputs, remaining validation gaps, missing sec.14.7 fixtures, and the
+document-structure critique this section's own running-log format is an instance of) are not
+addressed by this entry and remain open.
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable
