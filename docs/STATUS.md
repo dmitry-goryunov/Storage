@@ -1,5 +1,34 @@
 # Project status
 
+**Scope note on the monthly-reset swing (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING
+R-06):** entries below call the averaged reset "Release 1B" throughout, matching
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md)
+sec.14's own section numbering -- but what is built is a call-only, equal-weighted,
+identity-reset, wholly-future-fixing RESTRICTED PROTOTYPE of that section's own broader
+specification (multiple weighted observations, put direction, historical/partial fixings,
+per-month limits, a stable result object), not the full Release 1B. Read every "Release 1B"
+below with that qualification; R-10 (missing sec.14.7 acceptance fixtures) and R-08 (missing
+result object) are exactly the gap between the two, and remain open.
+
+**As of 2026-09-14 (R-06 + R-11 closed, scoped).** Documentation pass, not code: this file's
+own scope note above, and a matching one at the top of
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md),
+now say plainly that "Release 1B" here means a restricted prototype, not that section's own
+full specification (R-06). The specific inconsistencies R-11 named directly are fixed: the
+design doc's header no longer says "no valuation code is implemented" uncontradicted by its
+own later sections; its section 13 no longer presents a long-fulfilled recommendation as a
+current "next action"; its release-gate item 6 no longer requires out-of-sample Monte Carlo
+validation unconditionally, when section 1 explicitly allows exact DP to be the production
+solver; `MonthlyResetSwing.ipynb`'s own introduction no longer says Release 1B "is design
+work, not built" when section 5 has priced it since the notebook-wiring entry, several
+entries back in this log; and this file's own "the feature is now complete" sentence, several
+entries below, is annotated in place (not rewritten) pointing at why it turned out wrong. Not
+done: the review's own FULL required correction for R-11 is a three-way document split
+(current spec / concise status / dated diary) -- this file already covers the "concise
+status" role reasonably, so the larger restructuring (splitting the design doc's own
+sections 1-12 from its section 13 running log) is deferred, not attempted partially. See the
+design doc's own matching entry for the complete account.
+
 **As of 2026-09-14 (R-03 closed).** Same-day fixing-vs-exercise ordering is now an explicitly
 named convention, not a silent choice: "fixing-before-exercise" (today's quote folds into next
 month's strike before today's own exercise decision uses the already-fixed one), documented in
@@ -118,7 +147,12 @@ brute-force suite. 255 tests still pass; no test or production code changed beha
 `reset_swing_averaged.py`'s own docstring (recording what was tried) and two test fixtures'
 `n_r` (reduced from values empirically confirmed identical at 10 decimal places, for speed).
 
-**As of 2026-09-14 (later still still still).** The monthly-reset swing feature is now
+**As of 2026-09-14 (later still still still).** *["Complete" below turned out to be wrong --
+2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-06 named this exact sentence: what shipped
+here is a restricted prototype (see the scope note at the top of this file), with a real
+correctness bug (R-01/R-02, fixed the same day, later in this log) besides. Kept verbatim,
+not edited, since it is the record of what was believed true at the time; read forward for
+what actually followed.]* The monthly-reset swing feature is now
 complete for both reset conventions. Closed the three gaps Release 1B's own landing left
 open. **A genuine two-month brute-force cross-check** -- the first literal enumeration to
 exercise `_run_month(accumulate=True)`/`_collapse_fresh_axis`, the exact code path behind

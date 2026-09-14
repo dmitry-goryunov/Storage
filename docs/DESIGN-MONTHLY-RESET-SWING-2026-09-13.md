@@ -1,7 +1,21 @@
 # Corrected design and implementation plan: monthly-reset swing
 
-**Date:** 13 September 2026  
-**Status:** design only; no valuation code is implemented by this document  
+**Date:** 13 September 2026 (design); implementation and a running status log follow in
+sec.13, dated as each slice landed  
+**Original status, as first written:** design only; no valuation code was implemented by
+this document at that time. **No longer current** -- sections 1-12 remain the product and
+numerical specification this feature was built against, but Release 1A and Release 1B (a
+restricted subset of this section's own definition -- see sec.14.1 and R-06's own finding,
+2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING) are now implemented, tested and in
+production use in `MonthlyResetSwing.ipynb`. **For current implementation status, read
+[`docs/STATUS.md`](STATUS.md) first** -- it is the concise, dated, currently-true summary;
+sec.13 below is the full development log the status entries are extracted from, kept for
+traceability rather than as the first thing to read. (R-11's own finding: this document mixes
+a static specification with a historical diary in one file, making "what is current" harder
+to see than it should be. A full split into three separate documents, as the review's own
+required correction describes, has not been done -- STATUS.md already serves as the "concise
+current status" piece; splitting the sec.1-12 specification from the sec.13 diary into
+separate files remains open.)  
 **Target repository:** `dmitry-goryunov/Storage`
 
 ## 1. Executive decision
@@ -667,20 +681,36 @@ are true:
 3. Recurring resets retain both current strike and next accumulator.
 4. Exercise is non-anticipating.
 5. A small exact implementation matches exhaustive enumeration.
-6. The production policy is valued out of sample and reconciles to the exact solver.
+6. If the production solver is regression Monte Carlo (sec.1's own fork): the policy is
+   valued out of sample and reconciles to the exact solver. If exact DP is itself the
+   selected production solver (sec.1: practical "from measured state sizes, convergence,
+   memory and runtime," not assumed) this item is satisfied by construction -- there is no
+   separate out-of-sample policy to reconcile against, since the exact solver IS the
+   benchmark. (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-11 found the original,
+   unconditional wording of this item inconsistent with sec.1's own explicit DP-or-Monte-Carlo
+   fork.)
 7. All numerical dimensions have measured convergence.
 8. Reported total deltas pass bump-and-revalue checks and include the reset leg.
 9. Existing fixed-strike and storage regressions remain green.
 10. Outputs state plainly that the Q dynamics are illustrative until market calibration is
     established.
 
-## 13. Recommended immediate next action
+## 13. Implementation and status log
 
-Implement Phase 0 and the conditional month-ahead projection from Phase 1 before modifying
-`storage_kernels.py`. The projection can be tested independently against the current tree and
-is required by every later solver. After it passes, build the point-reset exact benchmark.
-Only then choose the averaged-reset production implementation on measured state sizes and
-runtime, rather than assuming the dense lattice will be practical.
+**This section's original title was "Recommended immediate next action," and its own opening
+paragraph (below, kept verbatim) recommended exactly the sequence the entries under it then
+carried out -- fulfilled long ago, and stale as a "next action" by the time of the 2026-09-14
+INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-11 finding that named it directly.** What follows is
+the running development and status log for everything built against sections 1-12's
+specification, each entry dated as it landed; read [`docs/STATUS.md`](STATUS.md) first for a
+concise summary of what is currently true.
+
+Original recommendation (fulfilled, first entry below): implement Phase 0 and the conditional
+month-ahead projection from Phase 1 before modifying `storage_kernels.py`. The projection can
+be tested independently against the current tree and is required by every later solver. After
+it passes, build the point-reset exact benchmark. Only then choose the averaged-reset
+production implementation on measured state sizes and runtime, rather than assuming the dense
+lattice will be practical.
 
 **Done, 2026-09-14, no real term sheet -- an explicit prototype convention per sec.2.1/sec.14
 instead (call-only, month-end point reset, a model-internal index, global not per-month
@@ -1057,6 +1087,34 @@ isolation). No production code path for "fixing-after-exercise" was added: with 
 to justify implementing an alternative, the review's other acceptable option (recording
 publication/exercise timestamps and letting the order follow from them) is deferred rather than
 built speculatively. 299 tests pass (298 before this + 1).
+
+**R-06 (scope overclaim) and R-11 (document structure), same day, scoped correction rather
+than the review's full required one.** R-06: this document's own header (top of file) now
+names the averaged reset as a restricted prototype of sec.14's own broader Release 1B
+definition, not the full thing; `docs/STATUS.md` gained a permanent scope note above its
+dated log doing the same, rather than editing every historical "Release 1B" mention
+individually (the running-log entries are a record of what was believed true when written,
+same reasoning as leaving old debugging-narrative numbers alone). `MonthlyResetSwing.ipynb`'s
+own introduction, which specifically said "Release 1B ... is design work, not built" -- true
+when written, false since section 5 was added -- is corrected in place, since notebook prose
+(unlike a stored PV) has no staleness guard to catch this automatically.
+
+R-11: the review's required correction is a full split into three separate documents (current
+spec, concise status, dated diary). Not done -- `docs/STATUS.md` already serves the "concise
+current status" role reasonably well, and splitting sections 1-12 (specification) from
+section 13 (this running log) into separate files is a larger undertaking than the other
+findings closed today, deferred rather than attempted partially. What WAS fixed: the specific
+inconsistencies the review named directly -- this document's own header (previously "design
+only; no valuation code is implemented," contradicted by sections 13/14 describing built,
+tested code), section 13's title and opening paragraph (previously still phrased as a
+"recommended immediate next action" that had been fulfilled for days), section 12 item 6
+(previously required out-of-sample Monte Carlo validation unconditionally, inconsistent with
+sec.1's own exact-DP-or-Monte-Carlo fork), and `docs/STATUS.md`'s own "the feature is now
+complete" sentence (annotated in place, not rewritten, since R-06's restricted-prototype
+finding is what made it wrong). The branch-tracking and test-count inconsistencies R-11 also
+named were already fixed when R-11 itself was first read (see that entry, earlier in this
+log). Still open: the actual three-way document split, and reconciling section 14.7's
+fixture-completeness language against what tests currently exist (R-10's own scope).
 
 ## 14. Implementation-readiness specification
 
