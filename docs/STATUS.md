@@ -1,5 +1,32 @@
 # Project status
 
+**As of 2026-09-14 (later still still).** Release 1B, the averaged (not point) reset,
+landed: the strike is now a genuine equal-weighted running average of the model's
+month-ahead projection over every calendar day of the preceding month, not a single
+observation. `reset_swing_averaged.py::value_averaged_reset_call_swing` -- state
+`(i, j, l, r)` with `r` a discretised, linearly-interpolated running-average grid,
+month-chaining that collapses each month's fresh outgoing accumulator to a
+representative slice before handing it to the preceding month. Five real bugs found
+and fixed before anything matched (a diagonal collapse conflating two unrelated
+axes, a missing pre-deal accumulation step, a 2D/3D broadcast mismatch, and a sanity
+check whose own spread computation mixed unrelated economic states together). A
+sixth apparent bug -- a 2-month vol-continuity check plateauing around 5,600 EUR
+instead of shrinking to point-reset's near-zero answer -- turned out, after three
+successive brute-force cross-checks each first disagreed with the DP before the
+cause was traced to the *brute-force script's own* scenario setup (non-consecutive
+dates; a pre-deal window not starting at `val_date+1`; a hand-built month whose
+`fixing_date` did not equal the accumulation window's own last day), to be genuine
+O(1/n_r) linear-interpolation bias at the exercise-boundary kink, not a logic error:
+DP and a correctly-set-up literal brute-force enumeration match to ~1e-12, and a 4x
+grid refinement cuts the residual by very close to 4x, confirmed as a pinned
+regression test. `tests/test_reset_swing_averaged.py` (5 tests) covers the brute
+force, the accumulator's boundary/arithmetic properties in isolation, the
+single-observation-window degenerate match to point-reset, and the convergence
+rate. 249 tests pass (244 before this + 5). Still open: a genuinely multi-month
+brute-force cross-check, hedge sensitivities for the averaged reset, and wiring it
+into a notebook -- see
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
+
 **As of 2026-09-14 (later still).** The three items named after the real-volatility pass
 landed. **True brute-force enumeration** (not the differently-coded-reference check that
 already existed): a tiny hand-built scenario reduces "every non-anticipating policy" to
@@ -374,7 +401,7 @@ charts. The other committed outputs are unchanged by this review.
 | [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
 | [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |
-| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | Proposal, not built: a swing whose strike resets monthly from a realised month-ahead index. The state-space extension, the one formula that must be re-derived and verified before any of it, sizing risk and a cheaper interim |
+| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A, `reset_swing_exact.py`) and averaged-reset (Release 1B, `reset_swing_averaged.py`) exact benchmarks are built and brute-force verified; production-scale sizing (Release 2) is still open |
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |

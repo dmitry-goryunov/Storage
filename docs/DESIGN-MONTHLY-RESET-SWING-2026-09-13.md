@@ -776,9 +776,61 @@ volume, no historical fixings):**
   with the same "small total does not mean small risk" caveat as above, stated inline
   rather than left for a reader to discover.
 
-**Still not done:** the averaged (non-point) reset -- Release 1B -- and everything in
-sec.14.7's fixture list beyond what the tests above cover. 244 tests pass in the full
-repository suite (238 before this + 6: 1 exhaustive-enumeration, 4 delta, 1 notebook).
+**Release 1B: the averaged-reset exact benchmark, and a debugging story worth recording.**
+
+- `reset_swing_averaged.py::value_averaged_reset_call_swing` -- sec.7.1's genuinely continuous
+  running-average state, `(i, j, l, r)`, `r` on a discretised, linearly-interpolated grid
+  (`accumulate_step`). Month-chaining collapses each month's own fresh outgoing accumulator
+  to a representative slice before handing it to the preceding month (`_collapse_fresh_axis`)
+  rather than carrying an ever-growing stack of axes -- see the module's own docstring for
+  why that collapse is safe (the same "value at a not-yet-accumulated axis cannot depend on
+  the bucket" boundary property Release 1A already uses for the pre-deal window).
+- **Five real bugs, found and fixed before anything matched.** In order: (1) a diagonal
+  collapse (`results[k][:,:,k]`) that wrongly conflated a month's own incoming strike bucket
+  with its unrelated outgoing accumulator bucket; (2) a missing pre-deal accumulation step
+  (month 1's strike was read off an arbitrary bucket instead of actually accumulated from
+  `val_date`); (3) a 2D-to-3D broadcast that should have been an unconditional copy once the
+  terminal was already stacked; (4) and (5) both in the sanity check meant to catch exactly
+  this class of bug -- `_collapse_fresh_axis`'s spread computed the global max/min across every
+  `(j,l,r)` state instead of each `(j,l)`'s own spread across `r`, so it was comparing
+  unrelated economic states and always reported a huge, meaningless number, briefly rejecting
+  an already-correct computation. Diagnosed throughout by the same method: hypothesise the
+  expected property (a vol-continuity check -- averaged-reset PV should shrink toward
+  point-reset's as vol -> 0 -- caught (1) and (2) directly), construct a minimal isolatable
+  case, fix, re-verify.
+- **A sixth apparent bug that was not one.** After all five fixes, a 2-month shaped-curve
+  vol-continuity check still would not converge to point-reset's near-zero answer at low vol
+  -- it plateaued around 5,600 EUR instead. Three successive brute-force cross-checks were
+  built to isolate it, and each first *disagreed* with the DP before the actual cause was
+  found to be the brute-force script's own scenario setup, not the DP: non-consecutive
+  accumulation dates (the single-step-per-date propagation both `_run_month`'s accumulator
+  loop and `_run_accumulation_only` use assumes consecutive calendar days), a pre-deal window
+  not starting at `val_date + 1` (so the backward propagation stopped one or more steps short
+  of `val_date`), and a hand-built month whose `fixing_date` did not equal the literal last
+  day of the accumulation window feeding it. Once a scenario respected all three (exactly what
+  `build_reset_schedule` already guarantees end to end), DP and brute force matched to ~1e-12.
+  The real explanation for the plateau: the value-vs-K surface has a genuine kink at the
+  exercise boundary, and linear interpolation across a kink converges only at first order,
+  O(1/n_r) -- confirmed by a 4x grid refinement cutting the residual by very close to 4x, both
+  in this investigation and as a pinned regression
+  (`test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol`). A coarse or wide
+  `r_grid` is the single biggest source of apparent disagreement with point-reset; it is not a
+  sign of a logic error, but it does mean `n_r` needs to be chosen generously (hundreds to a
+  few thousand, bracketing the curve tightly) rather than assumed adequate at a small default.
+- **`tests/test_reset_swing_averaged.py`** pins all of this: the literal brute-force
+  enumeration (two accumulation days, two exercise days, matching to `abs=1e-6` on top of a
+  fine local `r_grid`), the accumulator's zero-weight boundary property and its running-average
+  arithmetic in isolation, the single-observation-window degenerate match to point-reset
+  (`rel=1e-4`, using the real `ResetSwingTerms`/`build_reset_schedule` pipeline end to end),
+  and the O(1/n_r) convergence direction and rate on the case that originally looked broken.
+
+**Still not done:** the literal (not differently-coded-reference) brute-force enumeration
+above only covers a single delivery month with a two-day accumulation window -- a genuinely
+multi-month brute-force cross-check would need a much larger enumeration space and has not
+been attempted; hedge sensitivities for the averaged reset (`compute_deltas` is Release 1A
+only); wiring the averaged reset into `MonthlyResetSwing.ipynb` or elsewhere usable; and
+everything in sec.14.7's fixture list beyond what the tests above cover. 249 tests pass in
+the full repository suite (244 before this + 5 in `test_reset_swing_averaged.py`).
 
 ## 14. Implementation-readiness specification
 
