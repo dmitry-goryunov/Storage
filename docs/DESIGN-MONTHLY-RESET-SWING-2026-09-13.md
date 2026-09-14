@@ -1149,6 +1149,33 @@ from -- confirmed by cross-checking the two wrappers' `reset_strikes` against ea
 to 9 significant figures on a shared fixture) rather than against a hand guess. 304 tests pass
 (299 before this + 5).
 
+**R-10 (acceptance fixtures), same day, scoped: closed against 12 of sec.14.7's 14 named
+fixtures, 2 left open as genuine product-feature gaps.** A gap analysis first, since the review's
+own 8-item list groups sec.14.7's 14 literal names -- found 8 already covered under different
+names (4 verbatim in `tests/test_reconciliation.py`, predating `reset_swing_exact.py`/
+`reset_swing_averaged.py` and checking sec.6.4's structural claim against the plain call-swing
+engine directly, which the review's own list does not separately flag; 4 more split across
+`test_reset_swing_exhaustive.py`, `test_reset_swing_averaged.py`, `test_reset_forward.py` and
+`test_reset_swing_stochastic.py`), 2 partial (near-zero-vol testing exists but cannot reach
+literal `vol=0.0`, which `ResetSwingTerms` refuses by design; same-day fixing-visibility is R-03's
+own already-named, deliberately undecided convention), and 4 genuinely missing -- of which 2
+(`test_partially_fixed_month`, seeded/historical fixings; `test_monthly_and_global_volume_limits`,
+per-month rather than deal-wide limits) need real product features this prototype does not have,
+not new tests, and 1 (`test_strike_grid_convergence`) does not apply to this architecture at all
+(point-reset's strike is an exact lattice index; averaged-reset's own grid is already exercised by
+the accumulator-convergence fixture). New work, `tests/test_reset_swing_acceptance.py`:
+`test_fixed_strike_equivalence` (sec.10.2's cross-engine reading -- the reset engine's own
+near-zero-vol emergent strike, read via R-08's `_detailed` wrapper rather than re-derived, priced
+through the INDEPENDENT plain fixed-strike engine `storage_model.run_valuation`, matches to
+within 0.5 EUR) and `test_zero_volatility_reset` (one declared epsilon, `1e-7`, used by both reset
+conventions at once, against a hand-computable 25,000 EUR mandatory-volume scenario -- confirmed
+along the way that mandatory volume makes V(K) exactly affine, sec.6.4/R-08's own finding reused
+here, so averaged-reset needs no generously large `n_r` to agree with point-reset here: `n_r=10`
+through `100` all agree to ~1e-11, unlike the genuinely kinked optional-volume case elsewhere in
+this log). The full 14-row mapping is now recorded directly in sec.14.7 above rather than only in
+this log entry, so it stays next to the requirement it is tracking. 306 tests pass (304 before
+this + 2).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable
@@ -1352,6 +1379,37 @@ declared absolute and relative tolerances. Algebraic identities, benchmark PV co
 Monte Carlo confidence checks require separate tolerances. Numerical values for those
 tolerances are not fixed here because no reference runs have yet established defensible
 levels.
+
+**Traceability against what is actually built (2026-09-14, R-10 closed, scoped -- see sec.13's
+own dated entry for the full account).** None of the 14 names above exist verbatim across every
+file; most of the underlying claims are nonetheless already covered, under different names, by
+tests written for other reasons before this list was audited against them directly.
+
+| # | Fixture name | Status | Covered by |
+|---|---|---|---|
+| 1 | `test_fixed_strike_equivalence` | Closed | `tests/test_reset_swing_acceptance.py::test_fixed_strike_equivalence` (new) |
+| 2 | `test_zero_volatility_reset` | Closed | `tests/test_reset_swing_acceptance.py::test_zero_volatility_reset` (new) |
+| 3 | `test_point_reset_by_exhaustive_enumeration` | Covered | `tests/test_reset_swing_exhaustive.py::test_matches_brute_force_enumeration_of_every_stopping_policy` |
+| 4 | `test_two_observation_average_reset` | Covered | `tests/test_reset_swing_averaged.py::test_matches_brute_force_enumeration_with_averaged_strike` |
+| 5 | `test_partially_fixed_month` | **Open -- needs a feature** | No `historical_fixings`/seeded-`R`/`W` input exists in `ResetSwingTerms`; this reads a *pre-deal partial fixing*, a different concept from a partial delivery month's own calendar (already covered -- see `tests/test_reset_terms.py`'s partial-month tests). Blocked on real product work, not test-writing. |
+| 6 | `test_fixing_after_exercise_not_visible` | Partial | `tests/test_reset_terms.py::test_every_fixing_strictly_precedes_its_own_months_exercise` pins the schedule-level invariant; the adjacent same-day question is R-03's own named, deliberately-undecided convention (`tests/test_reset_swing_averaged.py::test_same_day_ordering_is_fixing_before_exercise_and_the_choice_is_consequential`) -- cannot close further without a real term sheet, same reasoning as R-03 itself. |
+| 7 | `test_monthly_and_global_volume_limits` | **Open -- needs a feature** | `ResetSwingTerms` only has deal-wide `global_min_mwh`/`global_max_mwh` (`tests/test_reset_terms.py::test_global_volume_limits_are_carried_not_split_by_month` documents this as a deliberate simplification); no per-month limit field exists to test. Blocked on real product work. |
+| 8 | `test_zero_rate_mandatory_strike_affinity` | Covered | `tests/test_reconciliation.py::test_zero_rate_mandatory_strike_affinity` (exact name) |
+| 9 | `test_common_settlement_strike_affinity` | Covered | `tests/test_reconciliation.py::test_common_settlement_strike_affinity` (exact name) |
+| 10 | `test_daily_discounting_can_break_affinity` | Covered | `tests/test_reconciliation.py::test_daily_discounting_can_break_affinity` (exact name) |
+| 11 | `test_optional_volume_strike_convexity` | Covered | `tests/test_reconciliation.py::test_optional_volume_strike_convexity` (exact name) |
+| 12 | `test_reset_accumulator_grid_convergence` | Covered | `tests/test_reset_swing_averaged.py::test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol` |
+| 13 | `test_strike_grid_convergence` | **Not applicable** | Point-reset's current strike (`j_fix`) is an exact lattice-node index (`reset_swing_exact.py`'s own docstring: no interpolation, "not a continuous quantity"); averaged-reset's frozen current-strike axis reuses the same `r_grid`/`n_r` #12 already exercises. There is no independent grid left to converge -- a deliberate architectural choice (sec.6.4), not an untested gap. |
+| 14 | `test_tree_boundary_convergence` | Covered | `tests/test_reset_forward.py::test_root_conditional_quote_matches_across_two_tree_widths` (projection-level boundary occupancy) and `tests/test_reset_swing_stochastic.py::test_n_p_converges_as_the_tree_widens` (full swing-PV convergence in `n_p`) together |
+
+Items 8-11 predate `reset_swing_exact.py`/`reset_swing_averaged.py` and check the structural
+claim (sec.6.4) against the plain, already-tested call-swing engine directly, exactly as that
+file's own header states -- accepted as closing these findings rather than duplicated through
+the reset-swing solver, which would assert nothing sec.6.4 itself does not already guarantee.
+Items 5 and 7 are the two genuine product-feature gaps R-10 surfaced; both are explicit,
+already-named scope cuts (see `ResetSwingTerms`'s own docstring and this document's sec.14.1),
+not oversights, and are left open rather than built speculatively without a term sheet driving
+their exact shape.
 
 ### 14.8 Stable result object
 

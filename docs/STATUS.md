@@ -7,11 +7,40 @@ sec.14's own section numbering -- but what is built is a call-only, equal-weight
 identity-reset, wholly-future-fixing RESTRICTED PROTOTYPE of that section's own broader
 specification (multiple weighted observations, put direction, historical/partial fixings,
 per-month limits, a full-featured result object), not the full Release 1B. Read every
-"Release 1B" below with that qualification; R-10 (missing sec.14.7 acceptance fixtures) is the
-remaining gap. R-08 (result object) closed in minimal scope -- see its own dated entry below --
-so `ResetSwingResult` now exists, but only as a point-estimate wrapper around what the DP
-already computed, not sec.14.8's full specification (strike distribution, PV split, bucketed
-deltas, convergence status, audit metadata).
+"Release 1B" below with that qualification. Of the review's 11 findings, R-01 through R-04 and
+R-06 and R-08 through R-11 are closed (R-08 and R-10 in explicitly MINIMAL/SCOPED form -- see
+their own dated entries below); **R-05** ("exact" overclaims the averaged solver's own
+interpolation approximation) **and R-07** (simultaneous global-and-monthly volume limits need a
+state-space extension `(i, j, l, k, r)` does not have) remain genuinely open -- both were outside
+the 5-step correction order this session's other closures worked through, and R-07 in particular
+is blocked on the same missing per-month-limits feature R-10's own traceability table names.
+
+**As of 2026-09-14 (R-10 closed, scoped: 12 of 14 named fixtures, 2 left open as feature
+gaps).** A gap analysis against sec.14.7's 14 named fixtures first, since none existed under
+those exact names: 8 already covered under different names (4 verbatim in
+`tests/test_reconciliation.py`, predating the reset-swing solvers and checking sec.6.4's
+structural claim against the plain call-swing engine directly; 4 more split across
+`test_reset_swing_exhaustive.py`, `test_reset_swing_averaged.py`, `test_reset_forward.py` and
+`test_reset_swing_stochastic.py`), 2 partial (near-zero-vol testing that cannot reach literal
+`vol=0.0`, which `ResetSwingTerms` refuses by design; same-day fixing-visibility, R-03's own
+already-named open convention), and 4 genuinely missing. Of those 4: 2
+(`test_partially_fixed_month`, `test_monthly_and_global_volume_limits`) need real product
+features -- seeded/historical fixings, per-month rather than deal-wide volume limits -- this
+prototype does not have (also the substance of the still-open R-07, see this file's own scope
+note above), not new tests, so left open rather than built speculatively; 1
+(`test_strike_grid_convergence`) does not apply to this architecture at all (point-reset's
+strike is an exact lattice index, not an interpolated grid). New work: `test_fixed_strike_equivalence`
+(the reset engine's own near-zero-vol emergent strike, read via R-08's `_detailed` wrapper,
+priced through the INDEPENDENT plain fixed-strike engine `storage_model.run_valuation`, matches
+to within 0.5 EUR -- two structurally different solvers agreeing, not a hand computation checked
+against itself) and `test_zero_volatility_reset` (one declared epsilon, `1e-7`, shared by both
+reset conventions against a hand-computable 25,000 EUR mandatory-volume scenario -- confirmed
+along the way that mandatory volume makes V(K) exactly affine, so averaged-reset needed no large
+`n_r` to agree with point-reset here: `n_r=10` through `100` all matched to ~1e-11). Both live in
+a new `tests/test_reset_swing_acceptance.py`, holding only the genuinely new fixtures rather than
+aliasing the 8 already covered elsewhere. The full 14-row mapping is recorded directly in
+`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md` sec.14.7. 306 tests pass (304 before this + 2).
+See [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
 
 **As of 2026-09-14 (R-08 closed, minimal scope).** `reset_terms.ResetSwingResult`
 (a frozen dataclass: `pv`, `reset_strikes`, `deltas`) is a new, additive result object both
