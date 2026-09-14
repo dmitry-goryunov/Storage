@@ -1,5 +1,31 @@
 # Project status
 
+**As of 2026-09-14 (Release 2: Numba kernel).** "Stay in DP" now holds at production scale.
+`reset_swing_kernels.py` (new, mirroring `storage_kernels.py`'s own established pattern and
+its reasoning for living in a separate module from the wrapper code it's called from) adds
+`run_month_accumulate_core`, a Numba-compiled kernel computing exactly what the previous
+investigation's pure-Python `for k in range(n_r)` loop computed for every non-last delivery
+month -- explicit nested loops, not vectorised numpy tricks, since the earlier investigation
+found the real cost was Python/numpy per-call dispatch overhead, which only a compiled loop
+removes categorically. Verified two ways before being wired in: a direct comparison against
+`_run_month_accumulate_reference` (the old Python loop, kept specifically as an independent
+check `tests/test_reset_swing_kernels.py` exercises across six randomised scenarios,
+matching to ~1e-10) and, once wired in, the FULL existing brute-force suite in
+`tests/test_reset_swing_averaged.py` still passing unchanged (`_run_month` now delegates to
+the kernel, so those tests check the swap end to end, not just the kernel in isolation). One
+real trap along the way: a naive JIT "warm-up" call using sliced (non-contiguous) arrays
+compiled a DIFFERENT Numba specialisation than the real, contiguous-array call needed,
+silently leaving the genuine compile cost inside a "warm" timed block -- `np.ascontiguousarray`
+on every array `_run_month` hands the kernel now closes that off structurally, not just in
+the one test that first tripped over it.
+
+Measured impact on the notebook's own 6-month, `n_p=15` term sheet: `n_r=30` (54s before)
+now takes 1.5s; `n_r=300` (impractical before) reaches a residual gap under 0.3% of PV to
+`n_r=600` in about 3 minutes; `n_r=600` itself takes 13.4 minutes, not the hour-plus the
+pure-Python path extrapolated to. 262 tests pass (255 before this + 7 in
+`tests/test_reset_swing_kernels.py`). See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
+
 **As of 2026-09-14 (Release 2 investigation).** Measured whether the averaged reset's exact
 DP stays practical at production scale ("stay in DP" -- retain exact dynamic programming
 per sec.14.1's own decision rule, rather than switch to regression Monte Carlo). It does
@@ -442,7 +468,7 @@ charts. The other committed outputs are unchanged by this review.
 | [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
 | [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |
-| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A) and averaged-reset (Release 1B) are built, brute-force verified (including the multi-month chaining path), delta-hedged and wired into `MonthlyResetSwing.ipynb`; production-scale sizing (Release 2) is still open |
+| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A) and averaged-reset (Release 1B) are built, brute-force verified (including the multi-month chaining path), delta-hedged and wired into `MonthlyResetSwing.ipynb`; a Numba kernel (`reset_swing_kernels.py`) now makes production-scale sizing (Release 2) practical, ~30-40x faster than the pure-Python DP it replaced in the hot path |
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |

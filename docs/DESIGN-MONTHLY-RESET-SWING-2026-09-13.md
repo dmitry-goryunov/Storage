@@ -871,6 +871,37 @@ volume, no historical fixings):**
 255 tests pass in the full repository suite (249 before this + 6: 2 in
 `test_reset_swing_averaged.py`, 4 in `test_reset_swing_averaged_deltas.py`).
 
+**Release 2: measured, then a Numba kernel, "stay in DP" per sec.14.1's own decision rule.**
+Measured first: on the notebook's own 6-month, `n_p=15` term sheet, `n_r=20` -- already far
+too coarse to trust, per the O(1/n_r) finding above -- took ~29s; extrapolating the measured
+scaling to an `n_r` worth trusting reached on the order of an hour. Two numpy-vectorised
+rewrites of `accumulate_step`'s interpolation (uniform-grid index arithmetic in place of
+`np.interp`, one via `np.take_along_axis`, one via a width-loop with flat-indexed gathers)
+were tried and reverted: both verified numerically identical to the original, and both gave
+a genuine 2-5x speedup for large-`n_l` deals but were 1.3-5x WORSE for small-`n_l`/large-`n_r`
+deals -- numpy per-call dispatch overhead dominating one regime, `np.interp`'s own tight C
+loop winning the other, no shape-independent win. `reset_swing_kernels.py` (new module,
+mirroring `storage_kernels.py`'s own established separate-file-for-Numba-caching pattern)
+adds `run_month_accumulate_core`: the WHOLE per-k month recursion as one Numba-compiled
+unit -- explicit nested loops, matching `storage_kernels.py`'s own style, not vectorised numpy
+-- removing per-call dispatch overhead categorically rather than trading one deal shape's
+speed for another's. Verified two ways before being wired into `_run_month`: a direct
+comparison against `_run_month_accumulate_reference` (the old Python loop, kept as a named,
+independent reference specifically so this comparison is not circular once `_run_month`
+itself calls the kernel) across six randomised scenarios in
+`tests/test_reset_swing_kernels.py`, matching to ~1e-10; then the full existing brute-force
+suite in `tests/test_reset_swing_averaged.py`, unchanged, still passing with `_run_month` now
+kernel-backed. One real trap found and closed structurally (not just patched in the one test
+that hit it): a JIT "warm-up" call using sliced arrays is non-contiguous and so compiles a
+DIFFERENT Numba specialisation than the real, contiguous call needs, silently leaving genuine
+compile cost inside an apparently-warm timed block -- `_run_month` now calls
+`np.ascontiguousarray` on every array it hands the kernel, closing this off for every caller,
+not only the test that first tripped over it. Measured impact: the same 6-month deal's `n_r=30`
+(54s before) now takes 1.5s; `n_r=300` (impractical before) reaches a residual gap under 0.3%
+of PV to `n_r=600` in about 3 minutes; `n_r=600` itself takes 13.4 minutes, not the hour-plus
+extrapolated for the pure-Python path. 262 tests pass (255 before this + 7 in
+`tests/test_reset_swing_kernels.py`).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable

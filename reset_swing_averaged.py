@@ -44,12 +44,27 @@ consequence: pick n_r generously (results here use up to several hundred to
 a few thousand) and bracket r_lo/r_hi tightly around the curve's own range --
 a wide, sparse grid is the single biggest source of apparent-but-fake
 disagreement with point-reset, not a sign of a logic error.
+
+Release 2 (sec.13): "pick n_r generously" was not practical at first -- the
+pure-Python accumulating-month recursion is O(n_r^2), and a realistic 6-month
+deal at an n_r worth trusting extrapolated to on the order of an HOUR,
+measured before `reset_swing_kernels.run_month_accumulate_core` (a Numba
+kernel `_run_month` now delegates to for every non-last month) cut that to
+minutes: the SAME 6-month deal reaches n_r=300 (residual gap to n_r=600 under
+0.3% of PV) in about 3 minutes, n_r=30 -- the scale that used to take 54
+seconds -- in under 2. Two numpy-vectorised attempts at just the interpolation
+step were tried first and reverted (see `accumulate_step`'s own docstring):
+both helped some deal shapes and hurt others, since the real cost was
+Python/numpy per-call dispatch overhead, not the arithmetic -- only compiling
+the WHOLE per-k recursion, removing that dispatch overhead categorically,
+gave a shape-independent win.
 """
 import numpy as np
 import pandas as pd
 
 import reset_forward as rf
 import reset_swing_exact as rse
+import reset_swing_kernels as rsk
 
 
 def _exercise_step_3d(continuation, spot, strike, df_i, v_step, daily_max_clips):
@@ -163,6 +178,15 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
     2D array needing to be broadcast into one: that broadcast was the second
     bug this module's first version had, right after the diagonal-collapse
     one (see `_collapse_fresh_axis`'s own docstring).
+
+    The accumulating case (every non-last month) delegates the actual
+    per-k-bucket recursion to `reset_swing_kernels.run_month_accumulate_core`
+    -- a Numba-compiled kernel computing EXACTLY what `_run_month_accumulate_reference`
+    below computes in pure Python (see that function, `reset_swing_kernels.py`'s
+    own docstring, and tests/test_reset_swing_kernels.py, which checks the two
+    agree). The deal's LAST month (`accumulate=False`) keeps the plain Python
+    loop below directly: it has no r-axis interpolation of its own and was
+    never the bottleneck (sec.13's Release 2 measurement).
     """
     date_span = lattice["date_span"]
     x, p_u, p_m, p_d, d_curve = (lattice["x"], lattice["p_u"], lattice["p_m"],
@@ -170,7 +194,6 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
     exercise_indices = [date_span.get_loc(d) for d in month.exercise_dates]
     fixing_idx = date_span.get_loc(month.fixing_date)
     n_r = len(r_grid)
-    n_days = len(exercise_indices)
     accumulate = quotes_for_next_month is not None
     if accumulate:
         assert terminal_value.ndim == 3 and terminal_value.shape[2] == n_r, (
@@ -181,6 +204,15 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
             f"expected a plain (width, n_l) terminal for the last month, "
             f"got shape {terminal_value.shape}")
 
+    if accumulate:
+        exercise_indices_arr = np.asarray(exercise_indices, dtype=np.int64)
+        stacked = rsk.run_month_accumulate_core(
+            np.ascontiguousarray(x), np.ascontiguousarray(p_u), np.ascontiguousarray(p_m),
+            np.ascontiguousarray(p_d), np.ascontiguousarray(d_curve), exercise_indices_arr,
+            fixing_idx, np.ascontiguousarray(r_grid), np.ascontiguousarray(quotes_for_next_month),
+            np.ascontiguousarray(terminal_value), float(v_step), int(daily_max_clips))
+        return [stacked[k] for k in range(n_r)]
+
     results = []
     for k in range(n_r):
         strike = float(r_grid[k])
@@ -188,21 +220,53 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, terminal_value,
 
         for pos, i in enumerate(reversed(exercise_indices)):
             spot = np.exp(x[i, :])
-            if accumulate:
-                weight_so_far = float(n_days - 1 - pos)
-                v = accumulate_step(v, r_grid, quotes_for_next_month[i, :], weight_so_far, 1.0)
-                v = _exercise_step_3d(v, spot, strike, d_curve[i], v_step, daily_max_clips)
-            else:
-                v = rse._exercise_step(v, spot, strike, d_curve[i], v_step, daily_max_clips)
+            v = rse._exercise_step(v, spot, strike, d_curve[i], v_step, daily_max_clips)
             if i > 0:
-                v = (_propagate_price_step_3d(v, p_u[i - 1, :], p_m[i - 1, :], p_d[i - 1, :])
-                    if accumulate else
-                    rse._propagate_one_step(v, p_u[i - 1, :], p_m[i - 1, :], p_d[i - 1, :]))
+                v = rse._propagate_one_step(v, p_u[i - 1, :], p_m[i - 1, :], p_d[i - 1, :])
 
         first_i = exercise_indices[0]
         for i in range(first_i - 2, fixing_idx - 1, -1):
-            v = (_propagate_price_step_3d(v, p_u[i, :], p_m[i, :], p_d[i, :]) if accumulate
-                else rse._propagate_one_step(v, p_u[i, :], p_m[i, :], p_d[i, :]))
+            v = rse._propagate_one_step(v, p_u[i, :], p_m[i, :], p_d[i, :])
+        results.append(v)
+    return results
+
+
+def _run_month_accumulate_reference(lattice, month, r_grid, quotes_for_next_month, terminal_value,
+                                    v_step, daily_max_clips):
+    """`_run_month`'s own accumulate=True path BEFORE it was wired to the
+    Numba kernel -- the pure-Python `for k in range(n_r)` loop over
+    `accumulate_step`/`_exercise_step_3d`/`_propagate_price_step_3d`, kept
+    verbatim as an independent reference `tests/test_reset_swing_kernels.py`
+    checks the kernel against directly. Not called by `_run_month` itself any
+    more (that would make the comparison circular -- compiled kernel against
+    itself); exists ONLY so a change to the kernel has something independent,
+    slow-but-trusted to be checked against, the same role
+    `_run_month_for_one_fixing_node` plays for the point-reset benchmark.
+    """
+    date_span = lattice["date_span"]
+    x, p_u, p_m, p_d, d_curve = (lattice["x"], lattice["p_u"], lattice["p_m"],
+                                 lattice["p_d"], lattice["d_curve"])
+    exercise_indices = [date_span.get_loc(d) for d in month.exercise_dates]
+    fixing_idx = date_span.get_loc(month.fixing_date)
+    n_r = len(r_grid)
+    n_days = len(exercise_indices)
+
+    results = []
+    for k in range(n_r):
+        strike = float(r_grid[k])
+        v = terminal_value.copy()
+
+        for pos, i in enumerate(reversed(exercise_indices)):
+            spot = np.exp(x[i, :])
+            weight_so_far = float(n_days - 1 - pos)
+            v = accumulate_step(v, r_grid, quotes_for_next_month[i, :], weight_so_far, 1.0)
+            v = _exercise_step_3d(v, spot, strike, d_curve[i], v_step, daily_max_clips)
+            if i > 0:
+                v = _propagate_price_step_3d(v, p_u[i - 1, :], p_m[i - 1, :], p_d[i - 1, :])
+
+        first_i = exercise_indices[0]
+        for i in range(first_i - 2, fixing_idx - 1, -1):
+            v = _propagate_price_step_3d(v, p_u[i, :], p_m[i, :], p_d[i, :])
         results.append(v)
     return results
 
