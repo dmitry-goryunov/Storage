@@ -13,6 +13,26 @@ paths reaching the SAME node can have accumulated DIFFERENT running
 averages -- so it needs a real discretised grid with interpolation (sec.7.1's
 explicit instruction, not avoidable here the way it was for point-reset).
 
+Same-day ordering, an explicit named convention (2026-09-14
+INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-03): on a day that is both a fixing-
+observation day for M+1 and an exercise day for M, this module folds today's
+quote into the running average FIRST, then makes today's exercise decision
+against it -- "fixing-before-exercise". This is correct only if the fixing
+observation is genuinely available before the nomination/exercise deadline;
+if real settlement publishes AFTER nomination, the recursion would be giving
+the exercise decision look-ahead it would not really have. No real term
+sheet exists, so which order a real contract would specify is unknown --
+what is fixed here is that the code consistently implements ONE named order
+rather than an unstated, arbitrary one, and that the choice is genuinely
+consequential, not a distinction without a difference: `accumulate_step`
+(interpolation) and `_exercise_step_3d` (a pointwise max) do not commute in
+general, so "fixing-after-exercise" is not merely an equivalent
+reformulation -- confirmed directly, not just argued, in
+`tests/test_reset_swing_averaged.py::test_same_day_ordering_is_fixing_before_exercise_and_the_choice_is_consequential`.
+A real term sheet specifying the opposite order would need this module's own
+per-day loop restructured (exercise before accumulate on the affected days),
+not merely a parameter flip.
+
 Month-chaining structure (this took a real bug to get right -- see the r_grid
 sizing test's docstring below for what went wrong first): each month's own
 processing loops over every INCOMING accumulator bucket (fixing that month's

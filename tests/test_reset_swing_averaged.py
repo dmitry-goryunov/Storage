@@ -495,6 +495,62 @@ def test_a_fixing_only_day_folds_into_the_next_months_strike_without_its_own_exe
         f"DP+interpolation: {code_pv}, brute force: {total}")
 
 
+def test_same_day_ordering_is_fixing_before_exercise_and_the_choice_is_consequential():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-03: on a day that is
+    BOTH a fixing-observation day (folds into next month's strike) and an
+    exercise day (this month's own decision), the production code folds
+    today's quote into the accumulator BEFORE making today's exercise
+    decision -- "fixing-before-exercise", an explicit prototype convention
+    (see reset_swing_averaged.py's own module docstring), correct only if the
+    fixing observation is genuinely available before the nomination deadline.
+    No real term sheet exists, so which order a real contract would specify
+    is unknown; what this test pins is that the CODE consistently implements
+    one particular, named order, and that order is not an arbitrary
+    implementation detail -- swapping it (fixing-after-exercise: exercise
+    first, using the PRE-fold continuation, then fold today's quote in) gives
+    a materially different number, not the same one reached a different way.
+
+    Uses `accumulate_step`/`_exercise_step_3d` directly (both already
+    extensively brute-force-verified elsewhere in this file) rather than a
+    fresh brute force of its own: the question here is not "is the
+    arithmetic correct" but "does resequencing two already-correct steps
+    change the answer", which comparing the two orderings directly answers
+    without needing an independent ground truth.
+    """
+    rng = np.random.default_rng(0)
+    width, n_l, n_r = 3, 3, 20
+    r_grid = np.linspace(10.0, 40.0, n_r)
+    continuation = rng.uniform(-500.0, 500.0, size=(width, n_l, n_r))
+    spot = np.array([22.0, 25.0, 28.0])
+    strike = 25.0
+    df_i = 0.95
+    v_step = 1_000.0
+    daily_max_clips = 1
+    quote_by_node = np.array([20.0, 24.0, 33.0])
+    weight_so_far = 3.0
+
+    # "Fixing-before-exercise" -- the production order (see _run_month_accumulate_reference
+    # and reset_swing_kernels.run_month_accumulate_core, which both accumulate
+    # then exercise on the same day, in this order).
+    fixing_before_exercise = rsa._exercise_step_3d(
+        rsa.accumulate_step(continuation, r_grid, quote_by_node, weight_so_far, 1.0),
+        spot, strike, df_i, v_step, daily_max_clips)
+
+    # "Fixing-after-exercise" -- the alternative the review asks be pinned as
+    # genuinely different, not implemented in production (no term sheet to
+    # justify preferring it, per R-03's own finding).
+    fixing_after_exercise = rsa.accumulate_step(
+        rsa._exercise_step_3d(continuation, spot, strike, df_i, v_step, daily_max_clips),
+        r_grid, quote_by_node, weight_so_far, 1.0)
+
+    diff = np.abs(fixing_before_exercise - fixing_after_exercise)
+    assert diff.max() > 1.0, (
+        f"expected the two same-day orderings to differ materially (interpolation "
+        f"and max() do not commute in general), got max diff {diff.max():.6g} -- "
+        f"if this is now ~0, the scenario no longer demonstrates the point and "
+        f"needs different numbers, not a loosened tolerance.")
+
+
 def test_bracket_check_rejects_a_grid_that_clamps_a_material_lattice_state():
     """The same curve/scale as the multi-month brute-force test above, but
     with r_lo/r_hi narrowed to bracket only month B's range -- exactly the

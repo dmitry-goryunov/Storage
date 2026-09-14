@@ -1036,6 +1036,28 @@ per-thread estimate would suggest. PVs are bit-for-bit unchanged from the pre-fi
 recomputation exactly) -- this is a pure memory/architecture change, not a numerical one.
 298 tests pass (270 before this + 28).
 
+**R-03 (same-day information ordering): named, not fixed -- it cannot be, without a real term
+sheet to specify it.** On a day that is both a fixing-observation day for M+1 and an exercise
+day for M, `_run_month_accumulate_reference` and `run_month_accumulate_core` both fold today's
+quote into the running average FIRST, then make today's exercise decision against the ALREADY-
+FIXED strike -- "fixing-before-exercise", correct only if settlement genuinely publishes before
+the nomination deadline. The review's finding was not that this order is wrong (unknowable
+without the missing term sheet) but that it was chosen silently. Now named explicitly in
+`reset_swing_averaged.py`'s own module docstring, with a one-line cross-reference at the
+kernel's own same-day code. The review also asked whether the choice is even consequential --
+confirmed directly, not just argued: `accumulate_step` (linear interpolation) and
+`_exercise_step_3d` (a pointwise max over exercise quantities) do not commute in general, so
+"fixing-after-exercise" is a genuinely different computation, not an equivalent reformulation
+reached a different way -- a synthetic same-day scenario in
+`tests/test_reset_swing_averaged.py::test_same_day_ordering_is_fixing_before_exercise_and_the_choice_is_consequential`
+shows the two orders diverging by over 400 EUR on values of order a few thousand, using only
+the already brute-force-verified `accumulate_step`/`_exercise_step_3d` primitives directly (no
+new arithmetic to re-verify -- the question is resequencing, not correctness of either step in
+isolation). No production code path for "fixing-after-exercise" was added: with no term sheet
+to justify implementing an alternative, the review's other acceptable option (recording
+publication/exercise timestamps and letting the order follow from them) is deferred rather than
+built speculatively. 299 tests pass (298 before this + 1).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable

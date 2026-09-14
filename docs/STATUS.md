@@ -1,5 +1,19 @@
 # Project status
 
+**As of 2026-09-14 (R-03 closed).** Same-day fixing-vs-exercise ordering is now an explicitly
+named convention, not a silent choice: "fixing-before-exercise" (today's quote folds into next
+month's strike before today's own exercise decision uses the already-fixed one), documented in
+`reset_swing_averaged.py`'s module docstring. Cannot be corrected to a specific "right" order
+without a real term sheet -- what the review actually asked for was that the choice stop being
+silent, and that it be shown to matter. Confirmed directly: `accumulate_step` (interpolation)
+and `_exercise_step_3d` (a pointwise max) do not commute, so swapping the order changes the
+answer by a material amount (>400 EUR on a synthetic scenario of order a few thousand), not
+just re-derives the same number -- pinned in
+`tests/test_reset_swing_averaged.py::test_same_day_ordering_is_fixing_before_exercise_and_the_choice_is_consequential`.
+No alternative production code path added (nothing to justify preferring one without a term
+sheet). 299 tests pass (298 before this + 1). See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
+
 **As of 2026-09-14 (R-09 + R-04 closed).** Two more independent-review findings fixed
 together. R-09 (validation gaps): `ResetSwingTerms` now rejects non-finite numeric fields and
 a non-integer `n_p` explicitly (the old checks already rejected NaN as a side effect, but +inf

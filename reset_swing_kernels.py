@@ -139,7 +139,11 @@ def run_month_accumulate_core(x, p_u, p_m, p_d, d_curve, fixing_indices, n_exerc
 
             # accumulate_step: fold today's own quote into the running
             # average, interpolate the continuation back onto r_grid --
-            # EVERY fixing day, exercisable or not.
+            # EVERY fixing day, exercisable or not. Deliberately BEFORE the
+            # exercise decision below on a day that is both -- an explicit,
+            # documented convention ("fixing-before-exercise"), not an
+            # arbitrary order: see reset_swing_averaged.py's own module
+            # docstring (R-03).
             v_acc = np.empty((width, n_l, n_r), dtype=np.float64)
             for j in range(width):
                 q = quote_by_day[pos, j]
