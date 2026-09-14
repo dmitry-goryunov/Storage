@@ -24,10 +24,23 @@ into again:
      sets it to `month_start - 1 day`, i.e. the preceding month's own last
      day) -- not a separate, later date. Get this wrong and the value handed
      across the accumulation/exercise boundary is off by one lattice step.
+  4. (Found extending this to a genuine two-month chain, below.) `r_grid`
+     must bracket EVERY delivery month's own projected-quote range, not just
+     one of them -- a curve with real month-to-month shape gives each month a
+     different range, and `strike=r_grid[k]` together with `accumulate_step`'s
+     interpolation will silently clamp to whichever range you DID bracket for
+     any node whose true value falls outside it, for an edge (low-probability
+     but not negligible) lattice node, with no exception and a confidently
+     wrong number. `value_averaged_reset_call_swing` now checks this itself
+     (weighted by `lattice["q"]`, since an unweighted check is USELESS in
+     practice -- a truncated lattice piles up real, non-negligible probability
+     at its own edge nodes once enough days have elapsed relative to `n_p`,
+     which is a property of the lattice's own truncation, not something an
+     r_grid could ever be wide enough to fully absorb).
 
-Once the scenario respects all three, the DP and the brute force agree to
-~1e-12 (tighter than point-reset's own 1e-9 bar, since n_p=1 here leaves
-essentially no lattice-approximation error to absorb).
+Once a scenario respects all four, the DP and the brute force agree to
+~1e-12 to ~1e-14 (tighter than point-reset's own 1e-9 bar, since n_p=1 here
+leaves essentially no lattice-approximation error to absorb).
 """
 import numpy as np
 import pandas as pd
@@ -150,6 +163,124 @@ def test_matches_brute_force_enumeration_with_averaged_strike():
         f"DP+interpolation: {code_pv}, brute force: {total}")
 
 
+def test_matches_brute_force_enumeration_across_two_delivery_months():
+    """The single-month test above exercises `_run_accumulation_only` (the
+    pre-deal window) and `_run_month` with `accumulate=False` (the deal's
+    last/only month), but NOT `_run_month` with `accumulate=True` or
+    `_collapse_fresh_axis` -- the code path used by every NON-last month in a
+    real multi-month deal, and the exact code path responsible for three of
+    the five real bugs this module had (see reset_swing_averaged.py's own
+    module docstring). This closes that gap with a genuine two-month chain.
+
+    One pre-deal day (day_P0) fixes month A's strike K_A; month A's own
+    single exercise day (day_A1) is ALSO the sole day that accumulates into
+    month B's strike K_B (a degenerate one-day "average", same as the
+    single-month test's window -- deliberately, to keep this small enough to
+    brute-force literally; multi-day averaging is already covered
+    separately). One mandatory clip total across BOTH months: exercise on A1,
+    or wait and be forced to take B1. Brute force: for each (day_P0, day_A1)
+    node pair (9 combinations, each an exact K_A and K_B), the best of
+    {exercise now at A1} vs {expected forced payoff at B1} -- exactly the
+    same optimal-stopping decomposition as the other exhaustive tests here,
+    extended one step further out.
+    """
+    n_p = 1
+    width = 2 * n_p + 1
+    val_date = pd.Timestamp("2026-01-01")
+    day_P0 = pd.Timestamp("2026-01-02")  # val_date + 1 -- single pre-deal day, fixes K_A
+    fixing_A = day_P0
+    day_A1 = pd.Timestamp("2026-01-03")  # month A's only exercise day; also accumulates -> K_B
+    fixing_B = day_A1                    # month B's fixing == month A's last (only) day
+    day_B1 = pd.Timestamp("2026-01-04")  # month B's only exercise day
+    end_date = pd.Timestamp("2026-01-20")
+
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-01-01":"2026-01-03"] = 26.0
+    curve.loc["2026-01-04":] = 24.0
+
+    lattice = rf.build_lattice(val_date, fixing_A, end_date, vol=0.6, sMR=1.0,
+                              n_p=n_p, daily_curve=curve, discount_rate=0.08)
+    date_span = lattice["date_span"]
+    quotes = rf.project_month_end_quotes(lattice, [day_A1, day_B1])
+    u_A, u_B = date_span.get_loc(day_A1), date_span.get_loc(day_B1)
+    H_A, H_B = quotes[u_A], quotes[u_B]  # H_A: month A's own settlement; H_B: month B's
+    i_P0, i_A1, i_B1 = date_span.get_loc(day_P0), date_span.get_loc(day_A1), date_span.get_loc(day_B1)
+
+    v_step = 1_000.0
+    daily_max_clips = 1
+    terminal_value_B = np.array([[-np.inf, 0.0]] * width)  # must end with l == 1
+    month_A = rt.DeliveryMonth(label=None, fixing_date=fixing_A, exercise_dates=(day_A1,))
+    month_B = rt.DeliveryMonth(label=None, fixing_date=fixing_B, exercise_dates=(day_B1,))
+
+    # r_grid must bracket BOTH K_A's range and K_B's range -- see the module
+    # docstring's trap 4, found precisely by this test's own first attempt.
+    lo = min(H_A[i_P0, :].min(), H_B[i_A1, :].min()) - 1.0
+    hi = max(H_A[i_P0, :].max(), H_B[i_A1, :].max()) + 1.0
+    r_grid = np.linspace(lo, hi, 8001)
+
+    results_B = rsa._run_month(lattice, month_B, r_grid, None, terminal_value_B, v_step, daily_max_clips)
+    terminal_value_A = np.stack(results_B, axis=-1)  # (width, n_l, n_r): B's own results, stacked for A
+    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, terminal_value_A, v_step, daily_max_clips)
+    collapsed_A = rsa._collapse_fresh_axis(results_A, label="A")
+    v_by_r_l0 = np.stack([arr[:, 0] for arr in collapsed_A], axis=1)  # (width, n_r), fn of K_A
+    quote_by_date = {day_P0: H_A[i_P0, :]}
+    v_at_root = rsa._run_accumulation_only(lattice, [day_P0], r_grid, quote_by_date, v_by_r_l0)
+    root_row = v_at_root[n_p, :]
+    assert root_row.max() - root_row.min() < 1e-6, "root value should not depend on the starting r bucket"
+    code_pv = float(root_row[0])
+
+    p_u, p_m, p_d, x, dc = (lattice["p_u"], lattice["p_m"], lattice["p_d"],
+                            lattice["x"], lattice["d_curve"])
+    spotA1, spotB1 = np.exp(x[i_A1, :]), np.exp(x[i_B1, :])
+    p_jP0 = _forward_point_mass(p_u, p_m, p_d, 0, n_p, i_P0, width)
+
+    total = 0.0
+    for jP0 in range(width):
+        w0 = p_jP0[jP0]
+        if w0 < 1e-15:
+            continue
+        K_A = float(H_A[i_P0, jP0])
+        p_jA1 = _forward_point_mass(p_u, p_m, p_d, i_P0, jP0, i_A1, width)
+        for jA1 in range(width):
+            w1 = p_jA1[jA1]
+            if w1 < 1e-15:
+                continue
+            K_B = float(H_B[i_A1, jA1])
+            exercise_now = dc[i_A1] * v_step * (spotA1[jA1] - K_A)
+            p_jB1 = _forward_point_mass(p_u, p_m, p_d, i_A1, jA1, i_B1, width)
+            wait_then_forced_at_B = sum(
+                p_jB1[jB1] * dc[i_B1] * v_step * (spotB1[jB1] - K_B)
+                for jB1 in range(width) if p_jB1[jB1] > 1e-15)
+            total += w0 * w1 * max(exercise_now, wait_then_forced_at_B)
+
+    assert code_pv == pytest.approx(total, abs=1e-6), (
+        f"DP+interpolation: {code_pv}, brute force: {total}")
+
+
+def test_bracket_check_rejects_a_grid_that_clamps_a_material_lattice_state():
+    """The same curve/scale as the multi-month brute-force test above, but
+    with r_lo/r_hi narrowed to bracket only month B's range -- exactly the
+    mistake this test file's own first attempt at that test made (trap 4 in
+    the module docstring). Must raise, not silently clamp and return a
+    confidently wrong number."""
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-04-01":"2026-04-30"] = 26.0
+    curve.loc["2026-05-01":"2026-05-31"] = 24.0
+
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-04-01", storage_end="2026-05-31",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=0.4, sMR=1.0, discount_rate=0.05, n_p=8)
+    schedule = rt.build_reset_schedule(terms)
+
+    with pytest.raises(ValueError, match="does not bracket"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=200, r_lo=21.0, r_hi=27.0)
+
+    # A grid wide enough for BOTH months' ranges must not raise.
+    rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=200, r_lo=15.0, r_hi=35.0)
+
+
 def test_accumulate_step_is_constant_at_the_zero_weight_boundary():
     """At weight_so_far=0 (nothing folded in yet), r_new = quote_by_node[j] for
     EVERY r_grid entry -- the output must be independent of which bucket you
@@ -217,15 +348,19 @@ def test_matches_point_reset_when_the_averaging_window_is_a_single_day():
     schedule = rt.build_reset_schedule(terms)
 
     point_pv = rse.value_point_reset_call_swing(terms, schedule, daily_curve=curve)
-    # r_lo/r_hi bracket the curve tightly (24.0 +/- 4) rather than broadly:
-    # this deal has a real, binding global-volume cap (5 of 30 possible days),
-    # so the value-vs-K surface has a genuine kink, and -- same O(1/n_r)
-    # story as test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol
-    # below -- a wide range at this n_r leaves visible interpolation error
-    # (rel ~1e-4 over [15,35]) even though nothing about the DP is wrong; a
-    # tight range gets the same n_r to rel ~1e-6.
+    # r_lo/r_hi bracket the curve fairly tightly (24.0 +/- 8, not +/- 20) rather
+    # than broadly: this deal has a real, binding global-volume cap (5 of 30
+    # possible days), so the value-vs-K surface has a genuine kink, and -- same
+    # O(1/n_r) story as test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol
+    # below -- a much wider range at this n_r leaves visible interpolation
+    # error even though nothing about the DP is wrong. [20, 28] once looked
+    # tight enough, but value_averaged_reset_call_swing's own bracket check
+    # (added after a real multi-month bug turned out to be exactly this: too
+    # narrow a grid silently clamping a materially-probable lattice state)
+    # correctly rejects it -- at vol=0.3 the lattice's own >=1e-6-probability
+    # states reach [20.32, 28.16], just outside [20, 28].
     averaged_pv = rsa.value_averaged_reset_call_swing(
-        terms, schedule, curve, n_r=400, r_lo=20.0, r_hi=28.0)
+        terms, schedule, curve, n_r=400, r_lo=16.0, r_hi=32.0)
 
     assert averaged_pv == pytest.approx(point_pv, rel=1e-4)
 

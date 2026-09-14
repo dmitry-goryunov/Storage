@@ -227,14 +227,26 @@ def _collapse_fresh_axis(results, label=""):
     return collapsed
 
 
-def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_hi):
+def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_hi, quotes=None):
     """The Release 1B root value: EUR PV at (val_date, centre price node, zero
     cumulative volume). Call swing, equal-weighted monthly average, identity
     reset formula (sec.2's simple case), same scope restrictions as
     `reset_terms.ResetSwingTerms` otherwise. `n_r`, `r_lo`, `r_hi`: the
-    accumulator grid -- pick `r_lo`/`r_hi` to comfortably bracket the curve's
-    own range; `_collapse_fresh_axis` and the pre-deal check below will raise
-    rather than silently misprice if the grid turns out too narrow.
+    accumulator grid -- pick `r_lo`/`r_hi` to comfortably bracket EVERY
+    month's own projected quote, not just the curve's spot level: a shaped
+    curve gives each delivery month a genuinely different projected range
+    (confirmed the hard way -- see tests/test_reset_swing_averaged.py's
+    multi-month brute-force test, whose first attempt bracketed only the
+    LAST month's range and silently clamped the first month's higher one to
+    the grid edge, no exception, a confidently wrong answer). The check just
+    below turns that into a raise instead.
+
+    `quotes`: an optional precomputed `{month_end_index: H}` (from
+    `reset_forward.project_month_end_quotes`) to use for the RESET STRIKES in
+    place of the ones this call would otherwise derive from its own lattice --
+    the same override `reset_swing_exact.value_point_reset_call_swing` takes,
+    for the same reason: `compute_deltas` below freezes one lattice's strikes
+    while bumping the other's spot.
     """
     lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
                                vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
@@ -248,7 +260,38 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
     width = 2 * terms.n_p + 1
     r_grid = np.linspace(r_lo, r_hi, n_r)
 
-    all_h = rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+    all_h = rf.project_month_end_quotes(lattice, schedule.month_end_dates) if quotes is None else quotes
+
+    # Bracket check, weighted by lattice["q"] (unconditional probability of
+    # (date i, node j) from val_date) rather than a plain min/max over every
+    # node: a trinomial lattice truncated to `n_p` steps genuinely piles up
+    # material probability at its own edge nodes once enough days have
+    # elapsed relative to n_p (found empirically -- an n_p=8, ~4-month lattice
+    # showed 3-4% probability sitting AT the edge, not a negligible tail), so
+    # an unweighted check would demand an r_grid wide enough to cover states
+    # that are edge-of-lattice-truncation artefacts, not economically
+    # material ones -- defeating the purpose of a tight, accurate grid.
+    # Cells below 1e-6 probability are excluded; worst case that admits at
+    # most a few hundred dates' worth of genuinely negligible mass (~1e-4),
+    # not a meaningfully mispriced result.
+    q = lattice["q"]
+    for month_end in schedule.month_end_dates:
+        u = date_span.get_loc(month_end)
+        H_rows, q_rows = all_h[u][: u + 1, :], q[: u + 1, :]
+        material = q_rows >= 1e-6
+        if not material.any():
+            continue
+        H_material = H_rows[material]
+        if H_material.min() < r_lo or H_material.max() > r_hi:
+            raise ValueError(
+                f"r_lo/r_hi=[{r_lo}, {r_hi}] does not bracket the model's own "
+                f"projected quote for {month_end:%Y-%m-%d} (observed range "
+                f"[{H_material.min():.4f}, {H_material.max():.4f}] over lattice "
+                f"states with >= 1e-6 probability of occurring). accumulate_step's "
+                f"np.interp would silently CLAMP rather than extrapolate here -- "
+                f"pricing against a strike that can never actually occur, with no "
+                f"error. Widen r_lo/r_hi to bracket every delivery month's own "
+                f"range, not just one of them.")
 
     l_grid = np.arange(n_l)
     admissible = (l_grid >= lo_clip) & (l_grid <= hi_clip)
@@ -307,3 +350,48 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
             f"starting r bucket, but varies by {spread:.6g} (scale {scale:.6g}) "
             f"-- widen r_lo/r_hi or increase n_r before trusting this result.")
     return float(root_row[0])
+
+
+def compute_deltas(terms, schedule, daily_curve, n_r, r_lo, r_hi, bump_eur_mwh=0.10):
+    """Same three central-finite-difference measures as
+    `reset_swing_exact.compute_deltas` -- see there for the full rationale
+    (total is authoritative; physical_leg/index_leg are a diagnostic
+    attribution, not asserted to sum to total exactly). Repeated here rather
+    than shared because the two `value_*_call_swing` signatures differ (this
+    one also takes the accumulator grid); the bump/freeze pattern itself is
+    identical.
+
+    `r_lo`/`r_hi` are held fixed across every bumped valuation: a bump of
+    `bump_eur_mwh` (0.10 EUR/MWh by default) moves any projected quote by at
+    most that much, negligible next to any grid margin wide enough to pass
+    `value_averaged_reset_call_swing`'s own bracket check in the first place.
+    """
+    def _bumped(sign):
+        return daily_curve + sign * bump_eur_mwh
+
+    def _quotes_for(curve_for_strikes):
+        lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
+                                   vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
+                                   daily_curve=curve_for_strikes, discount_rate=terms.discount_rate)
+        return rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+
+    def _value(curve_for_spot, quotes_for_strikes):
+        return value_averaged_reset_call_swing(
+            terms, schedule, curve_for_spot, n_r, r_lo, r_hi, quotes=quotes_for_strikes)
+
+    base_quotes = _quotes_for(daily_curve)
+
+    pv_up = _value(_bumped(+1), None)
+    pv_down = _value(_bumped(-1), None)
+    total = (pv_up - pv_down) / (2.0 * bump_eur_mwh)
+
+    phys_up = _value(_bumped(+1), base_quotes)
+    phys_down = _value(_bumped(-1), base_quotes)
+    physical_leg = (phys_up - phys_down) / (2.0 * bump_eur_mwh)
+
+    idx_up = _value(daily_curve, _quotes_for(_bumped(+1)))
+    idx_down = _value(daily_curve, _quotes_for(_bumped(-1)))
+    index_leg = (idx_up - idx_down) / (2.0 * bump_eur_mwh)
+
+    return dict(total=total, physical_leg=physical_leg, index_leg=index_leg,
+               bump_eur_mwh=bump_eur_mwh)

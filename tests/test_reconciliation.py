@@ -2107,6 +2107,13 @@ deltas = namespace["DELTAS"]
 combined = deltas["physical_leg"] + deltas["index_leg"]
 assert abs(combined - deltas["total"]) < 1e-3 * abs(deltas["physical_leg"])
 assert deltas["physical_leg"] > 0 and deltas["index_leg"] < 0
+
+assert math.isfinite(namespace["PV_POINT_SMALL"])
+assert math.isfinite(namespace["PV_AVERAGED"])
+deltas_avg = namespace["DELTAS_AVG"]
+combined_avg = deltas_avg["physical_leg"] + deltas_avg["index_leg"]
+assert abs(combined_avg - deltas_avg["total"]) < 1e-2 * abs(deltas_avg["physical_leg"])
+assert deltas_avg["physical_leg"] > 0 and deltas_avg["index_leg"] < 0
 print("MONTHLY_RESET_SWING_OK")
 '''
     env = os.environ.copy()

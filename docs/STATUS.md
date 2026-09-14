@@ -1,5 +1,26 @@
 # Project status
 
+**As of 2026-09-14 (later still still still).** The monthly-reset swing feature is now
+complete for both reset conventions. Closed the three gaps Release 1B's own landing left
+open. **A genuine two-month brute-force cross-check** -- the first literal enumeration to
+exercise `_run_month(accumulate=True)`/`_collapse_fresh_axis`, the exact code path behind
+three of the five earlier bugs -- found one more real, previously-unknown risk before
+confirming correctness: a too-narrow `r_grid` (bracketing only one month's own range) let
+`accumulate_step` silently CLAMP a materially-probable lattice state instead of raising, a
+confidently wrong PV with no exception. Once the grid brackets every month's range, DP and
+brute force agree to ~1e-14. **`value_averaged_reset_call_swing` now checks this itself**,
+weighted by the lattice's own `q` (unconditional per-date-per-node probability) rather than
+a plain min/max -- an unweighted check would be useless in practice, since a truncated
+lattice genuinely piles up non-negligible probability at its own edge nodes once enough days
+have elapsed relative to `n_p` (3-4% sitting AT the edge on one real configuration, nowhere
+near a negligible tail). **Hedge sensitivities for the averaged reset**
+(`reset_swing_averaged.compute_deltas`, same three-measure pattern and `quotes=` freeze as
+Release 1A) show the same large-and-mostly-offsetting-legs behaviour as the point reset.
+**Wired into `MonthlyResetSwing.ipynb`** as a new section 5, on a smaller, separate 2-month
+term sheet chosen purely so the notebook keeps executing in seconds rather than minutes.
+255 tests pass (249 before this + 6). See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
+
 **As of 2026-09-14 (later still still).** Release 1B, the averaged (not point) reset,
 landed: the strike is now a genuine equal-weighted running average of the model's
 month-ahead projection over every calendar day of the preceding month, not a single
@@ -401,7 +422,7 @@ charts. The other committed outputs are unchanged by this review.
 | [`docs/INDEPENDENT-REVIEW-2026-09-10.md`](INDEPENDENT-REVIEW-2026-09-10.md) | The review itself, with its evidence archive beside it. Every file it inspected hashes identical to this working copy |
 | [`docs/FINDINGS-2026-09-10.md`](FINDINGS-2026-09-10.md) | The storage day — dated inventory bounds, ratchets, fuel loss, the delta split and hedge stability; five defects, three claims corrected, four decisions. **Three claims in it are withdrawn** — see the response |
 | [`docs/DESIGN-P4.1-two-factor.md`](DESIGN-P4.1-two-factor.md) | Plan for the second factor: the measured case, the lattice-vs-LSMC fork, and step-by-step |
-| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A, `reset_swing_exact.py`) and averaged-reset (Release 1B, `reset_swing_averaged.py`) exact benchmarks are built and brute-force verified; production-scale sizing (Release 2) is still open |
+| [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md) | A swing whose strike resets monthly from a model-internal month-ahead projection. Both point-reset (Release 1A) and averaged-reset (Release 1B) are built, brute-force verified (including the multi-month chaining path), delta-hedged and wired into `MonthlyResetSwing.ipynb`; production-scale sizing (Release 2) is still open |
 | [`docs/FINDINGS-2026-09-09.md`](FINDINGS-2026-09-09.md) | What the time-value work found and corrected — nine defects, four wrong claims, the behaviour now pinned by tests, and three process traps |
 | [`docs/CODEX-HANDOVER-2026-09-09.md`](CODEX-HANDOVER-2026-09-09.md) | Handover for continuing the corrected project in the Codex extension for Visual Studio Code |
 | [`docs/MODEL-CONVENTIONS.md`](MODEL-CONVENTIONS.md) | What the inputs and outputs mean — signs, units, discounting, the invariant, and what is not calibrated. **Read this before using a number.** |

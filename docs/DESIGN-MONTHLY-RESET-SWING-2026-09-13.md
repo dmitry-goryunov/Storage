@@ -824,13 +824,52 @@ volume, no historical fixings):**
   (`rel=1e-4`, using the real `ResetSwingTerms`/`build_reset_schedule` pipeline end to end),
   and the O(1/n_r) convergence direction and rate on the case that originally looked broken.
 
-**Still not done:** the literal (not differently-coded-reference) brute-force enumeration
-above only covers a single delivery month with a two-day accumulation window -- a genuinely
-multi-month brute-force cross-check would need a much larger enumeration space and has not
-been attempted; hedge sensitivities for the averaged reset (`compute_deltas` is Release 1A
-only); wiring the averaged reset into `MonthlyResetSwing.ipynb` or elsewhere usable; and
-everything in sec.14.7's fixture list beyond what the tests above cover. 249 tests pass in
-the full repository suite (244 before this + 5 in `test_reset_swing_averaged.py`).
+**Done, same day, closing all three gaps named directly above.**
+
+- **A genuine two-month brute-force cross-check**, extending the single-month one: one
+  pre-deal day fixes month A's strike, month A's own single exercise day is ALSO the sole day
+  accumulating into month B's strike, one mandatory clip across both months. This is the first
+  literal enumeration to exercise `_run_month(accumulate=True)` and `_collapse_fresh_axis` --
+  the exact code path responsible for three of the five real bugs found earlier -- and it
+  surfaced a genuine, previously-unknown risk before confirming correctness: the first attempt
+  at this test bracketed `r_grid` only around month B's own projected-quote range, and month
+  A's (materially probable, not tail) higher range silently CLAMPED rather than raised,
+  producing a confidently wrong number with no exception at all. Once `r_grid` brackets both
+  months' ranges, DP and brute force agree to ~1e-14.
+- **`value_averaged_reset_call_swing` now checks that risk itself** rather than leaving it to
+  the caller to discover: before running anything, it verifies `r_lo`/`r_hi` bracket every
+  delivery month's own projected-quote range, weighted by `lattice["q"]` (the unconditional
+  probability of each date/node pair) rather than a plain min/max over every lattice node --
+  an unweighted check turned out to be useless in practice, since a trinomial lattice
+  truncated to `n_p` steps genuinely piles up non-negligible probability at its own edge nodes
+  once enough days have elapsed relative to `n_p` (an n_p=8, ~4-month lattice showed 3-4%
+  probability sitting AT the edge, nowhere near a negligible tail), which an r_grid could
+  never be wide enough to fully absorb without destroying the interpolation accuracy a tight
+  grid exists to provide. Raises with the observed range and a clear explanation instead of
+  silently mispricing.
+- **Hedge sensitivities for the averaged reset.** `reset_swing_averaged.compute_deltas`, same
+  three central-finite-difference measures and the same `quotes=` freeze-one-leg pattern as
+  Release 1A's version (added to `value_averaged_reset_call_swing` for exactly this). On a
+  two-month illustrative deal with a real curve step between the months, the legs are large
+  and mostly offsetting (physical +9,878, index -9,840 on one configuration; the exact split
+  varies with `n_r` since interpolation itself is not delta-neutral), same qualitative
+  behaviour as Release 1A. `tests/test_reset_swing_averaged_deltas.py` pins the sign, the
+  small-net-total-relative-to-the-legs property, and the mandatory-vs-optional physical-leg
+  ordering, with tolerances loosened relative to Release 1A's own delta tests to reflect the
+  added grid-interpolation noise (checked against leg size, not against `total` itself, which
+  is a near-cancellation and so amplifies relative noise).
+- **Wired into `MonthlyResetSwing.ipynb`.** A new section 5, using a smaller, separate term
+  sheet (2 delivery months, `n_p=8`) purely so the notebook keeps running in a few seconds --
+  the same 6-month, `n_p=15` term sheet the point-reset sections use would make the averaged
+  reset's `O(n_r)`-per-incoming-bucket cost impractical for routine execution. Prices both
+  reset conventions on the same smaller deal side by side, and reports the averaged reset's
+  own three-way hedge attribution with the same "small total is not small risk" caveat as the
+  point-reset section.  `tests/test_reconciliation.py::test_monthly_reset_swing_notebook_executes_clean`
+  now also asserts the averaged-reset PV is finite and its deltas carry the expected signs.
+
+**Still not done:** everything in sec.14.7's fixture list beyond what the tests above cover.
+255 tests pass in the full repository suite (249 before this + 6: 2 in
+`test_reset_swing_averaged.py`, 4 in `test_reset_swing_averaged_deltas.py`).
 
 ## 14. Implementation-readiness specification
 
