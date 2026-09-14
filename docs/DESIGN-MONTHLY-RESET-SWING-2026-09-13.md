@@ -851,9 +851,11 @@ volume, no historical fixings):**
   three central-finite-difference measures and the same `quotes=` freeze-one-leg pattern as
   Release 1A's version (added to `value_averaged_reset_call_swing` for exactly this). On a
   two-month illustrative deal with a real curve step between the months, the legs are large
-  and mostly offsetting (physical +9,878, index -9,840 on one configuration; the exact split
-  varies with `n_r` since interpolation itself is not delta-neutral), same qualitative
-  behaviour as Release 1A. `tests/test_reset_swing_averaged_deltas.py` pins the sign, the
+  and mostly offsetting (physical +9,911.63, index -9,895.16, `n_r=60`, recomputed 2026-09-14
+  against the corrected fixing window -- the pre-fix figure quoted here originally, +9,885.12 /
+  -9,848.41, used the wrong window and is superseded; the exact split varies with `n_r` since
+  interpolation itself is not delta-neutral), same qualitative behaviour as Release 1A.
+  `tests/test_reset_swing_averaged_deltas.py` pins the sign, the
   small-net-total-relative-to-the-legs property, and the mandatory-vs-optional physical-leg
   ordering, with tolerances loosened relative to Release 1A's own delta tests to reflect the
   added grid-interpolation noise (checked against leg size, not against `total` itself, which
@@ -901,6 +903,16 @@ not only the test that first tripped over it. Measured impact: the same 6-month 
 of PV to `n_r=600` in about 3 minutes; `n_r=600` itself takes 13.4 minutes, not the hour-plus
 extrapolated for the pure-Python path. 262 tests pass (255 before this + 7 in
 `tests/test_reset_swing_kernels.py`).
+
+*PV figures above recomputed 2026-09-14 against the corrected fixing window (the P0 fix
+entry immediately below): `n_r=30` PV=176,731.74 (1.3s), `n_r=300` PV=165,615.76 (170s),
+`n_r=600` PV=165,226.49 (717s, ~12.0 minutes). The pre-fix PV figures originally quoted here
+(182,057.25 / 170,806.60 / 170,393.52) used the wrong window and are superseded; they moved
+because the corrected window is genuinely narrower (a real calendar month, not "every day
+since val_date"), not because anything about the DP or the Numba kernel changed. The
+qualitative claims (impractical before, ~1.5s/~3min/~12min after, residual gap under 0.3% of
+PV between `n_r=300` and `n_r=600` -- 389/165,226 = 0.24% on the recomputed figures) all still
+hold; only the absolute PVs moved.*
 
 **P0 correctness fix: the averaged reset's fixing window was wrong (2026-09-14
 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-01/R-02).** An independent review of the branch,
@@ -950,16 +962,29 @@ with fixing-only days ahead of the exercise window, not only the degenerate case
 calendars coincide. 270 tests pass (262 before this + 8: 5 in `test_reset_terms.py`, 2 in
 `test_reset_swing_averaged.py`, 1 in `test_reset_swing_kernels.py`'s existing parametrisation).
 
-**Still not corrected, named so it is not silently forgotten:** every PV, delta and timing
-figure reported earlier in this document and in `MonthlyResetSwing.ipynb` was computed under
-the WRONG window and is not representative of the corrected code -- none has been recomputed
-and republished here; treat every number before this entry as illustrative of the mechanism
-only, not of the corrected contract's actual value. R-03 through R-11 from the same review
-(same-day information-ordering assumption, production memory not yet reduced, "exact"
-terminology, Release 1B's still-restricted scope, missing simultaneous global/monthly state,
-missing result-object outputs, remaining validation gaps, missing sec.14.7 fixtures, and the
-document-structure critique this section's own running-log format is an instance of) are not
-addressed by this entry and remain open.
+**Recomputed and republished, 2026-09-14, same day:** every PV, delta and timing figure
+reported earlier in this document was computed under the WRONG window; the ones this document
+itself quotes as specific numbers -- the Release 2 Numba-kernel benchmark immediately above
+(now annotated in place with both the pre-fix and recomputed PVs) and the averaged-reset delta
+example a few entries up (physical/index legs, now recomputed to +9,911.63/-9,895.16) -- have
+now been recomputed against the corrected window and republished in place, rather than left
+stale. `MonthlyResetSwing.ipynb` itself needed no republishing: it never stores output (the
+staleness guard `test_monthly_reset_swing_notebook_executes_clean` enforces this), so it shows
+correct figures automatically on its next run -- confirmed by executing it fresh:
+averaged-reset PV 12,075.30 EUR against point-reset's 10,876.83 on its own smaller term sheet
+(an 11.0% difference, itself a real, illustrative consequence of the fix -- the pre-fix
+averaged PV on that same small scenario would have been computed over a wider, wrong window).
+Point-reset figures throughout this document are unaffected by any of this: R-01/R-02 are
+defects in `reset_swing_averaged.py` only, and point-reset never calls it. What is NOT yet
+recomputed: any number in this document's own earlier historical/debugging narrative sections
+(the "five bugs, then a sixth that wasn't" account, and similar) -- those describe what was
+actually observed at the time as a diagnostic record, not a current-state claim, so they do
+not need correcting. R-03 through R-11 from the same review (same-day information-ordering
+assumption, production memory not yet reduced, "exact" terminology, Release 1B's
+still-restricted scope, missing simultaneous global/monthly state, missing result-object
+outputs, remaining validation gaps, missing sec.14.7 fixtures, and the document-structure
+critique this section's own running-log format is an instance of) are not addressed by this
+entry and remain open.
 
 ## 14. Implementation-readiness specification
 

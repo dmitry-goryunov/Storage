@@ -1,5 +1,19 @@
 # Project status
 
+**As of 2026-09-14 (figures recomputed and republished).** Every specific PV/delta number the
+P0 fix below had flagged as stale has now been recomputed against the corrected window and
+republished in place in `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`: the Release 2 Numba
+benchmark (`n_r=30/300/600` PVs, annotated with both the old and corrected figures -- the
+qualitative claims, timings and the "<0.3% of PV" convergence gap all still hold, only the
+absolute PVs moved, by about 3%, because the corrected window is genuinely narrower) and the
+averaged-reset delta example (legs now +9,911.63/-9,895.16). `MonthlyResetSwing.ipynb` needed
+no republishing -- it never stores output, so it already shows correct figures on every run;
+confirmed by executing it fresh (averaged PV 12,075.30 EUR against point-reset's 10,876.83 on
+its own smaller term sheet). Point-reset figures throughout were never affected -- R-01/R-02
+are defects in `reset_swing_averaged.py` only. Historical/debugging narrative figures (the
+"five bugs, then a sixth that wasn't" account) are left as-is: they record what was actually
+observed at the time, not a current-state claim, so there is nothing to correct there.
+
 **As of 2026-09-14 (P0 fix: the averaged reset's fixing window was wrong).** An independent
 review ([`docs/INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md`](INDEPENDENT-REVIEW-MONTHLY-RESET-SWING-2026-09-14.md))
 found, and this project's own re-derivation from the design doc's own stated convention
@@ -20,7 +34,8 @@ caught the original bug) plus 6 more pinning the schedule-layer fix directly. 27
 (262 before this + 8). **Every PV, delta and runtime figure reported before this entry --
 including in `MonthlyResetSwing.ipynb` and everywhere in `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`
 before this fix -- was computed under the wrong window and is not representative of the
-corrected code; none has been recomputed or republished yet.** See
+corrected code.** (Recomputed and republished the same day -- see the newer entry above this
+one.) See
 [`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md)
 for the full account, including the other, still-open findings (R-03 through R-11) from the
 same review.
