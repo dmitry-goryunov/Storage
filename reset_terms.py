@@ -67,6 +67,30 @@ class ResetSwingTerms:
             raise ValueError(
                 f"Need 0 <= global_min_mwh <= global_max_mwh, got "
                 f"{self.global_min_mwh!r} .. {self.global_max_mwh!r}.")
+
+        # Refuse silent grid rounding, the same discipline
+        # storage_model.normalise_storage_contract already enforces for the
+        # fixed-strike engine -- found empirically here: v_step=2000 against
+        # daily_max_mwh=1000 rounds int(round(1000/2000))=0 (banker's rounding
+        # on an exact .5), silently pricing a swing that can never exercise
+        # anything as if that were the requested contract, with no error.
+        clips, achieved, ok = sm._grid_representable(self.daily_max_mwh, self.v_step_mwh)
+        if not ok or clips < 1:
+            raise ValueError(
+                f"daily_max_mwh={self.daily_max_mwh:,.4f} is not expressible as a "
+                f"whole number of v_step_mwh={self.v_step_mwh:,.4f} clips "
+                f"(nearest: {clips} clip(s) = {achieved:,.4f} MWh/day). A clip size "
+                f"at or below the daily rate is required; refine v_step_mwh rather "
+                f"than silently round the daily rate to zero.")
+        for name, value in (("global_min_mwh", self.global_min_mwh),
+                           ("global_max_mwh", self.global_max_mwh)):
+            clips, achieved, ok = sm._grid_representable(value, self.v_step_mwh)
+            if not ok:
+                raise ValueError(
+                    f"{name}={value:,.4f} is not a whole number of "
+                    f"v_step_mwh={self.v_step_mwh:,.4f} clips (nearest: {clips} "
+                    f"clip(s) = {achieved:,.4f} MWh). Refine v_step_mwh or the "
+                    f"requested volume rather than silently rounding it.")
         if self.sMR < 0:
             raise ValueError(f"sMR must be non-negative, got {self.sMR!r}.")
         if self.n_p <= 0:

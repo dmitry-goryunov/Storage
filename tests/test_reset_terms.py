@@ -109,6 +109,24 @@ def test_global_min_above_max_is_refused():
         _terms(global_min_mwh=200_000.0, global_max_mwh=100_000.0)
 
 
+def test_a_daily_rate_that_rounds_to_zero_clips_is_refused():
+    """Found empirically while running the v_step convergence ladder:
+    int(round(daily_max_mwh / v_step_mwh)) rounds 1000/2000=0.5 down to 0 under
+    Python's banker's rounding, silently pricing a swing that can never
+    exercise anything as if that were the requested contract -- the same
+    defect class normalise_storage_contract exists to catch in the fixed-
+    strike engine. Must refuse, not silently round the daily rate to zero."""
+    with pytest.raises(ValueError, match="daily_max_mwh"):
+        _terms(daily_max_mwh=1_000.0, v_step_mwh=2_000.0)
+
+
+def test_a_global_volume_not_expressible_on_the_grid_is_refused():
+    with pytest.raises(ValueError, match="global_max_mwh"):
+        _terms(v_step_mwh=1_000.0, global_max_mwh=10_500.0)
+    with pytest.raises(ValueError, match="global_min_mwh"):
+        _terms(v_step_mwh=1_000.0, global_min_mwh=500.0, global_max_mwh=10_000.0)
+
+
 def test_a_single_day_window_on_a_month_end_still_has_one_month():
     # storage_end before storage_start can't happen (constructor refuses it);
     # this is the smallest non-empty window the schedule builder accepts, to

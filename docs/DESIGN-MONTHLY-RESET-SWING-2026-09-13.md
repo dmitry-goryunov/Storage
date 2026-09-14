@@ -716,10 +716,46 @@ volume, no historical fixings):**
   taken from the caller; a dead conditional left over from an earlier draft of the
   within-month loop) were caught by review before any test ran, not by a failing test.
 
-**Not yet done:** sec.10.3's exhaustive-enumeration cross-check against a brute-force
-scenario tree, sec.10.4's convergence ladders (`n_p`, `n_l`, tree boundary), the averaged
-(non-point) reset, and everything in sec.14.7's fixture list beyond what the tests above
-already cover. 229 tests pass in the full repository suite (198 before this + 31 here).
+**Done, same day, follow-through on what was flagged above as not yet done:**
+
+- **Real volatility, not just the deterministic limit.** Every test above used near-zero
+  volatility because that is what makes the answer hand-computable -- none of it exercised
+  the genuinely stochastic core. `tests/test_reset_swing_stochastic.py` closes that:
+  value rises with volatility for optional exercise (0.1 -> 1.2 moves PV from 2,628 to
+  31,593 on a one-month case -- monotonic and not marginal, the standard option-pricing
+  sanity check) and, more importantly, an independently-coded reference implementation
+  (plain nested Python loops over every `(j,l,d)`, no NumPy shift/broadcast shared with
+  `reset_swing_exact.py`) matches the vectorised solver exactly (`abs` tolerance 1e-6) across
+  four real-volatility, real-mean-reversion, mandatory/optional/partial-volume
+  configurations -- sec.10.3's independent-exact-test requirement, done at parameters that
+  actually exercise the stochastic recursion rather than the sec.10.2 degenerate case.
+- **A real bug, found by the convergence ladder, not by inspection.** Widening `n_p` from 6
+  to 28 converges cleanly (0.023% -> 0.0000% successive relative moves). Refining `v_step`
+  from 1000 to 125 MWh does not move the price at all once the daily rate is already exact
+  on the coarser grid -- a genuine finding (the optimal policy here is bang-bang, so finer
+  granularity adds no new achievable choice), not a weak test. But the FIRST attempt at
+  that same ladder crashed on `v_step=2000`: `int(round(1000/2000))` rounds the 0.5 clips/day
+  down to **zero** under Python's banker's rounding, silently pricing a swing that could
+  never exercise anything as if that were the requested contract -- the identical defect
+  class `normalise_storage_contract` exists to catch in the fixed-strike engine, now present
+  in code barely a day old. Fixed the same way: `ResetSwingTerms.__post_init__` now calls
+  `storage_model._grid_representable` on `daily_max_mwh` and on both global volume bounds,
+  refusing construction rather than silently rounding. `tests/test_reset_terms.py` pins
+  both the original defect and the fix.
+- **Runtime at deal scale**, machine-indicative only per this repository's own standing
+  caveat about timing claims: a full 12-month deal at `n_p=15`, `n_l=41` (a clip fine
+  enough that halving it again does not move the answer, per the finding above) runs in
+  under a second; `n_p=20` or `n_l=81` individually, under three. The deliberately
+  unoptimised pure-Python/NumPy choice (sec.7.1: "small reference, not production scale")
+  is comfortably practical at this scale without needing a Numba rewrite yet.
+
+**Still not done:** sec.10.3's brute-force scenario-tree enumeration in the strict sense
+(the independent reference above is a second, differently-coded implementation of the same
+recursion, not an enumeration of literally every non-anticipating policy -- a meaningfully
+weaker but still real check, and named as such rather than conflated with the stronger one);
+the averaged (non-point) reset; and everything in sec.14.7's fixture list beyond what the
+tests above cover. 238 tests pass in the full repository suite (229 after Phase 0/1, plus 2
+grid-validation tests and 7 in `tests/test_reset_swing_stochastic.py` here).
 
 ## 14. Implementation-readiness specification
 
