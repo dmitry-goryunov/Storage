@@ -85,6 +85,24 @@ def accumulate_step(continuation, r_grid, quote_by_node, weight_so_far, day_weig
     silently). Exposed and tested standalone, not just as an internal step,
     since this is the one genuinely new numerical operation point-reset never
     needed.
+
+    Tried and reverted (Release 2's own "measure before choosing" question,
+    sec.13): two numpy-vectorised rewrites of the `j`/`l` Python loops below
+    (uniform-grid index arithmetic replacing `np.interp`, one via
+    `np.take_along_axis`, one via a width-loop with flat-indexed gathers).
+    Both were a genuine 2-5x win for a LARGE-n_l, small-to-moderate-n_r shape
+    (e.g. a 60,000 MWh/500 MWh-clip deal), but 1.3-5x WORSE for a small-n_l,
+    large-n_r shape (e.g. an 8,000 MWh/1,000 MWh-clip deal needing a fine
+    r_grid) -- numpy per-call dispatch overhead dominating in one regime,
+    `np.interp`'s own tight C loop winning in the other, with no shape-
+    independent middle ground found. Kept the simple, uniformly-correct
+    loop rather than ship a regression that depends on which deal you price.
+    A real fix for the O(n_r^2)-per-accumulating-month cost this hot path
+    sits in needs to eliminate per-call Python/numpy dispatch overhead
+    categorically, which is what storage_kernels.py already uses Numba for
+    elsewhere in this project -- not attempted here without checking in
+    first, given the size of that undertaking and the re-verification it
+    would need against every brute-force test in this module.
     """
     width = continuation.shape[0]
     new_weight = weight_so_far + day_weight

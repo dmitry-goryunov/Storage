@@ -105,7 +105,7 @@ def test_matches_brute_force_enumeration_with_averaged_strike():
 
     Ks = np.array([[(H[i_P1, jp1] + H[i_P2, jp2]) / 2.0 for jp2 in range(width)]
                    for jp1 in range(width)])
-    r_grid = np.linspace(Ks.min() - 0.5, Ks.max() + 0.5, 4001)
+    r_grid = np.linspace(Ks.min() - 0.5, Ks.max() + 0.5, 1001)
 
     results = rsa._run_month(lattice, month, r_grid, None, terminal_value, v_step, daily_max_clips)
     v_by_r_l0 = np.stack([arr[:, 0] for arr in results], axis=1)  # (width, n_r)
@@ -216,7 +216,7 @@ def test_matches_brute_force_enumeration_across_two_delivery_months():
     # docstring's trap 4, found precisely by this test's own first attempt.
     lo = min(H_A[i_P0, :].min(), H_B[i_A1, :].min()) - 1.0
     hi = max(H_A[i_P0, :].max(), H_B[i_A1, :].max()) + 1.0
-    r_grid = np.linspace(lo, hi, 8001)
+    r_grid = np.linspace(lo, hi, 2001)
 
     results_B = rsa._run_month(lattice, month_B, r_grid, None, terminal_value_B, v_step, daily_max_clips)
     terminal_value_A = np.stack(results_B, axis=-1)  # (width, n_l, n_r): B's own results, stacked for A

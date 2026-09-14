@@ -1,5 +1,25 @@
 # Project status
 
+**As of 2026-09-14 (Release 2 investigation).** Measured whether the averaged reset's exact
+DP stays practical at production scale ("stay in DP" -- retain exact dynamic programming
+per sec.14.1's own decision rule, rather than switch to regression Monte Carlo). It does
+not, yet: on the notebook's own 6-month, `n_p=15` term sheet, `n_r=20` (far too coarse to
+trust -- the O(1/n_r) finding says real accuracy needs hundreds to low thousands) already
+takes ~29s; extrapolating the measured scaling to a trustworthy `n_r` reaches on the order
+of an hour. Tried two numpy-vectorised rewrites of `accumulate_step` (replacing its
+Python-loop `np.interp` calls with uniform-grid index arithmetic, one via
+`np.take_along_axis`, one via a width-loop with flat-indexed gathers): both gave a genuine
+2-5x speedup for large-`n_l` deals but were 1.3-5x WORSE for small-`n_l`/large-`n_r` deals
+(numpy per-call dispatch overhead dominating in one regime, `np.interp`'s own tight C loop
+winning in the other) -- no shape-independent win found, so both were reverted rather than
+ship a regression that depends on which deal you price. The credible path forward is a
+Numba JIT rewrite of the hot loop, matching `storage_kernels.py`'s existing precedent in
+this project for exactly this class of problem -- not started without checking in first,
+given the size of the undertaking and the re-verification it would need against the full
+brute-force suite. 255 tests still pass; no test or production code changed behaviour, only
+`reset_swing_averaged.py`'s own docstring (recording what was tried) and two test fixtures'
+`n_r` (reduced from values empirically confirmed identical at 10 decimal places, for speed).
+
 **As of 2026-09-14 (later still still still).** The monthly-reset swing feature is now
 complete for both reset conventions. Closed the three gaps Release 1B's own landing left
 open. **A genuine two-month brute-force cross-check** -- the first literal enumeration to
