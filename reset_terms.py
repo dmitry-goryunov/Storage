@@ -143,6 +143,47 @@ class ResetSchedule:
     month_end_dates: tuple  # pd.Timestamp, one per month, for reset_forward.py
 
 
+@dataclass(frozen=True)
+class ResetSwingResult:
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-08's own MINIMAL
+    scope (explicitly chosen over the design's full sec.14.8 result object,
+    which also specifies deterministic/extrinsic PV split, per-quote-vertex
+    and monthly-bucket deltas, convergence status and audit metadata -- all
+    real new numerical work, not attempted here): a plain wrapper around
+    quantities `value_point_reset_call_swing`/`value_averaged_reset_call_swing`
+    already compute internally and previously discarded on return, plus the
+    already-existing `compute_deltas` output when the caller asks for it.
+
+    `pv`: the same float those functions already returned; unchanged, still
+    the primary number.
+    `reset_strikes`: {month.label: float} -- the ROOT-date (val_date, centre
+    price node) PROJECTED strike for each delivery month. A POINT ESTIMATE,
+    not the full reset-strike distribution sec.14.8 asks for: point-reset's
+    own root-date `H[fixing_idx, n_p]` (already printed by
+    `MonthlyResetSwing.ipynb`'s own section 3) for that reset convention, or
+    the equal-weighted mean of that same root-date projection over the
+    relevant fixing-observation window for the averaged convention -- both
+    computed from quantities (`H`/`all_h`) the valuation already built, not
+    from any new backward induction.
+    `deltas`: the same dict `compute_deltas` already returns (`total`,
+    `physical_leg`, `index_leg`, `bump_eur_mwh`), or `None` if not requested
+    (deltas cost six full valuations -- not run by default).
+
+    Deliberately NOT included, named so the gap is not silently assumed
+    closed: expected exercised volume, the full reset-strike distribution
+    (not just its root-date point estimate), deterministic/extrinsic PV
+    split, bucketed deltas, convergence status, and audit metadata. Every
+    one of these needs either tracking the optimal policy during backward
+    induction (not currently recorded at all -- only the resulting VALUE is
+    kept, not which action achieved it) or a genuinely new calculation, not
+    restructuring what already exists -- out of this pass's own explicit
+    scope (R-08's remaining, still-open portion).
+    """
+    pv: float
+    reset_strikes: dict  # {pd.Period: float}
+    deltas: dict = None
+
+
 def build_reset_schedule(terms):
     """One term object maps to one deterministic ordered event schedule.
 

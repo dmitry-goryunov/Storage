@@ -1116,6 +1116,39 @@ named were already fixed when R-11 itself was first read (see that entry, earlie
 log). Still open: the actual three-way document split, and reconciling section 14.7's
 fixture-completeness language against what tests currently exist (R-10's own scope).
 
+**R-08 (result object), same day, MINIMAL scope: closed, not the full sec.14.8 specification.**
+`reset_terms.ResetSwingResult` -- a frozen dataclass, `pv`/`reset_strikes`/`deltas` -- and two
+new wrapper functions, `value_point_reset_call_swing_detailed` and
+`value_averaged_reset_call_swing_detailed`, that call the existing, completely unmodified
+`value_*_call_swing`/`compute_deltas` and package their outputs. Additive: every existing caller
+of the plain functions is untouched and still gets a bare float back. `reset_strikes` is a
+`{month.label: float}` point estimate -- the model's own root-date, centre-node projected
+strike (point-reset's single fixing-date observation; averaged-reset's equal-weighted mean of
+that same projection over the relevant fixing-observation window) -- not sec.14.8's full strike
+distribution, and `deltas` is exactly `compute_deltas`'s existing dict, populated only when
+`with_deltas=True`. Explicitly excluded, named as gaps in `ResetSwingResult`'s own docstring
+rather than silently omitted: deterministic/extrinsic PV split, per-quote-vertex or
+monthly-bucket deltas, convergence status, audit metadata -- all real new numerical work.
+"Expected exercised volume" was in this task's originally approved scope but turned out to need
+tracking the optimal exercise policy during backward induction, which neither DP currently
+does -- dropped once that became clear, rather than approximated or silently skipped.
+
+Two things worth recording from getting this wrong first, both caught before either shipped: (1)
+an early draft of the averaged-reset wrapper derived each month's fixing window from the
+PRECEDING month's own `exercise_dates` instead of reading that month's own
+`fixing_observation_dates` field directly -- the exact R-01/R-02 conflation this session's
+earlier fix exists to prevent, reintroduced by hand in new code, caught by re-deriving the
+field's documented semantics against `reset_terms.py` itself before trusting the code, not by a
+failing test (every fixture exercised so far happens to have a complete preceding month, where
+the two windows coincide -- a gap for R-10's future fixtures to cover, not fixed here). (2) a
+test written on the assumption that `H[i, n_p]` means "the curve's own value on date i" failed
+where the assumption, not the code, was wrong: `H[i, n_p]` is the model's conditional
+expectation, AS OF date i, of the price AT month-end, which at near-zero vol converges to the
+DELIVERY month's own curve value regardless of which day within the fixing window you read it
+from -- confirmed by cross-checking the two wrappers' `reset_strikes` against each other (agree
+to 9 significant figures on a shared fixture) rather than against a hand guess. 304 tests pass
+(299 before this + 5).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable

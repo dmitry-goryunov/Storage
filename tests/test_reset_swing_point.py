@@ -104,3 +104,67 @@ def test_curve_or_daily_curve_but_not_both_or_neither():
     with pytest.raises(ValueError, match="exactly one"):
         rse.value_point_reset_call_swing(
             terms, schedule, daily_curve=_flat_curve(), curve=_flat_curve())
+
+
+def test_detailed_wrapper_matches_the_plain_call_and_reports_the_hand_computable_strike():
+    """R-08 (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING): the `_detailed`
+    wrapper must be pure plumbing -- same PV as the plain call, and a
+    `reset_strikes` entry that matches the hand-computable value this file's
+    own near-zero-vol convention already establishes (K_May = May 31's own
+    price), not a new independent numerical claim."""
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-05-01", storage_end="2026-05-31",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=5_000.0, global_max_mwh=5_000.0,
+        vol=NEAR_ZERO_VOL, sMR=1.0, discount_rate=0.0, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+
+    curve = _flat_curve()
+    curve.loc["2026-05-01":"2026-05-15"] = 35.0
+    curve.loc["2026-05-16":"2026-05-31"] = 30.0  # includes May 31 itself: K = 30.0
+
+    plain_pv = rse.value_point_reset_call_swing(terms, schedule, daily_curve=curve)
+    result = rse.value_point_reset_call_swing_detailed(terms, schedule, daily_curve=curve)
+
+    assert result.pv == plain_pv
+    assert set(result.reset_strikes) == {schedule.months[0].label}
+    assert result.reset_strikes[schedule.months[0].label] == pytest.approx(30.0, rel=1e-4)
+    assert result.deltas is None
+
+
+def test_detailed_wrapper_with_deltas_matches_compute_deltas_exactly():
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-05-01", storage_end="2026-05-31",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=0.3, sMR=1.0, discount_rate=0.05, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+    curve = _flat_curve()
+
+    expected_deltas = rse.compute_deltas(terms, schedule, curve, bump_eur_mwh=0.10)
+    result = rse.value_point_reset_call_swing_detailed(
+        terms, schedule, daily_curve=curve, with_deltas=True, bump_eur_mwh=0.10)
+
+    assert result.deltas == expected_deltas
+
+
+def test_detailed_wrapper_with_deltas_requires_daily_curve_not_curve():
+    """`compute_deltas` only accepts the `daily_curve` form (see its own
+    docstring); the wrapper must refuse `with_deltas=True` together with the
+    `curve=` alternative rather than let it fail downstream with a confusing
+    error. `curve` here is a minimal valid contract-strip DataFrame -- the
+    shape `Storage.__init__`/`map_curve_to_dates` actually expect (columns
+    contractStart/contractEnd/value spanning the whole valuation window), not
+    a flat daily Series -- so the `pv` computation ahead of the guard clause
+    succeeds and the guard clause itself is what is actually being tested."""
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-05-01", storage_end="2026-05-31",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=0.3, sMR=1.0, discount_rate=0.05, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+    curve = pd.DataFrame([{"contractStart": pd.Timestamp("2026-01-01"),
+                          "contractEnd": pd.Timestamp("2027-01-01"), "value": 30.0}])
+    with pytest.raises(ValueError, match="with_deltas"):
+        rse.value_point_reset_call_swing_detailed(
+            terms, schedule, curve=curve, with_deltas=True)

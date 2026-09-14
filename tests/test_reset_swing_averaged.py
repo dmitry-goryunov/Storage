@@ -737,3 +737,65 @@ def test_finer_r_grid_moves_averaged_reset_toward_point_reset_at_low_vol():
     # this is an empirical rate, not an exact one.
     ratio = (fine - point_pv) / (finer - point_pv)
     assert 2.0 < ratio < 8.0, f"expected roughly first-order convergence, got ratio={ratio}"
+
+
+def test_detailed_wrapper_matches_the_plain_call_and_reports_the_hand_computable_strike():
+    """R-08 (2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING): the `_detailed`
+    wrapper must be pure plumbing -- the SAME pv as the plain call (bit for
+    bit; both build their own fresh, deterministic lattice, so nothing here
+    should differ) -- and a `reset_strikes` entry that agrees with point-reset's
+    OWN `reset_strikes` for the identical fixture, to the same precision
+    test_matches_point_reset_at_near_zero_vol_despite_a_month_long_average
+    above already establishes for PV: `H[i, n_p]` is the model's conditional
+    expectation, AS OF date i, of the price AT month-end -- not date i's own
+    curve value -- so near-zero vol collapses it to (this fixture's) 24.0 on
+    EVERY day of March, point-reset's single fixing-date read and
+    averaged-reset's month-long average included, regardless of March's own
+    curve value (25.0, deliberately left untouched here to make that
+    distinction pointed rather than accidental). n_r is kept small on
+    purpose: reset_strikes is read straight off `all_h`, never off the
+    accumulator DP, so it does not need a large n_r to be exact; only the
+    bracket check needs r_lo/r_hi wide enough to hold.
+    """
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-04-01":"2026-04-30"] = 24.0
+
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-04-01", storage_end="2026-04-30",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=1e-4, sMR=1.0, discount_rate=0.05, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+
+    plain_pv = rsa.value_averaged_reset_call_swing(
+        terms, schedule, curve, n_r=50, r_lo=23.0, r_hi=26.0)
+    result = rsa.value_averaged_reset_call_swing_detailed(
+        terms, schedule, curve, n_r=50, r_lo=23.0, r_hi=26.0)
+    point_result = rse.value_point_reset_call_swing_detailed(terms, schedule, daily_curve=curve)
+
+    assert result.pv == plain_pv
+    assert set(result.reset_strikes) == {schedule.months[0].label}
+    assert result.reset_strikes[schedule.months[0].label] == pytest.approx(
+        point_result.reset_strikes[schedule.months[0].label], rel=1e-3)
+    assert result.reset_strikes[schedule.months[0].label] == pytest.approx(24.0, rel=1e-3)
+    assert result.deltas is None
+
+
+def test_detailed_wrapper_with_deltas_matches_compute_deltas_exactly():
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    curve.loc["2026-04-01":"2026-04-30"] = 24.0
+
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-04-01", storage_end="2026-04-30",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=1e-4, sMR=1.0, discount_rate=0.05, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+
+    expected_deltas = rsa.compute_deltas(
+        terms, schedule, curve, n_r=50, r_lo=23.0, r_hi=26.0, bump_eur_mwh=0.10)
+    result = rsa.value_averaged_reset_call_swing_detailed(
+        terms, schedule, curve, n_r=50, r_lo=23.0, r_hi=26.0,
+        with_deltas=True, bump_eur_mwh=0.10)
+
+    assert result.deltas == expected_deltas

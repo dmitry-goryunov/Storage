@@ -23,6 +23,7 @@ import math
 import numpy as np
 
 import reset_forward as rf
+import reset_terms as rt
 
 
 def _propagate_one_step(v_next, p_u_i, p_m_i, p_d_i):
@@ -203,3 +204,42 @@ def compute_deltas(terms, schedule, daily_curve, bump_eur_mwh=0.10):
 
     return dict(total=total, physical_leg=physical_leg, index_leg=index_leg,
                bump_eur_mwh=bump_eur_mwh)
+
+
+def value_point_reset_call_swing_detailed(terms, schedule, daily_curve=None, curve=None,
+                                          with_deltas=False, bump_eur_mwh=0.10):
+    """`value_point_reset_call_swing`, wrapped into a `reset_terms.ResetSwingResult`
+    (R-08's own minimal scope -- see that dataclass's own docstring for
+    exactly what is and is not included). Does not modify or replace
+    `value_point_reset_call_swing` itself -- every existing caller (tests,
+    `compute_deltas`, the notebook) keeps getting a plain float back,
+    unchanged; this is a new, additive entry point for callers who want the
+    structured result instead.
+
+    `reset_strikes` here is exact, not an approximation: for point-reset,
+    `H[fixing_idx, n_p]` (the root-date projection at the centre price node)
+    IS the month's own strike whenever the actual path happens to stay at
+    the centre node, and is the correct EXPECTED strike (under the model's
+    own risk-neutral measure) in general, by the conditional-expectation
+    identity `reset_forward.py` itself is built on.
+    """
+    lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
+                               vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
+                               daily_curve=daily_curve, curve=curve,
+                               discount_rate=terms.discount_rate)
+    date_span = lattice["date_span"]
+    quotes = rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+    reset_strikes = {}
+    for month, month_end in zip(schedule.months, schedule.month_end_dates):
+        H = quotes[date_span.get_loc(month_end)]
+        reset_strikes[month.label] = float(H[date_span.get_loc(month.fixing_date), terms.n_p])
+
+    pv = value_point_reset_call_swing(terms, schedule, daily_curve=daily_curve, curve=curve)
+    deltas = None
+    if with_deltas:
+        if daily_curve is None:
+            raise ValueError(
+                "with_deltas=True needs daily_curve (compute_deltas only accepts "
+                "that form, not curve) -- pass daily_curve explicitly.")
+        deltas = compute_deltas(terms, schedule, daily_curve, bump_eur_mwh=bump_eur_mwh)
+    return rt.ResetSwingResult(pv=pv, reset_strikes=reset_strikes, deltas=deltas)

@@ -6,9 +6,41 @@ R-06):** entries below call the averaged reset "Release 1B" throughout, matching
 sec.14's own section numbering -- but what is built is a call-only, equal-weighted,
 identity-reset, wholly-future-fixing RESTRICTED PROTOTYPE of that section's own broader
 specification (multiple weighted observations, put direction, historical/partial fixings,
-per-month limits, a stable result object), not the full Release 1B. Read every "Release 1B"
-below with that qualification; R-10 (missing sec.14.7 acceptance fixtures) and R-08 (missing
-result object) are exactly the gap between the two, and remain open.
+per-month limits, a full-featured result object), not the full Release 1B. Read every
+"Release 1B" below with that qualification; R-10 (missing sec.14.7 acceptance fixtures) is the
+remaining gap. R-08 (result object) closed in minimal scope -- see its own dated entry below --
+so `ResetSwingResult` now exists, but only as a point-estimate wrapper around what the DP
+already computed, not sec.14.8's full specification (strike distribution, PV split, bucketed
+deltas, convergence status, audit metadata).
+
+**As of 2026-09-14 (R-08 closed, minimal scope).** `reset_terms.ResetSwingResult`
+(a frozen dataclass: `pv`, `reset_strikes`, `deltas`) is a new, additive result object both
+`value_point_reset_call_swing_detailed` and `value_averaged_reset_call_swing_detailed` return
+-- new wrapper functions that call the existing, unmodified `value_*_call_swing`/`compute_deltas`
+and package their outputs, rather than a rewrite of either. Deliberately the MINIMAL scope the
+review's own sec.14.8 result object specifies, not the full one: `reset_strikes` is a single
+root-date point estimate per month (the model's own centre-node projection -- one observation
+for point-reset, the equal-weighted mean over the fixing window for averaged-reset), not the
+full strike distribution; no deterministic/extrinsic PV split, per-vertex or monthly-bucket
+deltas, convergence status or audit metadata -- all real new numerical work, not attempted here.
+"Expected exercised volume" (originally scoped in for this pass) turned out to need tracking the
+optimal exercise policy during backward induction, which the DP does not currently do -- dropped
+from scope rather than silently short-changed, and named as an excluded field in
+`ResetSwingResult`'s own docstring. One genuine bug caught before it shipped: an early draft of
+the averaged-reset wrapper computed each month's fixing window from the PRECEDING month's
+`exercise_dates` instead of that month's own `fixing_observation_dates` field -- exactly the
+R-01/R-02 conflation this session's earlier fix exists to prevent, reintroduced by hand in new
+code and caught by re-deriving the field's own documented semantics before trusting it, not by a
+failing test (the two windows coincide whenever the preceding month is a complete delivery
+month, which every test fixture used so far happens to be -- a gap noted for R-10's future
+fixtures, not fixed here). A second, genuine surprise along the way: `H[i, n_p]` is the model's
+conditional expectation, AS OF date i, of the price AT month-end -- not date i's own curve value
+-- so both wrappers' `reset_strikes` converge, at near-zero vol, to the DELIVERY month's own
+curve value (the month the strike is being set FOR), not the fixing/preceding month's own value
+(the month the observations are actually taken in); a test written against the wrong intuition
+caught this the same way, corrected once verified against both wrappers agreeing to 9 significant
+figures. 304 tests pass (299 before this + 5). See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md).
 
 **As of 2026-09-14 (R-06 + R-11 closed, scoped).** Documentation pass, not code: this file's
 own scope note above, and a matching one at the top of

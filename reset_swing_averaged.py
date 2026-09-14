@@ -87,6 +87,7 @@ import pandas as pd
 import reset_forward as rf
 import reset_swing_exact as rse
 import reset_swing_kernels as rsk
+import reset_terms as rt
 
 
 def _exercise_step_3d(continuation, spot, strike, df_i, v_step, daily_max_clips):
@@ -582,3 +583,44 @@ def compute_deltas(terms, schedule, daily_curve, n_r, r_lo, r_hi, bump_eur_mwh=0
 
     return dict(total=total, physical_leg=physical_leg, index_leg=index_leg,
                bump_eur_mwh=bump_eur_mwh)
+
+
+def value_averaged_reset_call_swing_detailed(terms, schedule, daily_curve, n_r, r_lo, r_hi,
+                                             with_deltas=False, bump_eur_mwh=0.10):
+    """`value_averaged_reset_call_swing`, wrapped into a `reset_terms.ResetSwingResult`
+    (R-08's own minimal scope -- see that dataclass's own docstring). Does
+    not modify `value_averaged_reset_call_swing` itself -- every existing
+    caller keeps getting a plain float back, unchanged; this is a new,
+    additive entry point.
+
+    `reset_strikes` here, unlike point-reset's own exact centre-node value,
+    is itself an approximation of an approximation: the equal-weighted mean,
+    over the relevant fixing-observation window, of the SAME root-date
+    centre-node projection `value_point_reset_call_swing_detailed` uses for
+    a single date -- consistent with that convention (not the full,
+    genuinely different quantity "the root-date expectation of the
+    average", which by the tower property collapses to the plain forward
+    curve value and would not reflect the lattice's own dynamics at all).
+    """
+    lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
+                               vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
+                               daily_curve=daily_curve, discount_rate=terms.discount_rate)
+    date_span = lattice["date_span"]
+    all_h = rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+    reset_strikes = {}
+    for month, month_end in zip(schedule.months, schedule.month_end_dates):
+        # month.fixing_observation_dates is ALREADY that month's own complete
+        # fixing window (reset_terms.DeliveryMonth's own docstring: "EVERY
+        # calendar day of the ONE calendar month immediately preceding this
+        # one -- independent of exercise_dates"), for every month including
+        # the first -- no month-to-month reaching needed, and reaching for a
+        # neighbour's exercise_dates instead would silently reintroduce
+        # exactly the R-01/R-02 conflation this field exists to prevent.
+        H = all_h[date_span.get_loc(month_end)]
+        vals = [float(H[date_span.get_loc(d), terms.n_p]) for d in month.fixing_observation_dates]
+        reset_strikes[month.label] = sum(vals) / len(vals)
+
+    pv = value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_hi)
+    deltas = compute_deltas(terms, schedule, daily_curve, n_r, r_lo, r_hi,
+                            bump_eur_mwh=bump_eur_mwh) if with_deltas else None
+    return rt.ResetSwingResult(pv=pv, reset_strikes=reset_strikes, deltas=deltas)
