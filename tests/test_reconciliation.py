@@ -2074,6 +2074,51 @@ print("SIMPLE_STORAGE_OK")
     assert "SIMPLE_STORAGE_OK" in completed.stdout
 
 
+def test_monthly_reset_swing_notebook_executes_clean():
+    """MonthlyResetSwing.ipynb runs every section in a fresh process, with no
+    stale output -- the same discipline as Storage_30_60.ipynb, for the
+    prototype (no real term sheet) monthly-reset swing notebook."""
+    path = os.path.join(ROOT, "MonthlyResetSwing.ipynb")
+    with open(path, encoding="utf-8") as handle:
+        notebook = json.load(handle)
+    for cell in notebook["cells"]:
+        if cell.get("cell_type") == "code":
+            assert cell.get("execution_count") is None
+            assert not cell.get("outputs", [])
+
+    runner = r'''
+import json
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+with open("MonthlyResetSwing.ipynb", encoding="utf-8") as handle:
+    notebook = json.load(handle)
+namespace = {"display": lambda *args, **kwargs: None}
+for index, cell in enumerate(notebook["cells"]):
+    if cell.get("cell_type") != "code":
+        continue
+    exec(compile("".join(cell.get("source", [])),
+                 f"MonthlyResetSwing.ipynb:cell-{index}", "exec"), namespace)
+    plt.close("all")
+import math
+assert math.isfinite(namespace["PV"])
+deltas = namespace["DELTAS"]
+combined = deltas["physical_leg"] + deltas["index_leg"]
+assert abs(combined - deltas["total"]) < 1e-3 * abs(deltas["physical_leg"])
+assert deltas["physical_leg"] > 0 and deltas["index_leg"] < 0
+print("MONTHLY_RESET_SWING_OK")
+'''
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    completed = subprocess.run(
+        [sys.executable, "-c", runner], cwd=ROOT, env=env,
+        text=True, capture_output=True, timeout=300, check=False)
+    assert completed.returncode == 0, (
+        f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}")
+    assert "MONTHLY_RESET_SWING_OK" in completed.stdout
+
+
 def test_the_live_convergence_check_uses_the_deal_actually_in_the_notebook():
     """`VERIFY_CONVERGENCE = True` prices the CURRENT curve/ratchets/bounds at
     N_STATES, x2 and x4, and feeds the result through the same

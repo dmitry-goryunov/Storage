@@ -749,13 +749,36 @@ volume, no historical fixings):**
   unoptimised pure-Python/NumPy choice (sec.7.1: "small reference, not production scale")
   is comfortably practical at this scale without needing a Numba rewrite yet.
 
-**Still not done:** sec.10.3's brute-force scenario-tree enumeration in the strict sense
-(the independent reference above is a second, differently-coded implementation of the same
-recursion, not an enumeration of literally every non-anticipating policy -- a meaningfully
-weaker but still real check, and named as such rather than conflated with the stronger one);
-the averaged (non-point) reset; and everything in sec.14.7's fixture list beyond what the
-tests above cover. 238 tests pass in the full repository suite (229 after Phase 0/1, plus 2
-grid-validation tests and 7 in `tests/test_reset_swing_stochastic.py` here).
+**Done, same day, closing the gap named directly above:**
+
+- **sec.10.3's brute-force enumeration, in the strict sense this time.**
+  `tests/test_reset_swing_exhaustive.py` builds a tiny hand-constructed scenario (three price
+  nodes, one fixing, two exercise days, one mandatory clip) where waiting on day one forces
+  day two, reducing "every non-anticipating policy" to one binary stopping choice per
+  `(j_fix, j_day1)` pair -- 3x3=9 pairs, `2**9`=512 policies, each one's exact expected
+  discounted value computed by literal path-probability summation, independent of (not
+  reusing) `reset_swing_exact.py`'s own transition helpers. The DP matches the best of all
+  512 to `1e-9`. This is the stronger check the previous entry explicitly said was still
+  missing, not the differently-coded-reference one that already existed.
+- **Hedge sensitivities.** `reset_swing_exact.compute_deltas` implements sec.9.3's three
+  central-finite-difference measures. `value_point_reset_call_swing` gained an optional
+  `quotes=` override precisely so the physical- and index-leg diagnostics can freeze one
+  lattice's strikes while bumping the other's spot, or vice versa. On a six-month
+  illustrative deal the two legs are large and nearly cancel (+48,961 physical, -43,738
+  index, net total 5,224 EUR per EUR/MWh) -- the point of an indexed strike at all, now a
+  pinned property (`tests/test_reset_swing_deltas.py`) rather than an assumption. `total`
+  is authoritative; the legs are not asserted to sum to it exactly, matching sec.9.3's own
+  caveat that the split is only additive to first order.
+- **Somewhere a person would actually use it.** `MonthlyResetSwing.ipynb`, in the same
+  style as `Storage_30_60.ipynb` (staleness guard, no stored output committed, a fresh-
+  process execution test -- `test_monthly_reset_swing_notebook_executes_clean` in
+  `tests/test_reconciliation.py`): term sheet, curve, PV, and the three-way delta print-out
+  with the same "small total does not mean small risk" caveat as above, stated inline
+  rather than left for a reader to discover.
+
+**Still not done:** the averaged (non-point) reset -- Release 1B -- and everything in
+sec.14.7's fixture list beyond what the tests above cover. 244 tests pass in the full
+repository suite (238 before this + 6: 1 exhaustive-enumeration, 4 delta, 1 notebook).
 
 ## 14. Implementation-readiness specification
 

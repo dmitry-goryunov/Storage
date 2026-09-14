@@ -54,6 +54,7 @@ Prefer a notebook? See [Which tool should I use?](#which-tool-should-i-use) belo
 | `portfolio_app.py` | Streamlit app — portfolio Mark-to-Market of the deals in `quotes_2.csv` (MtM table, monthly exposures, charts) |
 | `forward.ipynb` | **Primary notebook** — builds the daily forward curve from `ttf q.xlsx` and values a deal in editable code |
 | `portfolio.ipynb` | Portfolio Mark-to-Market notebook — the scriptable version of `portfolio_app.py` |
+| `MonthlyResetSwing.ipynb` | Prototype (no real term sheet) — price a call swing whose strike resets monthly, and its three-way hedge decomposition. Point-reset only; see `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md` |
 | `Swing_new.ipynb` | *Legacy* driver — original 6-product intrinsic/extrinsic loop over `curve.csv` + `quotes.csv` |
 | `pricing.ipynb` | *Legacy* `run_valuation` driver (no `sMR` / deal-independent-curve support) |
 | `finding.md` | Developer research note — the put-swing delta investigation (January step-down, December amplification); not required reading |

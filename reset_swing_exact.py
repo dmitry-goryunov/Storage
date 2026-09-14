@@ -81,12 +81,19 @@ def _run_month_for_one_fixing_node(lattice, month, strike, terminal_value,
     return v
 
 
-def value_point_reset_call_swing(terms, schedule, daily_curve=None, curve=None):
+def value_point_reset_call_swing(terms, schedule, daily_curve=None, curve=None, quotes=None):
     """The exact benchmark's root value: EUR PV at (val_date, centre price node,
     zero cumulative volume). Call swing only (Release 1A scope).
 
     `daily_curve`/`curve` are the same two ways of supplying the forward curve
     `run_valuation`/`Storage` already accept -- exactly one must be given.
+
+    `quotes`: an optional precomputed `{month_end_index: H}` (from
+    `reset_forward.project_month_end_quotes`) to use for the RESET STRIKES in
+    place of the ones this call would otherwise derive from its own lattice.
+    Spot prices, discounting and the price tree always come from
+    `daily_curve`/`curve`; only the strike side is overridable. This is what
+    lets `compute_deltas` freeze one leg while bumping the other -- see there.
     """
     if (daily_curve is None) == (curve is None):
         raise ValueError("Give exactly one of daily_curve or curve.")
@@ -95,7 +102,8 @@ def value_point_reset_call_swing(terms, schedule, daily_curve=None, curve=None):
                                vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
                                daily_curve=daily_curve, curve=curve,
                                discount_rate=terms.discount_rate)
-    quotes = rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+    if quotes is None:
+        quotes = rf.project_month_end_quotes(lattice, schedule.month_end_dates)
 
     v_step = terms.v_step_mwh
     n_l = int(round(terms.global_max_mwh / v_step)) + 1
@@ -128,3 +136,60 @@ def value_point_reset_call_swing(terms, schedule, daily_curve=None, curve=None):
         v = _propagate_one_step(v, lattice["p_u"][i, :], lattice["p_m"][i, :], lattice["p_d"][i, :])
 
     return float(v[terms.n_p, 0])
+
+
+def compute_deltas(terms, schedule, daily_curve, bump_eur_mwh=0.10):
+    """DESIGN-MONTHLY-RESET-SWING-2026-09-13.md sec.9.3's three delta measures.
+    All three are central finite differences (bump the curve up and down,
+    average -- sec.10.5's own stated primary Greek test), reported in EUR per
+    EUR/MWh of a uniform (parallel) curve shift, not per-vertex.
+
+    The existing swing's `delta` is a hedge against the underlying alone. Here
+    the strike is ALSO derived from the same curve, so a curve move has two
+    channels: what it does to the exercise-day price the swing sells at, and
+    what it does to the reset that sets what it sells AGAINST. `quotes=`
+    (added to `value_point_reset_call_swing` for exactly this) freezes one
+    channel's own lattice while the other is bumped, isolating each:
+
+    - `total`: both channels move together (the real curve does not let you
+      change one without the other) -- the number that actually matters for
+      hedging.
+    - `physical_leg`: spot bumped, strikes held at the unbumped curve's own
+      values -- "what if only the price you deliver at moved".
+    - `index_leg`: spot held at the unbumped curve, strikes bumped -- "what
+      if only the reset moved". Not independently hedgeable against a single
+      instrument in general; a diagnostic attribution, not a trade.
+
+    `total` is authoritative. `physical_leg + index_leg` is not asserted to
+    equal it exactly (the split is only additive to first order in the bump,
+    and the reset formula composes the two nonlinearly through which node the
+    fixing lands on) -- sec.9.3 says the same: "The two diagnostics are an
+    attribution and depend on the chosen bump construction."
+    """
+    def _bumped(sign):
+        return daily_curve + sign * bump_eur_mwh
+
+    def _quotes_for(curve_for_strikes):
+        lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
+                                   vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
+                                   daily_curve=curve_for_strikes, discount_rate=terms.discount_rate)
+        return rf.project_month_end_quotes(lattice, schedule.month_end_dates)
+
+    base_quotes = _quotes_for(daily_curve)
+
+    pv_up = value_point_reset_call_swing(terms, schedule, daily_curve=_bumped(+1))
+    pv_down = value_point_reset_call_swing(terms, schedule, daily_curve=_bumped(-1))
+    total = (pv_up - pv_down) / (2.0 * bump_eur_mwh)
+
+    phys_up = value_point_reset_call_swing(terms, schedule, daily_curve=_bumped(+1), quotes=base_quotes)
+    phys_down = value_point_reset_call_swing(terms, schedule, daily_curve=_bumped(-1), quotes=base_quotes)
+    physical_leg = (phys_up - phys_down) / (2.0 * bump_eur_mwh)
+
+    idx_up = value_point_reset_call_swing(
+        terms, schedule, daily_curve=daily_curve, quotes=_quotes_for(_bumped(+1)))
+    idx_down = value_point_reset_call_swing(
+        terms, schedule, daily_curve=daily_curve, quotes=_quotes_for(_bumped(-1)))
+    index_leg = (idx_up - idx_down) / (2.0 * bump_eur_mwh)
+
+    return dict(total=total, physical_leg=physical_leg, index_leg=index_leg,
+               bump_eur_mwh=bump_eur_mwh)
