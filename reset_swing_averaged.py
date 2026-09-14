@@ -59,6 +59,8 @@ Python/numpy per-call dispatch overhead, not the arithmetic -- only compiling
 the WHOLE per-k recursion, removing that dispatch overhead categorically,
 gave a shape-independent win.
 """
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -175,9 +177,18 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, fixing_observation
     month). Both `quotes_for_next_month` and `fixing_observation_dates` are
     None together for the deal's last month (nothing left to accumulate for).
 
-    Returns a list of n_r arrays, one per incoming bucket k: (width, n_l, n_r)
-    if accumulating (the fresh, not-yet-collapsed outgoing axis -- the
-    caller collapses it, see `_collapse_fresh_axis`), else (width, n_l).
+    Returns a list of n_r plain (width, n_l) arrays, one per incoming bucket
+    k -- ALWAYS already collapsed now (R-04, 2026-09-14
+    INDEPENDENT-REVIEW-MONTHLY-RESET-SWING: the kernel used to return the
+    complete, un-collapsed (width, n_l, n_r) fresh outgoing-accumulator axis
+    per k, 10.1 GiB at the notebook's own n_r=600, for the caller to collapse
+    with `_collapse_fresh_axis`; the kernel now does that reduction itself,
+    per k, before returning anything, and this function does the identical
+    raise-with-message the caller used to do, using the kernel's own
+    precomputed spread/scale -- so callers no longer call
+    `_collapse_fresh_axis` on this function's own output. That function still
+    exists, for `_run_month_accumulate_reference`'s own (deliberately
+    un-collapsed, for testing) output.
 
     When accumulating, `terminal_value` is ALREADY (width, n_l, n_r) -- the
     stacked, collapsed result from whichever month follows this one -- not a
@@ -190,10 +201,10 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, fixing_observation
     -- a Numba-compiled kernel computing EXACTLY what `_run_month_accumulate_reference`
     below computes in pure Python (see that function, `reset_swing_kernels.py`'s
     own docstring, and tests/test_reset_swing_kernels.py, which checks the two
-    agree). The deal's LAST month (`accumulate=False`) keeps the plain Python
-    loop below directly: it has no r-axis interpolation of its own and was
-    never the bottleneck (sec.13's Release 2 measurement), and no separate
-    fixing-observation calendar either (there is no month after it to fix).
+    agree, collapse included). The deal's LAST month (`accumulate=False`)
+    keeps the plain Python loop below directly: it has no r-axis
+    interpolation or fresh axis of its own and was never the bottleneck
+    (sec.13's Release 2 measurement).
     """
     date_span = lattice["date_span"]
     x, p_u, p_m, p_d, d_curve = (lattice["x"], lattice["p_u"], lattice["p_m"],
@@ -220,13 +231,24 @@ def _run_month(lattice, month, r_grid, quotes_for_next_month, fixing_observation
             f"month by construction, so a mismatch here means the schedule "
             f"itself is wrong, not just this call's arguments.")
         fixing_indices_arr = np.asarray(fixing_indices, dtype=np.int64)
-        stacked = rsk.run_month_accumulate_core(
+        collapsed, spread, scale = rsk.run_month_accumulate_core(
             np.ascontiguousarray(x), np.ascontiguousarray(p_u), np.ascontiguousarray(p_m),
             np.ascontiguousarray(p_d), np.ascontiguousarray(d_curve), fixing_indices_arr,
             n_exercise_days, np.ascontiguousarray(r_grid),
             np.ascontiguousarray(quotes_for_next_month),
             np.ascontiguousarray(terminal_value), float(v_step), int(daily_max_clips))
-        return [stacked[k] for k in range(n_r)]
+        # Same check `_collapse_fresh_axis` used to make on the (now never
+        # materialised) full array -- the kernel precomputes spread/scale per
+        # k itself since discarding the fresh axis loses the information
+        # needed to check it here otherwise.
+        for k in range(n_r):
+            if spread[k] > 1e-6 * scale[k]:
+                raise RuntimeError(
+                    f"{month.label} incoming bucket {k}: fresh outgoing-accumulator "
+                    f"axis should not yet depend on its own value, but varies by "
+                    f"{spread[k]:.6g} (scale {scale[k]:.6g}) -- widen r_lo/r_hi or "
+                    f"increase n_r before trusting this result.")
+        return [collapsed[k] for k in range(n_r)]
 
     results = []
     for k in range(n_r):
@@ -359,6 +381,18 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
     for the same reason: `compute_deltas` below freezes one lattice's strikes
     while bumping the other's spot.
     """
+    # 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: n_r, r_lo, r_hi
+    # are caller-supplied numbers with no ResetSwingTerms.__post_init__ to
+    # catch a mistake -- checked here, first, before building a lattice or
+    # doing any other work. n_r=1 specifically would divide by zero inside
+    # accumulate_step/the Numba kernel (dr = (r_hi - r_lo) / (n_r - 1)).
+    if not (isinstance(n_r, int) or (hasattr(n_r, "is_integer") and n_r.is_integer())) or n_r < 2:
+        raise ValueError(f"n_r must be an integer >= 2, got {n_r!r}.")
+    if not (math.isfinite(r_lo) and math.isfinite(r_hi)):
+        raise ValueError(f"r_lo and r_hi must be finite, got r_lo={r_lo!r}, r_hi={r_hi!r}.")
+    if not r_lo < r_hi:
+        raise ValueError(f"Need r_lo < r_hi, got r_lo={r_lo!r}, r_hi={r_hi!r}.")
+
     lattice = rf.build_lattice(terms.val_date, terms.storage_start, terms.storage_end,
                                vol=terms.vol, sMR=terms.sMR, n_p=terms.n_p,
                                daily_curve=daily_curve, discount_rate=terms.discount_rate)
@@ -419,13 +453,10 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
             u_next = date_span.get_loc(month_ends[idx + 1])
             quotes_next = all_h[u_next]
             fixing_obs_next = months[idx + 1].fixing_observation_dates
-        results = _run_month(lattice, month, r_grid, quotes_next, fixing_obs_next,
-                             terminal_value, v_step, daily_max_clips)
-        if quotes_next is None:
-            # results[k] is already (width, n_l): no outgoing axis to collapse.
-            collapsed = results
-        else:
-            collapsed = _collapse_fresh_axis(results, label=str(month.label))
+        # _run_month always returns already-collapsed (width, n_l) results now
+        # (R-04): no separate _collapse_fresh_axis call needed here any more.
+        collapsed = _run_month(lattice, month, r_grid, quotes_next, fixing_obs_next,
+                               terminal_value, v_step, daily_max_clips)
         if idx == 0:
             # collapsed[k]: value at month 1's own fixing date given
             # K_1 = r_grid[k]. Needed unresolved (per r-bucket) for the
@@ -474,7 +505,18 @@ def value_averaged_reset_call_swing(terms, schedule, daily_curve, n_r, r_lo, r_h
             f"root value should not depend on the (not-yet-accumulated) "
             f"starting r bucket, but varies by {spread:.6g} (scale {scale:.6g}) "
             f"-- widen r_lo/r_hi or increase n_r before trusting this result.")
-    return float(root_row[0])
+    pv = float(root_row[0])
+    # 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: surface a
+    # NaN/inf PV here, with the actual inputs in scope, rather than letting
+    # the caller discover it several steps downstream (e.g. inside a delta's
+    # own central difference) with no context left about which valuation
+    # produced it.
+    if not math.isfinite(pv):
+        raise RuntimeError(
+            f"Computed PV is not finite ({pv!r}) at n_p={terms.n_p}, n_r={n_r}, "
+            f"r_lo={r_lo}, r_hi={r_hi} -- a genuine numerical failure, not a "
+            f"valid price.")
+    return pv
 
 
 def compute_deltas(terms, schedule, daily_curve, n_r, r_lo, r_hi, bump_eur_mwh=0.10):

@@ -20,6 +20,7 @@ does not determine a real contract's terms:
 Each simplification is named so a later release can drop it deliberately rather
 than discover it was assumed.
 """
+import math
 from dataclasses import dataclass
 
 import pandas as pd
@@ -58,6 +59,24 @@ class ResetSwingTerms:
                 f"val_date {val_date:%Y-%m-%d} must be on or before "
                 f"storage_start {storage_start:%Y-%m-%d} -- this prototype does not "
                 f"support valuing a deal that has already started.")
+
+        # 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: every one of
+        # the range checks below (`value > 0`, `0 <= lo <= hi`, `sMR < 0`) already
+        # rejects NaN as a side effect of Python's NaN comparisons always being
+        # False -- but +inf passes every one of them (inf > 0 is True), and the
+        # error message for a NaN rejected this way ("must be strictly
+        # positive") is misleading about what actually failed. Check finiteness
+        # explicitly, and first, for a clear message either way.
+        for name, value in (("daily_max_mwh", self.daily_max_mwh),
+                           ("v_step_mwh", self.v_step_mwh),
+                           ("global_min_mwh", self.global_min_mwh),
+                           ("global_max_mwh", self.global_max_mwh),
+                           ("vol", self.vol), ("sMR", self.sMR),
+                           ("discount_rate", self.discount_rate),
+                           ("n_p", self.n_p)):
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite, got {value!r}.")
+
         for name, value in (("daily_max_mwh", self.daily_max_mwh),
                            ("v_step_mwh", self.v_step_mwh),
                            ("vol", self.vol)):
@@ -93,7 +112,7 @@ class ResetSwingTerms:
                     f"requested volume rather than silently rounding it.")
         if self.sMR < 0:
             raise ValueError(f"sMR must be non-negative, got {self.sMR!r}.")
-        if self.n_p <= 0:
+        if self.n_p <= 0 or self.n_p != int(self.n_p):
             raise ValueError(f"n_p must be a positive integer, got {self.n_p!r}.")
 
 
@@ -184,6 +203,25 @@ def build_reset_schedule(terms):
 
     if not months:
         raise ValueError("No delivery month falls inside the storage window.")
+
+    # 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: a mandatory
+    # global_min_mwh that exceeds what the deal could EVER deliver (every
+    # exercise day, at the daily max) is not a hard constraint the DP can
+    # satisfy -- every state would be infeasible, and value_averaged_reset_call_swing
+    # / value_point_reset_call_swing would report a confusingly large negative
+    # number (FORBIDDEN propagated to the root) rather than a clear refusal.
+    # Checked here, not in ResetSwingTerms.__post_init__, because it needs the
+    # actual exercise-day count, which only exists once the schedule is built.
+    total_exercise_days = sum(len(m.exercise_dates) for m in months)
+    max_deliverable_mwh = terms.daily_max_mwh * total_exercise_days
+    if terms.global_min_mwh > max_deliverable_mwh:
+        raise ValueError(
+            f"global_min_mwh={terms.global_min_mwh:,.4f} exceeds the maximum this "
+            f"deal could ever deliver: {total_exercise_days} exercise day(s) at "
+            f"daily_max_mwh={terms.daily_max_mwh:,.4f} caps deliverable volume at "
+            f"{max_deliverable_mwh:,.4f} MWh. This mandatory minimum can never be "
+            f"satisfied -- widen the exercise window, raise daily_max_mwh, or "
+            f"lower global_min_mwh.")
 
     month_end_dates = tuple(sm.month_end(m.label.to_timestamp()) for m in months)
     return ResetSchedule(terms=terms, months=tuple(months), month_end_dates=month_end_dates)

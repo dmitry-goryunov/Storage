@@ -986,6 +986,56 @@ outputs, remaining validation gaps, missing sec.14.7 fixtures, and the document-
 critique this section's own running-log format is an instance of) are not addressed by this
 entry and remain open.
 
+**R-09 (validation gaps) and R-04 (production memory), same day, closed together.**
+
+R-09: `ResetSwingTerms.__post_init__` now rejects non-finite `daily_max_mwh`, `v_step_mwh`,
+`global_min_mwh`, `global_max_mwh`, `vol`, `sMR`, `discount_rate` and `n_p` explicitly (the
+existing range checks already rejected NaN as a side effect of NaN comparisons always being
+False, but +inf passed every one of them, and NaN's own error message named the wrong
+problem -- "must be strictly positive" -- rather than what actually failed), and a
+non-integer `n_p`. `build_reset_schedule` now refuses a `global_min_mwh` that exceeds what
+the deal could ever deliver (`daily_max_mwh` times the actual exercise-day count) -- checked
+there rather than in `__post_init__` since it needs the schedule's own exercise-day count,
+which `ResetSwingTerms` alone does not have. `value_averaged_reset_call_swing` now validates
+`n_r >= 2` (an `n_r` of 1 would divide by zero inside `accumulate_step`/the kernel's own
+`dr = (r_hi - r_lo) / (n_r - 1)`), finite `r_lo`/`r_hi`, and `r_lo < r_hi`, all before
+building a lattice or doing any other work. Both `value_point_reset_call_swing` and
+`value_averaged_reset_call_swing` now reject a non-finite computed PV explicitly, with the
+inputs that produced it still in scope, rather than letting a NaN/inf surface several steps
+downstream (inside a delta's own central difference, say) with no context left about which
+valuation produced it. 28 new tests in `tests/test_reset_terms.py` and
+`tests/test_reset_swing_averaged.py` (a mandatory-minimum-exceeds-deliverable scenario, and a
+parametrised sweep of +inf/-inf/NaN across every numeric field).
+
+R-04: `reset_swing_kernels.run_month_accumulate_core` used to return the complete,
+un-collapsed `(n_r, width, n_l, n_r)` array for the caller to reduce with
+`_collapse_fresh_axis` -- 10.1 GiB at the notebook's own `n_r=600`, an allocation this large
+before even considering the working arrays inside a single call. The kernel now performs that
+collapse itself, per incoming bucket `k`, before writing anything out -- exactly
+`_collapse_fresh_axis`'s own reduction (per-(j,l) max-minus-min across the fresh axis, then
+the worst one; overall max |value| floored at 1.0), just computed once per k inside the
+compiled loop rather than by the caller on an array that no longer needs to exist. Returns
+`(n_r, width, n_l)` plus `(n_r,)` spread and scale arrays; `_run_month` does the identical
+raise-with-message the caller always did, reading from these instead of recomputing them from
+a full array. This is safe because EVERY call to the kernel is immediately followed by
+exactly this collapse in production -- confirmed by checking there is no other consumer of
+the kernel's raw output. `_collapse_fresh_axis` itself still exists, now used only by
+`_run_month_accumulate_reference` (the deliberately un-collapsed Python reference the kernel
+is checked against) and by the kernel-comparison test, which applies the identical reduction
+to the reference's own output before comparing, so both sides stay apples to apples -- and
+separately confirms the kernel's own spread/scale agree with what `_collapse_fresh_axis`
+computes from the full array, not just the final collapsed values.
+
+Measured, not just computed from the returned array's own shape (the review's own explicit
+ask: "Record peak memory as well as runtime"): process RSS on the notebook's 6-month term
+sheet, `n_r=300` (2.70 GiB estimated for the pre-fix, un-collapsed array alone) stayed flat,
+189.3 -> 189.5 MB, a +0.2 MB delta across the whole call -- the per-thread working arrays
+Numba's own `prange` parallelism allocates evidently do not accumulate the way a naive
+per-thread estimate would suggest. PVs are bit-for-bit unchanged from the pre-fix figures
+(confirmed directly: `n_r=30` and `n_r=300` both reproduce this document's own Release 2
+recomputation exactly) -- this is a pure memory/architecture change, not a numerical one.
+298 tests pass (270 before this + 28).
+
 ## 14. Implementation-readiness specification
 
 This section defines the work required to turn the preceding design into an executable

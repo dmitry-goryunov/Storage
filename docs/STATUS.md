@@ -1,5 +1,23 @@
 # Project status
 
+**As of 2026-09-14 (R-09 + R-04 closed).** Two more independent-review findings fixed
+together. R-09 (validation gaps): `ResetSwingTerms` now rejects non-finite numeric fields and
+a non-integer `n_p` explicitly (the old checks already rejected NaN as a side effect, but +inf
+passed every one of them, and NaN's own message named the wrong problem);
+`build_reset_schedule` refuses a `global_min_mwh` the deal could never actually deliver;
+`value_averaged_reset_call_swing` validates `n_r>=2` (an `n_r` of 1 divides by zero inside the
+kernel), finite `r_lo`/`r_hi`, and `r_lo<r_hi`, before doing any work; both valuation entry
+points reject a non-finite computed PV with its own inputs still in scope. R-04 (production
+memory): the Numba kernel used to return the complete, un-collapsed `(n_r, width, n_l, n_r)`
+array -- 10.1 GiB estimated at the notebook's own `n_r=600` -- for the caller to reduce; it now
+collapses the fresh accumulator axis itself, per bucket, before returning anything. Measured,
+not just estimated: process RSS at `n_r=300` (2.70 GiB estimated for the old array alone)
+stayed flat, +0.2 MB across the whole call. PVs are bit-for-bit unchanged -- confirmed
+directly against this session's own Release 2 recomputation -- a pure memory change, not a
+numerical one. 298 tests pass (270 before this + 28). See
+[`docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`](DESIGN-MONTHLY-RESET-SWING-2026-09-13.md)
+for the full account and the remaining open findings (R-03, R-05 through R-08, R-10, R-11).
+
 **As of 2026-09-14 (figures recomputed and republished).** Every specific PV/delta number the
 P0 fix below had flagged as stale has now been recomputed against the corrected window and
 republished in place in `docs/DESIGN-MONTHLY-RESET-SWING-2026-09-13.md`: the Release 2 Numba

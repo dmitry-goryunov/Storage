@@ -248,9 +248,11 @@ def test_matches_brute_force_enumeration_across_two_delivery_months():
 
     results_B = rsa._run_month(lattice, month_B, r_grid, None, None, terminal_value_B, v_step, daily_max_clips)
     terminal_value_A = np.stack(results_B, axis=-1)  # (width, n_l, n_r): B's own results, stacked for A
-    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
-                               terminal_value_A, v_step, daily_max_clips)
-    collapsed_A = rsa._collapse_fresh_axis(results_A, label="A")
+    # _run_month now returns already-collapsed (width, n_l) results directly
+    # (R-04: the kernel collapses the fresh axis itself) -- no separate
+    # _collapse_fresh_axis call needed here any more.
+    collapsed_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
+                                 terminal_value_A, v_step, daily_max_clips)
     v_by_r_l0 = np.stack([arr[:, 0] for arr in collapsed_A], axis=1)  # (width, n_r), fn of K_A
     quote_by_date = {day_P0: H_A[i_P0, :]}
     v_at_root = rsa._run_accumulation_only(lattice, [day_P0], r_grid, quote_by_date, v_by_r_l0)
@@ -447,9 +449,11 @@ def test_a_fixing_only_day_folds_into_the_next_months_strike_without_its_own_exe
 
     results_B = rsa._run_month(lattice, month_B, r_grid, None, None, terminal_value_B, v_step, daily_max_clips)
     terminal_value_A = np.stack(results_B, axis=-1)
-    results_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
-                               terminal_value_A, v_step, daily_max_clips)
-    collapsed_A = rsa._collapse_fresh_axis(results_A, label="A")
+    # _run_month now returns already-collapsed (width, n_l) results directly
+    # (R-04: the kernel collapses the fresh axis itself) -- no separate
+    # _collapse_fresh_axis call needed here any more.
+    collapsed_A = rsa._run_month(lattice, month_A, r_grid, H_B, month_B.fixing_observation_dates,
+                                 terminal_value_A, v_step, daily_max_clips)
     v_by_r_l0 = np.stack([arr[:, 0] for arr in collapsed_A], axis=1)
     quote_by_date = {day_P0: H_A[i_P0, :]}
     v_at_root = rsa._run_accumulation_only(lattice, [day_P0], r_grid, quote_by_date, v_by_r_l0)
@@ -513,6 +517,36 @@ def test_bracket_check_rejects_a_grid_that_clamps_a_material_lattice_state():
 
     # A grid wide enough for BOTH months' ranges must not raise.
     rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=200, r_lo=15.0, r_hi=35.0)
+
+
+def test_accumulator_grid_arguments_are_validated_before_any_work():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: n_r, r_lo, r_hi
+    have no ResetSwingTerms.__post_init__ to catch a caller mistake -- checked
+    directly in value_averaged_reset_call_swing instead, first, before
+    building a lattice. n_r=1 specifically would divide by zero inside
+    accumulate_step/the Numba kernel (dr = (r_hi - r_lo) / (n_r - 1))."""
+    curve = pd.Series(25.0, index=pd.date_range("2020-01-01", "2030-12-31", freq="D"))
+    terms = rt.ResetSwingTerms(
+        val_date="2026-01-01", storage_start="2026-04-01", storage_end="2026-04-30",
+        daily_max_mwh=1_000.0, v_step_mwh=1_000.0,
+        global_min_mwh=0.0, global_max_mwh=5_000.0,
+        vol=0.3, sMR=1.0, discount_rate=0.05, n_p=6)
+    schedule = rt.build_reset_schedule(terms)
+
+    with pytest.raises(ValueError, match="n_r"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=1, r_lo=20.0, r_hi=30.0)
+    with pytest.raises(ValueError, match="n_r"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=0, r_lo=20.0, r_hi=30.0)
+    with pytest.raises(ValueError, match="n_r"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=10.5, r_lo=20.0, r_hi=30.0)
+    with pytest.raises(ValueError, match="finite"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=100, r_lo=float("nan"), r_hi=30.0)
+    with pytest.raises(ValueError, match="finite"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=100, r_lo=20.0, r_hi=float("inf"))
+    with pytest.raises(ValueError, match="r_lo < r_hi"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=100, r_lo=30.0, r_hi=20.0)
+    with pytest.raises(ValueError, match="r_lo < r_hi"):
+        rsa.value_averaged_reset_call_swing(terms, schedule, curve, n_r=100, r_lo=25.0, r_hi=25.0)
 
 
 def test_accumulate_step_is_constant_at_the_zero_weight_boundary():

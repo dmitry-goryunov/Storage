@@ -163,15 +163,45 @@ def test_valuation_after_storage_start_is_refused():
     ("vol", 0.0, "vol"),
     ("sMR", -0.1, "sMR"),
     ("n_p", 0, "n_p"),
+    ("n_p", 8.5, "n_p"),
 ])
 def test_invalid_numerical_terms_are_refused(field, value, match):
     with pytest.raises(ValueError, match=match):
         _terms(**{field: value})
 
 
+@pytest.mark.parametrize("field", [
+    "daily_max_mwh", "v_step_mwh", "global_min_mwh", "global_max_mwh",
+    "vol", "sMR", "discount_rate", "n_p",
+])
+@pytest.mark.parametrize("bad_value", [float("inf"), float("-inf"), float("nan")])
+def test_non_finite_numerical_terms_are_refused(field, bad_value):
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: +inf passes every
+    one of the existing range checks (inf > 0 is True), and NaN, while it does
+    already fail them (NaN comparisons are always False), gets a misleading
+    message ("must be strictly positive") that names the wrong problem."""
+    with pytest.raises(ValueError, match="finite"):
+        _terms(**{field: bad_value})
+
+
 def test_global_min_above_max_is_refused():
     with pytest.raises(ValueError, match="global_min_mwh"):
         _terms(global_min_mwh=200_000.0, global_max_mwh=100_000.0)
+
+
+def test_a_mandatory_minimum_that_cannot_be_delivered_is_refused():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: global_min_mwh
+    <= global_max_mwh alone is not sufficient -- a one-day deal can only ever
+    deliver one day's worth, however generous global_max is. Checked in
+    build_reset_schedule, not ResetSwingTerms.__post_init__, since it needs
+    the actual exercise-day count. Without this, the DP would make every
+    state infeasible and report a large, confusing negative number instead
+    of refusing outright."""
+    terms = _terms(storage_start="2026-03-30", storage_end="2026-03-31",  # two exercise days
+                   daily_max_mwh=5_000.0, v_step_mwh=5_000.0,
+                   global_min_mwh=15_000.0, global_max_mwh=20_000.0)  # min <= max, but > 2 days' worth
+    with pytest.raises(ValueError, match="global_min_mwh"):
+        rt.build_reset_schedule(terms)
 
 
 def test_a_daily_rate_that_rounds_to_zero_clips_is_refused():

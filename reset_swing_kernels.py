@@ -38,6 +38,24 @@ current month is a COMPLETE calendar month (then they coincide exactly) and
 silently wrong otherwise (a partial first delivery month, or a first month's
 fixing window reaching back past `val_date` by more than one month). See
 `reset_terms.DeliveryMonth`'s own docstring for the full account.
+
+R-04, same review: this kernel used to return the complete, un-collapsed
+`(n_r, width, n_l, n_r)` array (a per-k outgoing accumulator axis the caller
+immediately collapsed with `_collapse_fresh_axis`) -- 10.1 GiB at the
+notebook's own `n_r=600`, before any of the working arrays inside a single
+call. `_collapse_fresh_axis`'s own boundary property (this axis has not
+accumulated anything yet from the CALLER's perspective, so it may not depend
+on which of its own buckets you read) means every one of those `n_r` buckets
+per k is redundant EXCEPT for the spread check that verifies the boundary
+property actually held -- so the kernel now does that reduction itself,
+per k, before writing anything out, and returns `(n_r, width, n_l)` plus a
+`(n_r,)` spread and a `(n_r,)` scale the caller uses for the identical
+raise-with-message it always did. Measured, not just estimated from the
+returned array's own shape (the review's own explicit ask: "Record peak
+memory as well as runtime"): process RSS on the notebook's 6-month term
+sheet at `n_r=300` (2.70 GiB estimated for the old, un-collapsed array,
+before working arrays) stayed flat at 189.3 -> 189.5 MB, a +0.2 MB delta,
+across the whole call.
 """
 import numpy as np
 from numba import jit, prange
@@ -74,12 +92,21 @@ def run_month_accumulate_core(x, p_u, p_m, p_d, d_curve, fixing_indices, n_exerc
     `exercise_dates`, as indices, by construction (the caller asserts this).
 
     `k` is independent across iterations (each starts from the SAME
-    `terminal_value` and only ever reads/writes its own `results[k]` slice),
-    so it is the `prange` dimension -- same reasoning as storage_kernels.py's
-    own `k` prange over price nodes.
+    `terminal_value` and only ever reads/writes its own output slice), so it
+    is the `prange` dimension -- same reasoning as storage_kernels.py's own
+    `k` prange over price nodes.
 
-    Returns (n_r, width, n_l, n_r): `results[k]` is `_run_month`'s own
-    `results[k]`, a plain (width, n_l, n_r) array.
+    Returns `(collapsed, spread, scale)`:
+    - `collapsed`: (n_r, width, n_l) -- `collapsed[k]` is this month's value
+      at its own fixing date given incoming strike `r_grid[k]`, with the
+      fresh outgoing-accumulator axis already collapsed to its r=0 slice
+      (`_collapse_fresh_axis`'s own convention).
+    - `spread`, `scale`: (n_r,) each -- `spread[k]` is the worst per-(j,l)
+      max-minus-min across that fresh axis BEFORE collapsing it, `scale[k]`
+      the same `max(1.0, ...)` floor `_collapse_fresh_axis` used. The caller
+      raises exactly as before (`spread[k] > 1e-6 * scale[k]`) if the
+      boundary property did not hold -- computed here since discarding the
+      axis irreversibly loses the information needed to check it later.
     """
     n_r = r_grid.shape[0]
     width = terminal_value.shape[0]
@@ -98,7 +125,9 @@ def run_month_accumulate_core(x, p_u, p_m, p_d, d_curve, fixing_indices, n_exerc
         quote_by_day[pos, :] = quotes_for_next_month[i, :]
         dc_by_day[pos] = d_curve[i]
 
-    results = np.empty((n_r, width, n_l, n_r), dtype=np.float64)
+    collapsed = np.empty((n_r, width, n_l), dtype=np.float64)
+    spread = np.empty(n_r, dtype=np.float64)
+    scale = np.empty(n_r, dtype=np.float64)
 
     for k in prange(n_r):
         strike = r_grid[k]
@@ -163,6 +192,31 @@ def run_month_accumulate_core(x, p_u, p_m, p_d, d_curve, fixing_indices, n_exerc
                             v_prop[j, l, r] = acc
                 v = v_prop
 
-        results[k, :, :, :] = v
+        # Collapse the fresh outgoing accumulator axis, in place, before
+        # writing anything out -- R-04's fix. Exactly `_collapse_fresh_axis`'s
+        # own reduction (per-(j,l) max-minus-min across r, then the worst one;
+        # overall max |value| floored at 1.0), just computed here instead of
+        # by the caller on the full, now-never-materialised array.
+        k_spread = 0.0
+        k_scale = 1.0
+        for j in range(width):
+            for l in range(n_l):
+                v_min = v[j, l, 0]
+                v_max = v[j, l, 0]
+                for r in range(n_r):
+                    val = v[j, l, r]
+                    if val > v_max:
+                        v_max = val
+                    if val < v_min:
+                        v_min = val
+                    av = abs(val)
+                    if av > k_scale:
+                        k_scale = av
+                jl_spread = v_max - v_min
+                if jl_spread > k_spread:
+                    k_spread = jl_spread
+                collapsed[k, j, l] = v[j, l, 0]
+        spread[k] = k_spread
+        scale[k] = k_scale
 
-    return results
+    return collapsed, spread, scale

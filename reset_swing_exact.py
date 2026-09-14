@@ -18,6 +18,8 @@ collapsed onto j_fix == j (sec.6.2: "at the reset boundary... the old K_M can th
 be discarded" -- symmetrically, the NEXT month's j_fix is just whatever node the
 fixing date actually landed on), becomes the previous month's terminal condition.
 """
+import math
+
 import numpy as np
 
 import reset_forward as rf
@@ -135,7 +137,15 @@ def value_point_reset_call_swing(terms, schedule, daily_curve=None, curve=None, 
     for i in range(fixing_idx - 1, -1, -1):
         v = _propagate_one_step(v, lattice["p_u"][i, :], lattice["p_m"][i, :], lattice["p_d"][i, :])
 
-    return float(v[terms.n_p, 0])
+    pv = float(v[terms.n_p, 0])
+    # 2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-09: surface a
+    # NaN/inf PV here, with the actual inputs in scope, rather than letting
+    # the caller discover it several steps downstream with no context left
+    # about which valuation produced it.
+    if not math.isfinite(pv):
+        raise RuntimeError(f"Computed PV is not finite ({pv!r}) at n_p={terms.n_p} -- "
+                           f"a genuine numerical failure, not a valid price.")
+    return pv
 
 
 def compute_deltas(terms, schedule, daily_curve, bump_eur_mwh=0.10):

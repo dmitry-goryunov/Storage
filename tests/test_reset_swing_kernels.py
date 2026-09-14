@@ -88,16 +88,54 @@ def test_kernel_matches_the_python_reference_exactly(
     results = rsa._run_month_accumulate_reference(
         s["lattice"], s["month"], s["r_grid"], s["quotes_for_next_month"],
         s["fixing_observation_dates"], s["terminal_value"], s["v_step"], s["daily_max_clips"])
-    python_stack = np.stack(results, axis=0)  # (n_r, width, n_l, n_r)
+    # The kernel now collapses the fresh outgoing-accumulator axis itself
+    # (R-04) -- apply the SAME reduction to the reference's own (deliberately
+    # un-collapsed) output before comparing, so both sides are apples to
+    # apples. `_collapse_fresh_axis` raising here would itself be a signal
+    # something is wrong: the boundary property it checks (this axis cannot
+    # yet depend on which of its own buckets you read) holds structurally,
+    # by construction of the recursion, regardless of `terminal_value`'s
+    # actual values -- these scenarios use RANDOM terminal_value specifically
+    # to confirm that, not just for economically-meaningful ones.
+    python_collapsed = np.stack(
+        rsa._collapse_fresh_axis(results, label="reference"), axis=0)  # (n_r, width, n_l)
 
     lattice = s["lattice"]
-    kernel_out = rsk.run_month_accumulate_core(
+    kernel_collapsed, kernel_spread, kernel_scale = rsk.run_month_accumulate_core(
         lattice["x"], lattice["p_u"], lattice["p_m"], lattice["p_d"], lattice["d_curve"],
         s["fixing_indices"], s["n_exercise_days"], s["r_grid"], s["quotes_for_next_month"],
         s["terminal_value"], s["v_step"], s["daily_max_clips"])
 
-    assert kernel_out.shape == python_stack.shape
-    np.testing.assert_allclose(kernel_out, python_stack, atol=1e-7, rtol=1e-9)
+    assert kernel_collapsed.shape == python_collapsed.shape
+    np.testing.assert_allclose(kernel_collapsed, python_collapsed, atol=1e-7, rtol=1e-9)
+    # The kernel's own spread/scale should agree with what _collapse_fresh_axis
+    # itself would have computed from the (un-collapsed) reference output.
+    ref_spread = np.array([
+        float((arr.max(axis=-1) - arr.min(axis=-1)).max()) for arr in results])
+    ref_scale = np.array([max(1.0, float(np.abs(arr).max())) for arr in results])
+    np.testing.assert_allclose(kernel_spread, ref_spread, atol=1e-7, rtol=1e-6)
+    np.testing.assert_allclose(kernel_scale, ref_scale, atol=1e-7, rtol=1e-6)
+
+
+def test_kernel_output_no_longer_scales_with_n_r_squared():
+    """2026-09-14 INDEPENDENT-REVIEW-MONTHLY-RESET-SWING R-04: the kernel used
+    to return `(n_r, width, n_l, n_r)` -- 10.1 GiB at the notebook's own
+    n_r=600, before any working memory. Pins the returned shape directly
+    (not just implicitly, via the shape-equality assertion in the exactness
+    test above) so a regression back to returning the full array would fail
+    here even if someone changed the reference/comparison test alongside it."""
+    s = _scenario(n_p=5, n_l=6, n_r=40, n_exercise_days=5, n_extra_fixing_days=2,
+                  daily_max_clips=2, seed=11)
+    lattice = s["lattice"]
+    collapsed, spread, scale = rsk.run_month_accumulate_core(
+        lattice["x"], lattice["p_u"], lattice["p_m"], lattice["p_d"], lattice["d_curve"],
+        s["fixing_indices"], s["n_exercise_days"], s["r_grid"], s["quotes_for_next_month"],
+        s["terminal_value"], s["v_step"], s["daily_max_clips"])
+
+    width = 2 * 5 + 1
+    assert collapsed.shape == (40, width, 6)  # (n_r, width, n_l) -- NOT (n_r, width, n_l, n_r)
+    assert spread.shape == (40,)
+    assert scale.shape == (40,)
 
 
 def test_kernel_is_substantially_faster_at_realistic_month_scale():
